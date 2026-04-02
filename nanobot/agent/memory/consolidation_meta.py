@@ -30,7 +30,7 @@ SCAN_FILE = ".auto_consolidation_scan.json"
 # session-gate is still closed (avoids constant stat() on every message)
 SCAN_THROTTLE_SECONDS = 10 * 60  # 10 minutes
 
-DEFAULT_THRESHOLD_HOURS = 24.0
+DEFAULT_THRESHOLD_HOURS = 1.0
 
 
 @dataclass
