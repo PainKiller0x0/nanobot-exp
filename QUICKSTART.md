@@ -59,21 +59,56 @@ providers:
 
 ## 三、启动（选一种渠道）/ Start a Channel
 
-### A — QQ（OneBot v11）
+### A — QQ
 
-需要一个小号 + go-cqhttp（或 Lagrange）在本地运行。
+nanobot 使用 QQ 官方的 [botpy](https://github.com/nonebot/qq-botpy) 库连接 QQ 机器人，无需额外的 CQHTTP 或 Lagrange。
 
-```yaml
-# nanobot.yaml
-channels:
-  qq:
-    enabled: true
-    app_id: 123456789        # QQ 开放平台申请
-    secret: xxxxxx            # QQ 开放平台申请
-    ws_url: ws://127.0.0.1:8080/ws
+#### 3.1 注册 QQ 开放平台账号
+
+访问 [QQ 开放平台](https://q.qq.com/#/apps)，注册个人或企业开发者账号，只需邮箱验证和身份信息。
+
+注册完成后，进入开发者后台，点击"创建应用" → 选择"机器人"类型，填写名称（如"AI小助手"）。
+
+#### 3.2 获取 AppID 和 AppSecret
+
+在应用"开发管理"页面复制两个凭证：
+
+- **AppID**：机器人唯一标识
+- **AppSecret**：API 调用密钥，妥善保管，不要泄露
+
+#### 3.3 修改 nanobot 配置
+
+编辑 `~/.nanobot/config.json`（或 `nanobot.yaml`）：
+
+```json
+{
+  "channels": {
+    "qq": {
+      "enabled": true,
+      "appId": "你的AppID",
+      "secret": "你的AppSecret",
+      "allowFrom": []
+    }
+  }
+}
 ```
 
-详细配置见 [QQ 频道配置指南](https://github.com/HKUDS/nanobot#-qq)。
+- 将 `appId` 和 `secret` 替换为实际值
+- `allowFrom: []` 留空表示允许所有用户，也可填入指定 QQ 号限制访问
+
+#### 3.4 启动 gateway
+
+```bash
+nanobot gateway
+```
+
+正常启动后会看到：
+
+```
+[INFO] nanobot.channels.qq:on_ready - QQ bot ready: 机器人名称
+```
+
+> 注意：首次启动 QQ 机器人需要小号已加机器人好友，且机器人已在对应频道/群中。
 
 ### B — 微信（个人号，实验性）
 
