@@ -1,3 +1,89 @@
+<!-- ==================== fork custom content ==================== -->
+
+# ⚡ Jack's nanobot Fork — v0.2.0
+
+> Fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot) with local customizations.
+> Based on upstream v0.1.4.post6, rebased to v0.2.0.
+
+## 本 Fork 的改动
+
+本分支在 upstream v0.1.4.post6 基础上增加了以下功能：
+
+### 🛠️ OC-1.0 — Agent 核心升级
+- **TaskRegistry & TaskTool**: 后台任务管理（list/cancel/drain/register/get_status）
+- **Plugin Hooks**: `on_session_start/end`、`after_tool_call` 钩子
+- **Subagent Attachments**: 支持 Base64/文本文件（最大 10MB）+ workspace 路径验证
+- **CompactionConfig**: token 压缩配置（阈值 0.75，目标 0.35，保留最近 4 条）
+
+### 🔧 ZC-1.5 — 工具与安全
+- **ConnectionPool**: 异步连接池复用
+- **BatchProcessor**: 批量 IO 降低 syscall 开销
+- **LazyLoader**: 按需延迟导入
+- **PathPolicy**: workspace 路径隔离 + 安全路径拦截
+- **PairingManager**: 6位一次性配对码 + 过期机制
+- **EnvOverride**: `NANOBOT_*` 环境变量配置覆盖 + 类型转换
+
+### ⚙️ PC-1.6 — 平台与配置
+- **PlatformDetector**: CPU架构/OS/低资源检测 + 优化建议
+- **ConfigValidator**: 类型/范围/必填/枚举校验 + 自动类型转换
+- **HotReloadConfig**: 文件监控热重载（但通道启停类场景建议重启，更干净）
+
+### 🧠 Auto-Consolidation System（灵感来自 autoDream.ts）
+- 后台内存去重、压缩、数据库清理
+- **时间门**: ≥24h 触发（单用户本地化，不适用 session 门）
+- **Scan 节流**: 10min 内不重复扫描
+- **锁 + mtime 回滚**: 安全重试保证
+- **ConsolidationTool**: 按需查询状态
+- 非侵入式静默后台，用户不主动通知，只在问时回答
+
+### 🐛 Bug 修复
+- PathPolicy: `/root` 在 BLOCKED_PATHS 误杀 workspace
+- HotReloadConfig: `_timer` 未初始化 + `stop()` 不 cancel
+- ConnectionPool: Lock 类级别共享 + `iscoroutine` 检查 bug
+- QQ Watchdog: 服务器重启后重复拉 gateway
+- Auto-consolidation: 锁未释放、gate-before-lock 顺序、浮点精度
+
+### 📦 开源准备
+- `.gitignore`: 排除 sessions/、memory/、nanobot.yaml、channel state、workspace/
+- `nanobot.yaml.example`: 所有渠道 API key 占位符模板
+- `QUICKSTART.md`: 独立快速上手指南
+- `CHANGELOG.md`: 完整版本变更日志
+
+---
+
+## 🚀 快速部署
+
+```bash
+# 1. Clone
+git clone https://github.com/PainKiller0x0/nanobot.git
+cd nanobot
+
+# 2. Install
+pip install -e .
+
+# 3. Configure
+cp nanobot.yaml.example nanobot.yaml
+# 编辑 nanobot.yaml，填入你的 API key
+
+# 4. Launch
+nanobot gateway
+```
+
+详细说明见 [QUICKSTART.md](./QUICKSTART.md)。
+
+---
+
+## 🔄 同步上游
+
+```bash
+git remote add upstream https://github.com/HKUDS/nanobot.git
+git fetch upstream
+git rebase upstream/main   # 或 git merge upstream/main
+```
+
+---
+
+<!-- ==================== upstream content below ==================== -->
 <div align="center">
   <img src="nanobot_logo.png" alt="nanobot" width="500">
   <h1>nanobot: Ultra-Lightweight Personal AI Assistant</h1>
