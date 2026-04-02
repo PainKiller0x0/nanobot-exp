@@ -112,9 +112,20 @@ nanobot gateway
 
 ### B — 微信（个人号，实验性）
 
+nanobot 通过 OpenClaw 接口接入微信，**不是扫码而是点链接**。
+
+#### 前置条件
+
 ```bash
 pip install "nanobot-ai[weixin]"
 ```
+
+#### 接入步骤
+
+1. 启动后，gateway 会输出一个链接（类似 `https://xxx/wechat/connect`）
+2. 用**同账号微信**的浏览器打开链接，点击获取二维码
+3. 用另一个微信扫码，确认授权
+4. 成功后，在微信中找到"**微信ClawBot**"聊天窗口，开始对话
 
 ```yaml
 # nanobot.yaml
@@ -123,7 +134,11 @@ channels:
     enabled: true
 ```
 
-首次启动会弹出二维码，扫码后 token 自动保存。
+#### ⚠️ 注意事项
+
+- **PC 微信不可用**：截止目前，Windows 版微信尚未支持"微信ClawBot"插件，仅手机微信可用
+- 授权 token 会自动保存，重启后无需重新扫码
+- 建议使用小号测试，避免主号被限制
 
 ### C — Telegram
 
