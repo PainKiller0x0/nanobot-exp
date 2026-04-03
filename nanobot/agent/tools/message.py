@@ -11,12 +11,12 @@ from nanobot.bus.events import OutboundMessage
 # messages before sending so users don't see the agent's "thinking out loud".
 # These are common self-referential internal monologue patterns.
 _INTERNAL_PATTERNS = [
+    re.compile(r"^\[Runtime Context[^\]]*\]\s*", re.MULTILINE),
     re.compile(r"^我(来|先|正在|准备|先读).*?。\s*", re.MULTILINE),
     re.compile(r"^好(的)?，?调用.*?。\s*", re.MULTILINE),
     re.compile(r"^现在(把|发送给|发送给用户|回复用户).*?。\s*", re.MULTILINE),
     re.compile(r"^查询.*?完成.*?信息如下.*?。?\s*", re.MULTILINE),
     re.compile(r"^天气查询完成.*?$", re.MULTILINE),
-    re.compile(r"^\[Runtime Context.*?\]\s*", re.MULTILINE),
     re.compile(r"^正在.*?中.*?。\s*", re.MULTILINE),
     re.compile(r"^读取.*?技能.*?。\s*", re.MULTILINE),
     re.compile(r"^正在读取.*?$", re.MULTILINE),
@@ -24,8 +24,16 @@ _INTERNAL_PATTERNS = [
 
 
 def _clean_content(content: str) -> str:
-    """Remove internal monologue patterns from message content."""
+    """Remove internal monologue patterns and metadata blocks from message content."""
     result = content
+
+    # Remove [Runtime Context ...] metadata blocks (everything up to first blank line)
+    result = re.sub(
+        r"\[Runtime Context[^\]]*\](?:\n[^\n]+)*\n\n",
+        "",
+        result,
+    )
+
     for pat in _INTERNAL_PATTERNS:
         result = pat.sub("", result)
     result = re.sub(r"\n{3,}", "\n\n", result)
