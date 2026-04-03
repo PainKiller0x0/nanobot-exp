@@ -664,9 +664,9 @@ def gateway(
 
     console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
 
-    # Write PID file for ShadowEngine health check
-    pid_file = config.workspace_path / "gateway.pid"
-    config.workspace_path.mkdir(parents=True, exist_ok=True)
+    # Write PID file for ShadowEngine health check (统一路径 ~/.nanobot/gateway.pid)
+    pid_file = Path.home() / ".nanobot" / "gateway.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.write_text(str(os.getpid()))
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
