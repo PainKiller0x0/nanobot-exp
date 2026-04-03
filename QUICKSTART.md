@@ -7,25 +7,19 @@
 ## 一、安装 / Installation
 
 ```bash
-# 自动适配：GitHub / Gitee 一键克隆
-git clone "$(git config --get remote.origin.url 2>/dev/null | sed 's/\.git$//')" nanobot && cd nanobot
-
-# 安装（开发模式，可编辑）
+# 克隆本仓库（开发模式）
+git clone https://github.com/PainKiller0x0/nanobot.git
+cd nanobot
 pip install -e .
 ```
-
-> **如果提示 `remote.origin.url` 为空**，说明你是手动下载 zip，解压后跳过 clone 即可。
-
-> **或者从 PyPI 安装稳定版：**
-> ```bash
-> pip install nanobot-ai
-> ```
 
 > **要求：** Python 3.11+，建议使用虚拟环境：
 > ```bash
 > python3.11 -m venv .venv && source .venv/bin/activate
 > pip install -e .
 > ```
+
+> **或者从 PyPI 安装稳定版：** `pip install nanobot-ai`
 
 ---
 
