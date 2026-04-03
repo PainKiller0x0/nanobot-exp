@@ -26,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from nanobot.ark.slot_manager import SlotManager
+
 NANOBOT_ROOT = Path.home() / ".nanobot"
 PENDING_SWITCH_FILE = NANOBOT_ROOT / "pending_switch"
 
@@ -75,10 +77,13 @@ class ShadowEngine:
 
         self._main_gateway: Optional[GatewayProcess] = None
         self._shadow_gateway: Optional[GatewayProcess] = None
+        self._slots = SlotManager()
 
         # False = shadow 在服务，True = main 在服务
         self._main_is_active = True
         self._shadow_activated = False
+        # 记录 main gateway 最近一次 spawn 时间，用于启动缓冲期（不健康检查）
+        self._main_spawn_time: float = 0.0
 
         self._health_check_task: Optional[asyncio.Task] = None
         self._shutdown = False
@@ -91,6 +96,7 @@ class ShadowEngine:
 
         # 启动 main gateway
         main_proc = await self._spawn_gateway(self._main_port, is_shadow=False)
+        self._main_spawn_time = time.monotonic()
         self._main_gateway = GatewayProcess(
             name="main",
             port=self._main_port,
@@ -142,20 +148,25 @@ class ShadowEngine:
         is_shadow: bool
     ) -> asyncio.subprocess.Process:
         """启动 gateway 子进程，等待端口就绪"""
-        args = [sys.executable, "-m", "nanobot", "gateway"]
+        import os as _os
 
         if is_shadow:
-            args.extend(["--shadow-mode", "--shadow-port", str(port)])
+            # Shadow gateway: 走独立入口 ark_entry/shadow.py，不加载 nanobot 包
+            import nanobot
+            nanobot_root = Path(nanobot.__file__).parent.parent
+            shadow_entry = nanobot_root / "ark_entry" / "shadow.py"
+            args = [sys.executable, str(shadow_entry), "--port", str(port)]
+            pid_path = NANOBOT_ROOT / "gateway_shadow.pid"
+            args.extend(["--pid-file", str(pid_path)])
         else:
+            args = [sys.executable, "-m", "nanobot", "gateway"]
             args.extend(["--port", str(port)])
+            args.extend(["--pid-file", str(NANOBOT_ROOT / "gateway_main.pid")])
+            gateway_ws = self._slots.current.workspace
 
-        env = {**__import__("os").environ}
-
-        # Shadow gateway 必须用 standby slot 的 workspace（隔离）
-        if is_shadow:
-            standby_ws = self._slots.standby().workspace
-            env["ARK_SLOT_WORKSPACE"] = str(standby_ws)
-            logger.debug(f"Shadow gateway workspace: {standby_ws}")
+        env = {**_os.environ}
+        env["ARK_SLOT_WORKSPACE"] = str(gateway_ws)
+        logger.debug(f"{'Shadow' if is_shadow else 'Main'} gateway workspace: {gateway_ws}")
 
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -169,30 +180,23 @@ class ShadowEngine:
             f"(pid={proc.pid}, port={port})"
         )
 
-        # 等待端口就绪，最多 30 秒，超时则杀死进程并抛异常
-        try:
-            for attempt in range(30):
-                await asyncio.sleep(1)
-                try:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection("localhost", port),
-                        timeout=2,
-                    )
-                    writer.close()
-                    await writer.wait_closed()
-                    logger.info(f"Gateway on port {port} is ready")
-                    return proc
-                except (ConnectionRefusedError, OSError):
-                    pass  # 还没起来，继续等
+        # subprocess 启动成功即返回，不等待就绪
+        # 健康检查循环负责检测实际就绪状态（TCP / PID 文件）
+        # 这样 main 慢启动不会被 kill，shadow 也有充足时间准备
+        return proc
 
-            # 30 秒还没就绪，进程肯定有问题
-            proc.kill()
-            raise RuntimeError(
-                f"Gateway on port {port} failed to start within 30s"
-            )
-        except asyncio.CancelledError:
-            proc.kill()
-            raise
+    async def _ensure_shadow_alive(self):
+        """保活 shadow gateway：死了就重启"""
+        if not self._shadow_gateway or not self._shadow_gateway.process:
+            return
+        try:
+            await asyncio.wait_for(self._shadow_gateway.process.wait(), timeout=0.1)
+        except asyncio.TimeoutError:
+            return  # shadow 活着
+        # shadow 已死，重启
+        logger.warning("Shadow gateway died, restarting")
+        proc = await self._spawn_gateway(self._shadow_port, is_shadow=True)
+        self._shadow_gateway.process = proc
 
     # ── 健康检查 ────────────────────────────────────────────────────────
 
@@ -202,38 +206,54 @@ class ShadowEngine:
             try:
                 if self._main_is_active:
                     await self._check_main_health()
+                    # 保活 shadow gateway
+                    await self._ensure_shadow_alive()
             except Exception as e:
                 logger.error(f"Health check error: {e}")
 
             await asyncio.sleep(self._check_interval)
 
     async def _check_main_health(self):
-        """检查 main gateway 健康状态（进程 + TCP 连接）"""
+        """检查 main gateway 健康状态（进程 + session 新鲜度）"""
         if not self._main_gateway or not self._main_gateway.process:
             return
 
         proc = self._main_gateway.process
 
+        # 启动缓冲期：main gateway 需要时间初始化（写 PID 文件、连接 QQ 等）
+        # 前 60 秒内不做健康检查，避免误判慢启动为故障
+        startup_grace = 60.0
+        elapsed = time.monotonic() - self._main_spawn_time
+        if elapsed < startup_grace:
+            logger.debug(f"Main gateway startup grace: {elapsed:.1f}s / {startup_grace:.0f}s")
+            return
+
         # 检查进程是否存活
         try:
-            proc.wait(timeout=0.01)  # 非阻塞
+            await asyncio.wait_for(proc.wait(), timeout=0.01)  # 非阻塞
             logger.warning(f"Main gateway exited with code {proc.returncode}")
             await self._failover_to_shadow()
             return
         except asyncio.TimeoutError:
             pass  # 进程还在运行
 
-        # 检查 main gateway 是否真正响应（TCP 连接检查）
-        # 进程可能卡死或 segfault 但进程 PID 还在
+        # 检查 PID 文件心跳（nanobot gateway 是 QQ bot，不绑定 TCP 端口）
+        pid_file = NANOBOT_ROOT / "gateway_main.pid"
+        if not pid_file.exists():
+            logger.warning("Main gateway PID file missing")
+            await self._failover_to_shadow()
+            return
+
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection("localhost", self._main_port),
-                timeout=3,
-            )
-            writer.close()
-            await writer.wait_closed()
-        except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
-            logger.warning(f"Main gateway not reachable on port {self._main_port}")
+            pid = int(pid_file.read_text().strip())
+            if pid != proc.pid:
+                logger.warning(f"Main gateway PID mismatch: expected {proc.pid}, got {pid}")
+                await self._failover_to_shadow()
+                return
+            import os as _os
+            _os.kill(pid, 0)  # 确认进程存在
+        except (ValueError, FileNotFoundError, ProcessLookupError):
+            logger.warning("Main gateway PID file invalid or process dead")
             await self._failover_to_shadow()
             return
 
@@ -369,7 +389,7 @@ class ShadowEngine:
             if not self._main_gateway or not self._main_gateway.process:
                 continue
             try:
-                self._main_gateway.process.wait(timeout=0.01)
+                await asyncio.wait_for(self._main_gateway.process.wait(), timeout=0.01)
             except asyncio.TimeoutError:
                 if _is_session_fresh(SESSION_MAX_AGE):
                     return True

@@ -632,6 +632,7 @@ def gateway(
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    pid_file: str | None = typer.Option(None, "--pid-file", help="Write PID to this file (for ARK)"),
 ):
     """Start the nanobot gateway."""
     # Shadow mode: run as standby shadow gateway
@@ -644,7 +645,31 @@ def gateway(
         else:
             logging.basicConfig(level=logging.INFO)
 
-        asyncio.run(ShadowGateway(port=shadow_port).start())
+        # ARK: 读 active_slot，shadow gateway 用备用槽位
+        ACTIVE_SLOT_FILE = Path.home() / ".nanobot" / "active_slot"
+        standby_workspace = None
+        standby_config = None
+        if ACTIVE_SLOT_FILE.exists():
+            slot_name = ACTIVE_SLOT_FILE.read_text().strip().lower()
+            if slot_name in ("a", "b"):
+                standby_name = "b" if slot_name == "a" else "a"
+                standby_base = Path.home() / f".nanobot" / f"slot_{standby_name}"
+                standby_config = standby_base / "config.json"
+                standby_workspace = standby_base / "workspace"
+
+        # Write PID file for ShadowEngine
+        if pid_file:
+            _pid_file = Path(pid_file)
+        else:
+            _pid_file = Path.home() / ".nanobot" / "gateway_shadow.pid"
+        _pid_file.parent.mkdir(parents=True, exist_ok=True)
+        _pid_file.write_text(str(os.getpid()))
+
+        asyncio.run(ShadowGateway(
+            port=shadow_port,
+            standby_config=str(standby_config) if standby_config and standby_config.exists() else None,
+            standby_workspace=str(standby_workspace) if standby_workspace else None,
+        ).start())
         return
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
@@ -658,15 +683,34 @@ def gateway(
         import logging
         logging.basicConfig(level=logging.DEBUG)
 
+    # ── ARK: 读 active_slot，决定用哪套配置 ────────────────────────────────
+    ACTIVE_SLOT_FILE = Path.home() / ".nanobot" / "active_slot"
+    if ACTIVE_SLOT_FILE.exists():
+        slot_name = ACTIVE_SLOT_FILE.read_text().strip().lower()
+        if slot_name in ("a", "b"):
+            slot_label = slot_name.upper()
+            slot_base = Path.home() / f".nanobot" / f"slot_{slot_name}"
+            if config is None:
+                slot_config = slot_base / "config.json"
+                if slot_config.exists():
+                    config = str(slot_config)
+            if workspace is None:
+                workspace = str(slot_base / "workspace")
+            console.print(f"[dim]ARK: active slot = {slot_label}, using {slot_base.name}/[/dim]")
+
     config = _load_runtime_config(config, workspace)
     port = port if port is not None else config.gateway.port
 
     console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
 
-    # Write PID file for ShadowEngine health check (统一路径 ~/.nanobot/gateway.pid)
-    pid_file = Path.home() / ".nanobot" / "gateway.pid"
-    pid_file.parent.mkdir(parents=True, exist_ok=True)
-    pid_file.write_text(str(os.getpid()))
+    # Write PID file for ShadowEngine health check
+    # 支持自定义路径（ARK 用 gateway_main.pid / gateway_shadow.pid）
+    if pid_file:
+        _pid_file = Path(pid_file)
+    else:
+        _pid_file = Path.home() / ".nanobot" / "gateway.pid"
+    _pid_file.parent.mkdir(parents=True, exist_ok=True)
+    _pid_file.write_text(str(os.getpid()))
 
     # 清理 pending_switch：正常 gateway 启动不是 ARK failover
     # 避免 watchdog 误认为在 ARK 模式
