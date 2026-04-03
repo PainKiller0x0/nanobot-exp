@@ -123,12 +123,6 @@ class ShadowGateway:
         logger.info("Shadow gateway: starting agent loop...")
 
         try:
-            # 调用 nanobot gateway 的 run() 逻辑
-            # 延迟导入，避免待机时加载整个 nanobot
-            from nanobot.cli.commands import gateway
-
-            # gateway() 是 Typer 命令，内部会 asyncio.run(run())
-            # 我们直接调用内部的 run 逻辑
             await self._run_gateway()
 
         except Exception as e:
