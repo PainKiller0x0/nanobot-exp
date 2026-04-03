@@ -151,6 +151,12 @@ class ShadowEngine:
 
         env = {**__import__("os").environ}
 
+        # Shadow gateway 必须用 standby slot 的 workspace（隔离）
+        if is_shadow:
+            standby_ws = self._slots.standby().workspace
+            env["ARK_SLOT_WORKSPACE"] = str(standby_ws)
+            logger.debug(f"Shadow gateway workspace: {standby_ws}")
+
         proc = await asyncio.create_subprocess_exec(
             *args,
             env=env,

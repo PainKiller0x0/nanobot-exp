@@ -16,6 +16,7 @@ from nanobot.agent.loop import AgentLoop
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.manager import ChannelManager
 from nanobot.config.schema import Config
+from loguru import logger
 from nanobot.cron.service import CronService
 from nanobot.heartbeat.service import HeartbeatService
 from nanobot.session.manager import SessionManager
@@ -34,7 +35,6 @@ def _load_runtime_config(config_arg: str | None, workspace_arg: str | None) -> C
 def _make_provider(config: Config) -> Any:
     """创建 LLM provider。"""
     from nanobot.agent.provider.factory import make_provider
-
     return make_provider(config)
 
 
@@ -55,41 +55,74 @@ async def build_gateway(
     - heartbeat: HeartbeatService
     - shutdown_event: asyncio.Event (caller负责set)
     """
+    import os
     from rich.console import Console
 
     if console is None:
         console = Console()
 
+    if shutdown_event is None:
+        shutdown_event = asyncio.Event()
+
+    # ARK shadow gateway：使用 standby slot 的 workspace（通过环境变量传入）
+    workspace_override = os.environ.get("ARK_SLOT_WORKSPACE")
+    if workspace_override:
+        config.agents.defaults.workspace = str(Path(workspace_override).expanduser())
+        logger.debug(f"Using ARK slot workspace: {workspace_override}")
+
     bus = MessageBus()
     provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
 
+    # Cron service: workspace-scoped store
+    cron_store_path = config.workspace_path / "cron" / "jobs.json"
+    cron = CronService(cron_store_path)
+
+    # Agent loop
     agent = AgentLoop(
-        config=config,
-        provider=provider,
-        session_manager=session_manager,
         bus=bus,
+        provider=provider,
+        workspace=config.workspace_path,
+        model=config.agents.defaults.model,
+        max_iterations=config.agents.defaults.max_tool_iterations,
+        context_window_tokens=config.agents.defaults.context_window_tokens,
+        web_search_config=config.tools.web.search,
+        web_proxy=config.tools.web.proxy or None,
+        exec_config=config.tools.exec,
+        cron_service=cron,
+        restrict_to_workspace=config.tools.restrict_to_workspace,
+        session_manager=session_manager,
+        mcp_servers=config.tools.mcp_servers,
+        channels_config=config.channels,
         timezone=config.agents.defaults.timezone,
     )
+
     channels = ChannelManager(config, bus)
-    cron = CronService(bus, config)
-    heartbeat = HeartbeatService(bus, config)
 
-    if shutdown_event is None:
-        shutdown_event = asyncio.Event()
-
-    # SIGTERM handler
-    def _sigterm_handler():
-        console.print("[yellow]Received SIGTERM[/yellow]")
-        asyncio.create_task(_graceful_shutdown())
+    # Heartbeat service
+    hb_cfg = config.gateway.heartbeat
+    heartbeat = HeartbeatService(
+        workspace=config.workspace_path,
+        provider=provider,
+        model=agent.model,
+        interval_s=hb_cfg.interval_s,
+        enabled=hb_cfg.enabled,
+        timezone=config.agents.defaults.timezone,
+    )
 
     loop = asyncio.get_running_loop()
+
+    def _sigterm_handler():
+        console.print("[yellow]Received SIGTERM[/yellow]")
+        asyncio.create_task(_gs())
+
     try:
         loop.add_signal_handler(signal.SIGTERM, _sigterm_handler)
     except NotImplementedError:
         pass  # Windows
 
-    async def _graceful_shutdown():
+    async def _gs():
+        """Shared graceful shutdown sequence."""
         console.print("[yellow]Graceful shutdown in progress...[/yellow]")
         agent.stop()
         heartbeat.stop()
@@ -114,5 +147,5 @@ async def build_gateway(
         "heartbeat": heartbeat,
         "shutdown_event": shutdown_event,
         "console": console,
-        "graceful_shutdown": _graceful_shutdown,
+        "graceful_shutdown": _gs,
     }
