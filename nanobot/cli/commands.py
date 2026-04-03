@@ -708,19 +708,28 @@ def gateway(
 
     # Create heartbeat service
     async def on_heartbeat_execute(tasks: str) -> str:
-        """Phase 2: execute heartbeat tasks through the full agent loop."""
+        """Phase 2: execute heartbeat tasks through the full agent loop.
+
+        Suppresses direct message sends during execution so the LLM's response
+        is captured and re-delivered by on_notify only when appropriate.
+        """
         channel, chat_id = _pick_heartbeat_target()
 
         async def _silent(*_args, **_kwargs):
             pass
 
-        resp = await agent.process_direct(
-            tasks,
-            session_key="heartbeat",
-            channel=channel,
-            chat_id=chat_id,
-            on_progress=_silent,
-        )
+        # Suppress: heartbeat uses evaluate_response to decide if we should notify
+        agent._suppress_notify = True
+        try:
+            resp = await agent.process_direct(
+                tasks,
+                session_key="heartbeat",
+                channel=channel,
+                chat_id=chat_id,
+                on_progress=_silent,
+            )
+        finally:
+            agent._suppress_notify = False
 
         # Keep a small tail of heartbeat history so the loop stays bounded
         # without losing all short-term context between runs.

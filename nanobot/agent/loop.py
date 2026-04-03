@@ -291,6 +291,7 @@ class AgentLoop:
         )
 
         self._running = False
+        self._suppress_notify = False  # heartbeat uses this to silence auto-response
         self._mcp_servers = mcp_servers or {}
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
@@ -337,7 +338,10 @@ class AgentLoop:
             ))
         self.tools.register(WebSearchTool(config=self.web_search_config, proxy=self.web_proxy))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
-        self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
+        self.tools.register(MessageTool(
+            send_callback=self.bus.publish_outbound,
+            should_send=lambda: not self._suppress_notify,
+        ))
         self.tools.register(SpawnTool(manager=self.subagents))
         self.tools.register(TaskTool(loop=self))
         self.tools.register(ConsolidationTool(workspace=self.workspace))

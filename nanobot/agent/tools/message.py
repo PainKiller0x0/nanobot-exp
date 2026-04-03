@@ -15,12 +15,14 @@ class MessageTool(Tool):
         default_channel: str = "",
         default_chat_id: str = "",
         default_message_id: str | None = None,
+        should_send: Callable[[], bool] | None = None,
     ):
         self._send_callback = send_callback
         self._default_channel = default_channel
         self._default_chat_id = default_chat_id
         self._default_message_id = default_message_id
         self._sent_in_turn: bool = False
+        self._should_send = should_send or (lambda: True)
 
     def set_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Set the current message context."""
@@ -91,7 +93,7 @@ class MessageTool(Tool):
         if not channel or not chat_id:
             return "Error: No target channel/chat specified"
 
-        if not self._send_callback:
+        if not self._send_callback or not self._should_send():
             return "Error: Message sending not configured"
 
         msg = OutboundMessage(
