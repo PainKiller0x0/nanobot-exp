@@ -627,11 +627,26 @@ def serve(
 @app.command()
 def gateway(
     port: int | None = typer.Option(None, "--port", "-p", help="Gateway port"),
+    shadow_mode: bool = typer.Option(False, "--shadow-mode", help="Run as shadow gateway (standby)"),
+    shadow_port: int = typer.Option(8081, "--shadow-port", help="Shadow gateway port"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Start the nanobot gateway."""
+    # Shadow mode: run as standby shadow gateway
+    if shadow_mode:
+        from nanobot.ark.shadow_gateway import ShadowGateway
+        import asyncio
+        import logging
+
+        if verbose:
+            logging.basicConfig(level=logging.DEBUG)
+        else:
+            logging.basicConfig(level=logging.INFO)
+
+        asyncio.run(ShadowGateway(port=shadow_port).start())
+        return
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
@@ -648,6 +663,11 @@ def gateway(
     port = port if port is not None else config.gateway.port
 
     console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
+
+    # Write PID file for ShadowEngine health check
+    pid_file = config.workspace_path / "gateway.pid"
+    config.workspace_path.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(os.getpid()))
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
     provider = _make_provider(config)
@@ -1402,6 +1422,13 @@ def _login_github_copilot() -> None:
         console.print(f"[red]Authentication error: {e}[/red]")
         raise typer.Exit(1)
 
+
+# Lazy-load ARK subcommands to avoid slow imports at startup
+try:
+    from nanobot.ark.cli import app as ark_app
+    app.add_typer(ark_app, name="ark")
+except ImportError:
+    pass  # ark not available (e.g., during initial setup)
 
 if __name__ == "__main__":
     app()
