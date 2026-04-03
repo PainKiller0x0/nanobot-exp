@@ -48,7 +48,7 @@ def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) ->
 
 
 def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
-    """Runtime metadata should be merged with the user message."""
+    """Runtime metadata should be in the system prompt, not the user message."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
@@ -60,14 +60,19 @@ def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
     )
 
     assert messages[0]["role"] == "system"
-    assert "## Current Session" not in messages[0]["content"]
+    # Runtime context lives in the system prompt so it never enters the
+    # conversation history and cannot be echoed back by the LLM.
+    sys_content = messages[0]["content"]
+    assert ContextBuilder._RUNTIME_CONTEXT_TAG in sys_content
+    assert "Current Time:" in sys_content
+    assert "Channel: cli" in sys_content
+    assert "Chat ID: direct" in sys_content
 
-    # Runtime context is now merged with user message into a single message
+    # User message is clean: no Runtime Context leak
     assert messages[-1]["role"] == "user"
     user_content = messages[-1]["content"]
     assert isinstance(user_content, str)
-    assert ContextBuilder._RUNTIME_CONTEXT_TAG in user_content
-    assert "Current Time:" in user_content
-    assert "Channel: cli" in user_content
-    assert "Chat ID: direct" in user_content
+    assert ContextBuilder._RUNTIME_CONTEXT_TAG not in user_content
+    assert "Current Time:" not in user_content
+    assert "Channel:" not in user_content
     assert "Return exactly: OK" in user_content

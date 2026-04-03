@@ -30,6 +30,7 @@ class ContextBuilder:
     def build_system_prompt(
         self, skill_names: list[str] | None = None,
         current_message: str = "",
+        runtime_ctx: str = "",
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity()]
@@ -63,6 +64,7 @@ Skills with available="false" need dependencies installed first - you can try in
 
 {skills_summary}""")
 
+        parts.append(runtime_ctx)
         return "\n\n---\n\n".join(parts)
 
     def _get_identity(self) -> str:
@@ -166,17 +168,10 @@ IMPORTANT: To send files (images, documents, audio, video) to the user, you MUST
         runtime_ctx = self._build_runtime_context(channel, chat_id, self.timezone, message_timestamp)
         user_content = self._build_user_content(current_message, media)
 
-        # Merge runtime context and user content into a single user message
-        # to avoid consecutive same-role messages that some providers reject.
-        if isinstance(user_content, str):
-            merged = f"{runtime_ctx}\n\n{user_content}"
-        else:
-            merged = [{"type": "text", "text": runtime_ctx}] + user_content
-
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names, current_message)},
+            {"role": "system", "content": self.build_system_prompt(skill_names, current_message, runtime_ctx)},
             *history,
-            {"role": current_role, "content": merged},
+            {"role": current_role, "content": user_content},
         ]
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
