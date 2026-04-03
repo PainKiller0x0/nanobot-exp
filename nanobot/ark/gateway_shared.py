@@ -17,6 +17,10 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.manager import ChannelManager
 from nanobot.config.schema import Config
 from loguru import logger
+from rich.console import Console
+
+# Shared console instance (used by _make_provider for error messages)
+_console = Console()
 from nanobot.cron.service import CronService
 from nanobot.heartbeat.service import HeartbeatService
 from nanobot.session.manager import SessionManager
@@ -33,9 +37,88 @@ def _load_runtime_config(config_arg: str | None, workspace_arg: str | None) -> C
 
 
 def _make_provider(config: Config) -> Any:
-    """创建 LLM provider。"""
-    from nanobot.agent.provider.factory import make_provider
-    return make_provider(config)
+    """Create the appropriate LLM provider from config."""
+    import os
+    from nanobot.providers.base import GenerationSettings
+    from nanobot.providers.registry import find_by_name
+
+    model = config.agents.defaults.model
+    provider_name = config.get_provider_name(model)
+    p = config.get_provider(model)
+    spec = find_by_name(provider_name) if provider_name else None
+    backend = spec.backend if spec else "openai_compat"
+
+    # Env var names by backend
+    _ENV_MAP = {
+        "openai_compat": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "azure_openai": "AZURE_OPENAI_API_KEY",
+        "openai_codex": "OPENAI_API_KEY",
+    }
+    env_var = _ENV_MAP.get(backend, "NANOBOT_API_KEY")
+
+    def resolve_key(cfg_key: str | None) -> str | None:
+        # Env var takes precedence over config (config may be read by agent via tools)
+        env_key = os.environ.get(env_var) if env_var else None
+        if env_key:
+            return env_key
+        generic_key = os.environ.get("NANOBOT_API_KEY")
+        if generic_key:
+            return generic_key
+        return cfg_key
+
+    # --- validation ---
+    if backend == "azure_openai":
+        if not p or not (p.api_key or os.environ.get(env_var)) or not p.api_base:
+            _console.print("[red]Error: Azure OpenAI requires api_key and api_base.[/red]")
+            _console.print("Set api_key via AZURE_OPENAI_API_KEY env var or config.")
+            _console.print("Set api_base in ~/.nanobot/config.json under providers.azure_openai section")
+            raise SystemExit(1)
+    elif backend == "openai_compat" and not model.startswith("bedrock/"):
+        needs_key = not (p and p.api_key) and not os.environ.get(env_var)
+        exempt = p and p.api_base and "localhost" in p.api_base
+        if needs_key and not exempt:
+            _console.print("[red]Error: No API key configured.[/red]")
+            _console.print("Set one via environment variable (e.g. OPENAI_API_KEY) or")
+            _console.print("in ~/.nanobot/config.json under providers section.")
+            raise SystemExit(1)
+
+    # --- instantiation by backend ---
+    if backend == "openai_codex":
+        from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+        provider = OpenAICodexProvider(default_model=model)
+    elif backend == "azure_openai":
+        from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
+        provider = AzureOpenAIProvider(
+            api_key=resolve_key(p.api_key),
+            api_base=p.api_base,
+            default_model=model,
+        )
+    elif backend == "anthropic":
+        from nanobot.providers.anthropic_provider import AnthropicProvider
+        provider = AnthropicProvider(
+            api_key=resolve_key(p.api_key if p else None),
+            api_base=config.get_api_base(model),
+            default_model=model,
+            extra_headers=p.extra_headers if p else None,
+        )
+    else:
+        from nanobot.providers.openai_compat_provider import OpenAICompatProvider
+        provider = OpenAICompatProvider(
+            api_key=resolve_key(p.api_key if p else None),
+            api_base=config.get_api_base(model),
+            default_model=model,
+            extra_headers=p.extra_headers if p else None,
+            spec=spec,
+        )
+
+    defaults = config.agents.defaults
+    provider.generation = GenerationSettings(
+        temperature=defaults.temperature,
+        max_tokens=defaults.max_tokens,
+        reasoning_effort=defaults.reasoning_effort,
+    )
+    return provider
 
 
 async def build_gateway(
