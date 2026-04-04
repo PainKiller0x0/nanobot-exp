@@ -105,11 +105,14 @@ class ShadowEngine:
         )
 
         # 启动 shadow gateway (待机)
-        shadow_proc = await self._spawn_gateway(self._shadow_port, is_shadow=True)
+        # NOTE: shadow.py 独立进程已经在监听 shadow_port.
+        # 启动时不需要 spawn gateway subprocess——failover 时 shadow.py 自己会 spawn。
+        # 避免重复处理 QQ 消息，这里不启动 shadow gateway subprocess。
+        # shadow_proc = await self._spawn_gateway(self._shadow_port, is_shadow=True)
         self._shadow_gateway = GatewayProcess(
             name="shadow",
             port=self._shadow_port,
-            process=shadow_proc,
+            process=None,
             is_shadow=True
         )
 
@@ -165,9 +168,9 @@ class ShadowEngine:
             gateway_ws = self._slots.current.workspace
 
         env = {**_os.environ}
-        env["ARK_SLOT_WORKSPACE"] = str(gateway_ws)
-        logger.debug(f"{'Shadow' if is_shadow else 'Main'} gateway workspace: {gateway_ws}")
-
+        env["ARK_SLOT_WORKSPACE"] = str(self._slots.current.workspace)
+        label = "Shadow" if is_shadow else "Main"
+        logger.debug(f"{label} gateway workspace: {self._slots.current.workspace}")
         proc = await asyncio.create_subprocess_exec(
             *args,
             env=env,
@@ -186,9 +189,12 @@ class ShadowEngine:
         return proc
 
     async def _ensure_shadow_alive(self):
-        """保活 shadow gateway：死了就重启"""
+        """保活 shadow gateway：死了就重启。
+        NOTE: shadow.py 独立进程已在监听 shadow_port，gateway subprocess
+        只在 failover 时由 shadow.py 自己启动，这里不再管理。
+        """
         if not self._shadow_gateway or not self._shadow_gateway.process:
-            return
+            return  # shadow gateway subprocess 不再启动
         try:
             await asyncio.wait_for(self._shadow_gateway.process.wait(), timeout=0.1)
         except asyncio.TimeoutError:

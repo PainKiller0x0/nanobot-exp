@@ -74,7 +74,7 @@ def start(
 
     def _port_available(port: int) -> bool:
         try:
-            with socket.create_server(("localhost", port), reuse_addr=True):
+            with socket.create_server(("localhost", port), ):
                 return True
         except OSError:
             return False

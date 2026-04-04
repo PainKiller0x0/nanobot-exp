@@ -338,10 +338,10 @@ class AgentLoop:
             build_messages=self.context.build_messages,
             get_tool_definitions=self.tools.get_definitions,
             max_completion_tokens=provider.generation.max_tokens,
-            compaction_threshold=compaction_config.threshold,
-            compaction_target=compaction_config.target,
-            preserve_recent=compaction_config.preserve_recent,
-            safety_buffer=compaction_config.safety_buffer,
+            compaction_threshold=0.75,
+            compaction_target=0.35,
+            preserve_recent=4,
+            safety_buffer=1024,
         )
         self._register_default_tools()
         self.commands = CommandRouter()
