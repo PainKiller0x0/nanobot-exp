@@ -148,10 +148,10 @@ class ShadowEngine:
         import os as _os
 
         if is_shadow:
-            # Shadow gateway: 走独立入口 ark_entry/shadow.py，不加载 nanobot 包
+            # Shadow gateway: 走独立入口 ark/shadow.py（独立模块，不依赖 nanobot 包）
             import nanobot
             nanobot_root = Path(nanobot.__file__).parent.parent
-            shadow_entry = nanobot_root / "ark_entry" / "shadow.py"
+            shadow_entry = nanobot_root / "ark" / "shadow.py"
             args = [sys.executable, str(shadow_entry), "--port", str(port)]
             pid_path = NANOBOT_ROOT / "gateway_shadow.pid"
             args.extend(["--pid-file", str(pid_path)])
