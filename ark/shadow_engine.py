@@ -85,8 +85,6 @@ class ShadowEngine:
         # 记录 main gateway 最近一次 spawn 时间，用于启动缓冲期（不健康检查）
         self._main_spawn_time: float = 0.0
 
-        self._health_check_task: Optional[asyncio.Task] = None
-        self._shutdown = False
 
     # ── 生命周期 ────────────────────────────────────────────────────────
 
@@ -118,8 +116,6 @@ class ShadowEngine:
 
         self._main_is_active = True
 
-        # 启动健康检查循环
-        self._health_check_task = asyncio.create_task(self._health_check_loop())
 
         logger.info("ShadowEngine started")
 
@@ -127,8 +123,6 @@ class ShadowEngine:
         """停止所有 gateway 子进程"""
         self._shutdown = True
 
-        if self._health_check_task:
-            self._health_check_task.cancel()
 
         for gw in (self._main_gateway, self._shadow_gateway):
             if gw and gw.process:
@@ -182,87 +176,6 @@ class ShadowEngine:
             f"Spawned {'shadow' if is_shadow else 'main'} gateway "
             f"(pid={proc.pid}, port={port})"
         )
-
-        # subprocess 启动成功即返回，不等待就绪
-        # 健康检查循环负责检测实际就绪状态（TCP / PID 文件）
-        # 这样 main 慢启动不会被 kill，shadow 也有充足时间准备
-        return proc
-
-    async def _ensure_shadow_alive(self):
-        """保活 shadow gateway：死了就重启。
-        NOTE: shadow.py 独立进程已在监听 shadow_port，gateway subprocess
-        只在 failover 时由 shadow.py 自己启动，这里不再管理。
-        """
-        if not self._shadow_gateway or not self._shadow_gateway.process:
-            return  # shadow gateway subprocess 不再启动
-        try:
-            await asyncio.wait_for(self._shadow_gateway.process.wait(), timeout=0.1)
-        except asyncio.TimeoutError:
-            return  # shadow 活着
-        # shadow 已死，重启
-        logger.warning("Shadow gateway died, restarting")
-        proc = await self._spawn_gateway(self._shadow_port, is_shadow=True)
-        self._shadow_gateway.process = proc
-
-    # ── 健康检查 ────────────────────────────────────────────────────────
-
-    async def _health_check_loop(self):
-        """健康检查循环"""
-        while not self._shutdown:
-            try:
-                if self._main_is_active:
-                    await self._check_main_health()
-                    # 保活 shadow gateway
-                    await self._ensure_shadow_alive()
-            except Exception as e:
-                logger.error(f"Health check error: {e}")
-
-            await asyncio.sleep(self._check_interval)
-
-    async def _check_main_health(self):
-        """检查 main gateway 健康状态（进程 + session 新鲜度）"""
-        if not self._main_gateway or not self._main_gateway.process:
-            return
-
-        proc = self._main_gateway.process
-
-        # 启动缓冲期：main gateway 需要时间初始化（写 PID 文件、连接 QQ 等）
-        # 前 60 秒内不做健康检查，避免误判慢启动为故障
-        startup_grace = 60.0
-        elapsed = time.monotonic() - self._main_spawn_time
-        if elapsed < startup_grace:
-            logger.debug(f"Main gateway startup grace: {elapsed:.1f}s / {startup_grace:.0f}s")
-            return
-
-        # 检查进程是否存活
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=0.01)  # 非阻塞
-            logger.warning(f"Main gateway exited with code {proc.returncode}")
-            await self._failover_to_shadow()
-            return
-        except asyncio.TimeoutError:
-            pass  # 进程还在运行
-
-        # 检查 PID 文件心跳（nanobot gateway 是 QQ bot，不绑定 TCP 端口）
-        pid_file = NANOBOT_ROOT / "gateway_main.pid"
-        if not pid_file.exists():
-            logger.warning("Main gateway PID file missing")
-            await self._failover_to_shadow()
-            return
-
-        try:
-            pid = int(pid_file.read_text().strip())
-            if pid != proc.pid:
-                logger.warning(f"Main gateway PID mismatch: expected {proc.pid}, got {pid}")
-                await self._failover_to_shadow()
-                return
-            import os as _os
-            _os.kill(pid, 0)  # 确认进程存在
-        except (ValueError, FileNotFoundError, ProcessLookupError):
-            logger.warning("Main gateway PID file invalid or process dead")
-            await self._failover_to_shadow()
-            return
-
         # 检查 session 文件新鲜度
         if not _is_session_fresh(SESSION_MAX_AGE):
             logger.warning("Main gateway session not fresh")
