@@ -10,6 +10,7 @@ from typing import Any
 from loguru import logger
 
 from nanobot.config.paths import get_legacy_sessions_dir
+from nanobot.session.db_store import SessionStore
 from nanobot.utils.helpers import ensure_dir, safe_filename
 
 
@@ -130,7 +131,8 @@ class SessionManager:
     """
     Manages conversation sessions.
 
-    Sessions are stored as JSONL files in the sessions directory.
+    Primary storage: SQLite (fast, indexed).
+    Fallback: JSONL files (JSONL is also kept as append-only backup on write).
     """
 
     def __init__(self, workspace: Path):
@@ -138,6 +140,7 @@ class SessionManager:
         self.sessions_dir = ensure_dir(self.workspace / "sessions")
         self.legacy_sessions_dir = get_legacy_sessions_dir()
         self._cache: dict[str, Session] = {}
+        self._db = SessionStore(workspace / "sessions.db")
 
     def _get_session_path(self, key: str) -> Path:
         """Get the file path for a session."""
@@ -170,7 +173,27 @@ class SessionManager:
         return session
 
     def _load(self, key: str) -> Session | None:
-        """Load a session from disk."""
+        """Load a session. Tries SQLite first, falls back to JSONL."""
+        # Try SQLite first
+        if self._db.available:
+            result = self._db.load_session(key)
+            if result is not None:
+                meta, messages = result
+                created_at = None
+                if meta.get("created_at"):
+                    try:
+                        created_at = datetime.fromisoformat(meta["created_at"])
+                    except Exception:
+                        pass
+                return Session(
+                    key=key,
+                    messages=messages,
+                    created_at=created_at or datetime.now(),
+                    metadata=meta.get("metadata", {}),
+                    last_consolidated=meta.get("last_consolidated", 0),
+                )
+
+        # Fall back to JSONL
         path = self._get_session_path(key)
         if not path.exists():
             legacy_path = self._get_legacy_session_path(key)
@@ -217,21 +240,34 @@ class SessionManager:
             return None
 
     def save(self, session: Session) -> None:
-        """Save a session to disk."""
-        path = self._get_session_path(session.key)
+        """Save a session to SQLite (primary) + JSONL (append-only backup)."""
+        metadata_line = {
+            "_type": "metadata",
+            "key": session.key,
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+            "metadata": session.metadata,
+            "last_consolidated": session.last_consolidated
+        }
 
-        with open(path, "w", encoding="utf-8") as f:
-            metadata_line = {
-                "_type": "metadata",
-                "key": session.key,
-                "created_at": session.created_at.isoformat(),
-                "updated_at": session.updated_at.isoformat(),
-                "metadata": session.metadata,
-                "last_consolidated": session.last_consolidated
-            }
-            f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
-            for msg in session.messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        # Write to SQLite (primary)
+        meta_for_db = {
+            "created_at": metadata_line["created_at"],
+            "updated_at": metadata_line["updated_at"],
+            "metadata": metadata_line["metadata"],
+            "last_consolidated": metadata_line["last_consolidated"],
+        }
+        self._db.save_session(session.key, meta_for_db, session.messages)
+
+        # JSONL: append-only backup (don't overwrite)
+        path = self._get_session_path(session.key)
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
+                for msg in session.messages:
+                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning("JSONL append failed for {}: {}", session.key, e)
 
         self._cache[session.key] = session
 
@@ -242,27 +278,37 @@ class SessionManager:
     def list_sessions(self) -> list[dict[str, Any]]:
         """
         List all sessions.
-
-        Returns:
-            List of session info dicts.
         """
-        sessions = []
+        sessions: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
 
+        # Collect from cache
+        for key in self._cache:
+            session = self._cache[key]
+            sessions.append({
+                "key": session.key,
+                "updated_at": session.updated_at.isoformat(),
+                "message_count": len(session.messages),
+            })
+            seen_keys.add(key)
+
+        # Collect from JSONL
         for path in self.sessions_dir.glob("*.jsonl"):
+            safe_key = path.stem
+            if safe_key in seen_keys:
+                continue
             try:
-                # Read just the metadata line
                 with open(path, encoding="utf-8") as f:
                     first_line = f.readline().strip()
-                    if first_line:
-                        data = json.loads(first_line)
-                        if data.get("_type") == "metadata":
-                            key = data.get("key") or path.stem.replace("_", ":", 1)
-                            sessions.append({
-                                "key": key,
-                                "created_at": data.get("created_at"),
-                                "updated_at": data.get("updated_at"),
-                                "path": str(path)
-                            })
+                    if not first_line:
+                        continue
+                    data = json.loads(first_line)
+                    if data.get("_type") == "metadata":
+                        sessions.append({
+                            "key": safe_key.replace("_", ":"),
+                            "updated_at": data.get("updated_at", ""),
+                            "message_count": sum(1 for _ in f) if False else 0,
+                        })
             except Exception:
                 continue
 
