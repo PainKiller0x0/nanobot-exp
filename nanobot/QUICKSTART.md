@@ -8,6 +8,10 @@
 
 ```bash
 # 克隆本仓库（开发模式）
+# Gitee (国内推荐)
+git clone https://gitee.com/painkiller0x0/nanobot.git
+
+# GitHub (海外镜像)
 git clone https://github.com/PainKiller0x0/nanobot-exp.git
 cd nanobot
 pip install -e .

@@ -61,6 +61,10 @@
 
 ```bash
 # 1. Clone
+# Gitee (国内推荐)
+git clone https://gitee.com/painkiller0x0/nanobot.git
+
+# GitHub (海外镜像)
 git clone https://github.com/PainKiller0x0/nanobot-exp.git
 cd nanobot-exp
 
