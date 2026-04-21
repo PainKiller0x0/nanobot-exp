@@ -36,3 +36,9 @@ source ~/.nanobot/extensions.env
 
 - Systemd/shell startup: `source ~/.nanobot/extensions.env` before running nanobot.
 - Docker Compose: add this file as `env_file` or copy exports into `environment`.
+
+## Split principle
+
+- Keep core runtime files in `nanobot/` as close to upstream as possible.
+- Keep custom logic in an external extensions repository.
+- Connect core and custom logic at deployment time via `scripts/install_extentions.sh`.
