@@ -13,3 +13,12 @@ export NANOBOT_EXTENSION_MODULES=extensions.reflexio
 ```
 
 When unset, nanobot core runs without loading any external extension logic.
+## Provider failover plugin
+
+To enable provider-side 529 failover:
+
+`ash
+export NANOBOT_PROVIDER_FAILOVER_MODULE=extensions.provider_failover
+`
+
+It reads existing failover settings from NANOBOT_FAILOVER_SETTINGS_URL and related NANOBOT_FALLBACK_* env vars.

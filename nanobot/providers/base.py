@@ -1,10 +1,11 @@
 """Base LLM provider interface."""
 
 import asyncio
-import re
+import importlib
+import inspect
 import json
 import os
-import time
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -12,8 +13,9 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 
-import httpx
 from loguru import logger
+
+from nanobot.utils.helpers import image_placeholder_text
 
 
 @dataclass
@@ -52,13 +54,14 @@ class LLMResponse:
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
     finish_reason: str = "stop"
     usage: dict[str, int] = field(default_factory=dict)
-    retry_after: float | None = None
+    retry_after: float | None = None  # Provider supplied retry wait in seconds.
     reasoning_content: str | None = None  # Kimi, DeepSeek-R1, MiMo etc.
     thinking_blocks: list[dict] | None = None  # Anthropic extended thinking
+    # Structured error metadata used by retry policy when finish_reason == "error".
     error_status_code: int | None = None
-    error_kind: str | None = None
-    error_type: str | None = None
-    error_code: str | None = None
+    error_kind: str | None = None  # e.g. "timeout", "connection"
+    error_type: str | None = None  # Provider/type semantic, e.g. insufficient_quota.
+    error_code: str | None = None  # Provider/code semantic, e.g. rate_limit_exceeded.
     error_retry_after_s: float | None = None
     error_should_retry: bool | None = None
 
@@ -67,29 +70,29 @@ class LLMResponse:
         """Check if response contains tool calls."""
         return len(self.tool_calls) > 0
 
+    @property
+    def should_execute_tools(self) -> bool:
+        """Tools execute only when has_tool_calls AND finish_reason is ``tool_calls`` / ``stop``.
+        Blocks gateway-injected calls under ``refusal`` / ``content_filter`` / ``error`` (#3220)."""
+        if not self.has_tool_calls:
+            return False
+        return self.finish_reason in ("tool_calls", "stop")
+
 
 @dataclass(frozen=True)
 class GenerationSettings:
-    """Default generation parameters for LLM calls.
-
-    Stored on the provider so every call site inherits the same defaults
-    without having to pass temperature / max_tokens / reasoning_effort
-    through every layer.  Individual call sites can still override by
-    passing explicit keyword arguments to chat() / chat_with_retry().
-    """
+    """Default generation settings."""
 
     temperature: float = 0.7
     max_tokens: int = 4096
     reasoning_effort: str | None = None
 
 
+_SYNTHETIC_USER_CONTENT = "(conversation continued)"
+
+
 class LLMProvider(ABC):
-    """
-    Abstract base class for LLM providers.
-    
-    Implementations should handle the specifics of each provider's API
-    while maintaining a consistent interface.
-    """
+    """Base class for LLM providers."""
 
     _CHAT_RETRY_DELAYS = (1, 2, 4)
     _PERSISTENT_MAX_DELAY = 60
@@ -162,14 +165,66 @@ class LLMProvider(ABC):
         self.api_key = api_key
         self.api_base = api_base
         self.generation: GenerationSettings = GenerationSettings()
-        self._disable_failover: bool = False
-        self._fallback_active_until: float = 0.0
-        self._fallback_consecutive_529: int = 0
-        self._fallback_settings_cache: dict[str, Any] | None = None
-        self._fallback_settings_cache_at: float = 0.0
-        self._fallback_provider: Any | None = None
-        self._fallback_provider_sig: tuple[str, str, str] | None = None
-        self._fallback_lock = asyncio.Lock()
+        self._failover_plugin = self._load_failover_plugin()
+
+    @staticmethod
+    def _load_failover_plugin():
+        module_name = os.environ.get("NANOBOT_PROVIDER_FAILOVER_MODULE", "").strip()
+        if not module_name:
+            return None
+        try:
+            return importlib.import_module(module_name)
+        except Exception:
+            logger.exception("Failed to load provider failover plugin: {}", module_name)
+            return None
+
+    async def _maybe_failover(
+        self,
+        *,
+        phase: str,
+        stream: bool,
+        response: LLMResponse | None = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        model: str | None,
+        max_tokens: Any,
+        temperature: Any,
+        reasoning_effort: Any,
+        tool_choice: str | dict[str, Any] | None,
+        retry_mode: str,
+        on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+    ) -> LLMResponse | None:
+        plugin = self._failover_plugin
+        if plugin is None:
+            return None
+        handler = getattr(plugin, "maybe_failover", None)
+        if not callable(handler):
+            return None
+        try:
+            result = handler(
+                provider=self,
+                phase=phase,
+                stream=stream,
+                response=response,
+                messages=messages,
+                tools=tools,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                tool_choice=tool_choice,
+                retry_mode=retry_mode,
+                on_retry_wait=on_retry_wait,
+                on_content_delta=on_content_delta,
+            )
+            if inspect.isawaitable(result):
+                result = await result
+            if isinstance(result, LLMResponse):
+                return result
+        except Exception:
+            logger.exception("Provider failover plugin error (phase={} stream={})", phase, stream)
+        return None
 
     @staticmethod
     def _sanitize_empty_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -238,12 +293,14 @@ class LLMProvider(ABC):
         """Return cache marker indices: builtin/MCP boundary and tail index."""
         if not tools:
             return []
+
         tail_idx = len(tools) - 1
         last_builtin_idx: int | None = None
         for i in range(tail_idx, -1, -1):
             if not cls._tool_name(tools[i]).startswith("mcp_"):
                 last_builtin_idx = i
                 break
+
         ordered_unique: list[int] = []
         for idx in (last_builtin_idx, tail_idx):
             if idx is not None and idx not in ordered_unique:
@@ -277,7 +334,7 @@ class LLMProvider(ABC):
     ) -> LLMResponse:
         """
         Send a chat completion request.
-        
+
         Args:
             messages: List of message dicts with 'role' and 'content'.
             tools: Optional list of tool definitions.
@@ -285,7 +342,7 @@ class LLMProvider(ABC):
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
             tool_choice: Tool selection strategy ("auto", "required", or specific tool dict).
-        
+
         Returns:
             LLMResponse with content and/or tool calls.
         """
@@ -295,6 +352,25 @@ class LLMProvider(ABC):
     def _is_transient_error(cls, content: str | None) -> bool:
         err = (content or "").lower()
         return any(marker in err for marker in cls._TRANSIENT_ERROR_MARKERS)
+
+    @classmethod
+    def _is_transient_response(cls, response: LLMResponse) -> bool:
+        """Prefer structured error metadata, fallback to text markers for legacy providers."""
+        if response.error_should_retry is not None:
+            return bool(response.error_should_retry)
+
+        if response.error_status_code is not None:
+            status = int(response.error_status_code)
+            if status == 429:
+                return cls._is_retryable_429_response(response)
+            if status in cls._RETRYABLE_STATUS_CODES or status >= 500:
+                return True
+
+        kind = (response.error_kind or "").strip().lower()
+        if kind in cls._TRANSIENT_ERROR_KINDS:
+            return True
+
+        return cls._is_transient_error(response.content)
 
     @staticmethod
     def _normalize_error_token(value: Any) -> str | None:
@@ -319,58 +395,49 @@ class LLMProvider(ABC):
                     data = parsed
         if not isinstance(data, dict):
             return None, None
+
         error_obj = data.get("error")
         type_value = data.get("type")
         code_value = data.get("code")
         if isinstance(error_obj, dict):
             type_value = error_obj.get("type") or type_value
             code_value = error_obj.get("code") or code_value
+
         return cls._normalize_error_token(type_value), cls._normalize_error_token(code_value)
 
     @classmethod
     def _is_retryable_429_response(cls, response: LLMResponse) -> bool:
         type_token = cls._normalize_error_token(response.error_type)
         code_token = cls._normalize_error_token(response.error_code)
-        semantic_tokens = {token for token in (type_token, code_token) if token is not None}
+        semantic_tokens = {
+            token for token in (type_token, code_token)
+            if token is not None
+        }
         if any(token in cls._NON_RETRYABLE_429_ERROR_TOKENS for token in semantic_tokens):
             return False
+
         content = (response.content or "").lower()
         if any(marker in content for marker in cls._NON_RETRYABLE_429_TEXT_MARKERS):
             return False
+
         if any(token in cls._RETRYABLE_429_ERROR_TOKENS for token in semantic_tokens):
             return True
         if any(marker in content for marker in cls._RETRYABLE_429_TEXT_MARKERS):
             return True
+        # Unknown 429 defaults to WAIT+retry.
         return True
-
-    @classmethod
-    def _is_transient_response(cls, response: LLMResponse) -> bool:
-        if response.error_should_retry is not None:
-            return bool(response.error_should_retry)
-        if response.error_status_code is not None:
-            status = int(response.error_status_code)
-            if status == 429:
-                return cls._is_retryable_429_response(response)
-            if status in cls._RETRYABLE_STATUS_CODES or status >= 500:
-                return True
-        kind = (response.error_kind or "").strip().lower()
-        if kind in cls._TRANSIENT_ERROR_KINDS:
-            return True
-        return cls._is_transient_error(response.content)
-
-    @classmethod
-    def _extract_retry_after_from_response(cls, response: LLMResponse) -> float | None:
-        if response.error_retry_after_s is not None and response.error_retry_after_s > 0:
-            return response.error_retry_after_s
-        if response.retry_after is not None and response.retry_after > 0:
-            return response.retry_after
-        return cls._extract_retry_after(response.content)
 
     @staticmethod
     def _enforce_role_alternation(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Merge consecutive same-role messages and drop trailing assistant messages."""
+        """Merge consecutive same-role messages and drop trailing assistant messages.
+
+        Some providers (OpenAI-compat, Azure, vLLM, Ollama, etc.) reject requests
+        where the last message is 'assistant' (prefill not supported) or two
+        consecutive non-system messages share the same role.
+        """
         if not messages:
             return messages
+
         merged: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role")
@@ -398,9 +465,15 @@ class LLMProvider(ABC):
                     merged[-1] = dict(msg)
             else:
                 merged.append(dict(msg))
+
         last_popped = None
         while merged and merged[-1].get("role") == "assistant":
             last_popped = merged.pop()
+
+        # If removing trailing assistant messages left only system messages,
+        # the request would be invalid for most providers (e.g. Zhipu/GLM
+        # error 1214).  Recover by converting the last popped assistant
+        # message to a user message so the LLM can still see the content.
         if (
             merged
             and last_popped is not None
@@ -409,6 +482,18 @@ class LLMProvider(ABC):
             recovered = dict(last_popped)
             recovered["role"] = "user"
             merged.append(recovered)
+
+        # Safety net: ensure the first non-system message is not a bare
+        # ``assistant`` message.  Providers like GLM reject system→assistant
+        # with error 1214.  This can happen when upstream truncation (e.g.
+        # _snip_history) drops the only user message.  Insert a synthetic
+        # user message to keep the sequence valid.
+        for i, msg in enumerate(merged):
+            if msg.get("role") != "system":
+                if msg.get("role") == "assistant" and not msg.get("tool_calls"):
+                    merged.insert(i, {"role": "user", "content": _SYNTHETIC_USER_CONTENT})
+                break
+
         return merged
 
     @staticmethod
@@ -423,7 +508,7 @@ class LLMProvider(ABC):
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "image_url":
                         path = (b.get("_meta") or {}).get("path", "")
-                        placeholder = f"[image: {path}]" if path else "[image omitted]"
+                        placeholder = image_placeholder_text(path, empty="[image omitted]")
                         new_content.append({"type": "text", "text": placeholder})
                         found = True
                     else:
@@ -432,6 +517,26 @@ class LLMProvider(ABC):
             else:
                 result.append(msg)
         return result if found else None
+
+    @staticmethod
+    def _strip_image_content_inplace(messages: list[dict[str, Any]]) -> bool:
+        """Replace image_url blocks with text placeholder *in-place*.
+
+        Mutates the content lists of the original message dicts so that
+        callers holding references to those dicts also see the stripped
+        version.
+        """
+        found = False
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for i, b in enumerate(content):
+                    if isinstance(b, dict) and b.get("type") == "image_url":
+                        path = (b.get("_meta") or {}).get("path", "")
+                        placeholder = image_placeholder_text(path, empty="[image omitted]")
+                        content[i] = {"type": "text", "text": placeholder}
+                        found = True
+        return found
 
     async def _safe_chat(self, **kwargs: Any) -> LLMResponse:
         """Call chat() and convert unexpected exceptions to error responses."""
@@ -478,47 +583,147 @@ class LLMProvider(ABC):
         except Exception as exc:
             return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
 
-    @classmethod
-    def _is_529_overload_error(cls, content: str | None) -> bool:
-        text = (content or "").lower()
-        return (
-            " 529" in text
-            or "\"529\"" in text
-            or "'529'" in text
-            or "http_code" in text and "529" in text
-            or "overloaded_error" in text
-            or "当前服务集群负载较高" in text
-            or "集群负载较高" in text
+    async def chat_stream_with_retry(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: object = _SENTINEL,
+        temperature: object = _SENTINEL,
+        reasoning_effort: object = _SENTINEL,
+        tool_choice: str | dict[str, Any] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        retry_mode: str = "standard",
+        on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
+    ) -> LLMResponse:
+        """Call chat_stream() with retry on transient provider failures."""
+        if max_tokens is self._SENTINEL or max_tokens is None:
+            max_tokens = self.generation.max_tokens
+        if temperature is self._SENTINEL or temperature is None:
+            temperature = self.generation.temperature
+        if reasoning_effort is self._SENTINEL:
+            reasoning_effort = self.generation.reasoning_effort
+
+        pre = await self._maybe_failover(
+            phase="before",
+            stream=True,
+            response=None,
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            tool_choice=tool_choice,
+            retry_mode=retry_mode,
+            on_retry_wait=on_retry_wait,
+            on_content_delta=on_content_delta,
         )
+        if pre is not None:
+            return pre
 
-    @staticmethod
-    def _parse_int(value: Any, default: int) -> int:
-        try:
-            return int(value)
-        except Exception:
-            return default
+        kw: dict[str, Any] = dict(
+            messages=messages, tools=tools, model=model,
+            max_tokens=max_tokens, temperature=temperature,
+            reasoning_effort=reasoning_effort, tool_choice=tool_choice,
+            on_content_delta=on_content_delta,
+        )
+        response = await self._run_with_retry(
+            self._safe_chat_stream,
+            kw,
+            messages,
+            retry_mode=retry_mode,
+            on_retry_wait=on_retry_wait,
+        )
+        post = await self._maybe_failover(
+            phase="after",
+            stream=True,
+            response=response,
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            tool_choice=tool_choice,
+            retry_mode=retry_mode,
+            on_retry_wait=on_retry_wait,
+            on_content_delta=on_content_delta,
+        )
+        return post if post is not None else response
 
-    @staticmethod
-    def _parse_bool(value: Any, default: bool) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        s = str(value).strip().lower()
-        if s in {"1", "true", "yes", "on"}:
-            return True
-        if s in {"0", "false", "no", "off"}:
-            return False
-        return default
+    async def chat_with_retry(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: object = _SENTINEL,
+        temperature: object = _SENTINEL,
+        reasoning_effort: object = _SENTINEL,
+        tool_choice: str | dict[str, Any] | None = None,
+        retry_mode: str = "standard",
+        on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
+    ) -> LLMResponse:
+        """Call chat() with retry on transient provider failures.
 
-    @classmethod
-    def _to_retry_seconds(cls, value: float, unit: str | None = None) -> float:
-        normalized_unit = (unit or "s").lower()
-        if normalized_unit in {"ms", "milliseconds"}:
-            return max(0.1, value / 1000.0)
-        if normalized_unit in {"m", "min", "minutes"}:
-            return max(0.1, value * 60.0)
-        return max(0.1, value)
+        Parameters default to ``self.generation`` when not explicitly passed,
+        so callers no longer need to thread temperature / max_tokens /
+        reasoning_effort through every layer. Explicit ``None`` is also
+        normalized to the provider's generation defaults so that downstream
+        ``_build_kwargs`` never sees ``None`` for ``max_tokens`` / ``temperature``
+        (which would crash ``max(1, max_tokens)``).
+        """
+        if max_tokens is self._SENTINEL or max_tokens is None:
+            max_tokens = self.generation.max_tokens
+        if temperature is self._SENTINEL or temperature is None:
+            temperature = self.generation.temperature
+        if reasoning_effort is self._SENTINEL:
+            reasoning_effort = self.generation.reasoning_effort
+
+        pre = await self._maybe_failover(
+            phase="before",
+            stream=False,
+            response=None,
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            tool_choice=tool_choice,
+            retry_mode=retry_mode,
+            on_retry_wait=on_retry_wait,
+        )
+        if pre is not None:
+            return pre
+
+        kw: dict[str, Any] = dict(
+            messages=messages, tools=tools, model=model,
+            max_tokens=max_tokens, temperature=temperature,
+            reasoning_effort=reasoning_effort, tool_choice=tool_choice,
+        )
+        response = await self._run_with_retry(
+            self._safe_chat,
+            kw,
+            messages,
+            retry_mode=retry_mode,
+            on_retry_wait=on_retry_wait,
+        )
+        post = await self._maybe_failover(
+            phase="after",
+            stream=False,
+            response=response,
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            tool_choice=tool_choice,
+            retry_mode=retry_mode,
+            on_retry_wait=on_retry_wait,
+        )
+        return post if post is not None else response
 
     @classmethod
     def _extract_retry_after(cls, content: str | None) -> float | None:
@@ -537,6 +742,15 @@ class LLMProvider(ABC):
             unit = match.group(2) if idx < 3 else "s"
             return cls._to_retry_seconds(value, unit)
         return None
+
+    @classmethod
+    def _to_retry_seconds(cls, value: float, unit: str | None = None) -> float:
+        normalized_unit = (unit or "s").lower()
+        if normalized_unit in {"ms", "milliseconds"}:
+            return max(0.1, value / 1000.0)
+        if normalized_unit in {"m", "min", "minutes"}:
+            return max(0.1, value * 60.0)
+        return max(0.1, value)
 
     @classmethod
     def _extract_retry_after_from_headers(cls, headers: Any) -> float | None:
@@ -580,324 +794,122 @@ class LLMProvider(ABC):
         remaining = (retry_at - datetime.now(retry_at.tzinfo)).total_seconds()
         return max(0.1, remaining)
 
-    async def _load_failover_settings(self) -> dict[str, Any] | None:
-        if self._disable_failover:
-            return None
+    @classmethod
+    def _extract_retry_after_from_response(cls, response: LLMResponse) -> float | None:
+        if response.error_retry_after_s is not None and response.error_retry_after_s > 0:
+            return response.error_retry_after_s
+        if response.retry_after is not None and response.retry_after > 0:
+            return response.retry_after
+        return cls._extract_retry_after(response.content)
 
-        now = time.time()
-        if self._fallback_settings_cache and now - self._fallback_settings_cache_at < 15:
-            return self._fallback_settings_cache
-
-        settings_url = os.environ.get("NANOBOT_FAILOVER_SETTINGS_URL", "").strip()
-        remote: dict[str, Any] = {}
-        if settings_url:
-            try:
-                async with httpx.AsyncClient(timeout=4.0) as client:
-                    resp = await client.get(settings_url)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        if isinstance(data, dict):
-                            remote = data
-            except Exception as e:
-                logger.debug("Failover settings fetch failed: {}", e)
-
-        api_base = (remote.get("api_base") if remote else None) or os.environ.get("NANOBOT_FALLBACK_API_BASE", "")
-        model = (remote.get("model") if remote else None) or os.environ.get("NANOBOT_FALLBACK_MODEL", "")
-        api_key = (remote.get("api_key") if remote else None) or os.environ.get("NANOBOT_FALLBACK_API_KEY", "")
-        enabled = self._parse_bool(
-            (remote.get("enabled") if remote else None) or os.environ.get("NANOBOT_FALLBACK_ENABLED"),
-            bool(api_base and model),
-        )
-        trigger_529 = self._parse_int(
-            (remote.get("trigger_529_count") if remote else None) or os.environ.get("NANOBOT_FALLBACK_TRIGGER_529_COUNT", 3),
-            3,
-        )
-        recover_seconds = self._parse_int(
-            (remote.get("recover_seconds") if remote else None) or os.environ.get("NANOBOT_FALLBACK_RECOVER_SECONDS", 900),
-            900,
-        )
-
-        if not enabled or not api_base or not model:
-            self._fallback_settings_cache = None
-            self._fallback_settings_cache_at = now
-            return None
-
-        cfg = {
-            "enabled": True,
-            "api_base": str(api_base).rstrip("/"),
-            "api_key": str(api_key or ""),
-            "model": str(model),
-            "trigger_529_count": max(1, trigger_529),
-            "recover_seconds": max(30, recover_seconds),
-        }
-        self._fallback_settings_cache = cfg
-        self._fallback_settings_cache_at = now
-        return cfg
-
-    async def _fallback_chat_with_retry(
+    async def _sleep_with_heartbeat(
         self,
+        delay: float,
         *,
-        settings: dict[str, Any],
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None,
-        model: str | None,
-        max_tokens: Any,
-        temperature: Any,
-        reasoning_effort: Any,
-        tool_choice: str | dict[str, Any] | None,
-        retry_mode: str | None = None,
-        **extra_kwargs: Any,
-    ) -> LLMResponse:
-        from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-
-        async with self._fallback_lock:
-            sig = (settings["api_base"], settings["api_key"], settings["model"])
-            if self._fallback_provider is None or self._fallback_provider_sig != sig:
-                p = OpenAICompatProvider(
-                    api_key=settings["api_key"] or None,
-                    api_base=settings["api_base"],
-                    default_model=settings["model"],
+        attempt: int,
+        persistent: bool,
+        on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        remaining = max(0.0, delay)
+        while remaining > 0:
+            if on_retry_wait:
+                kind = "persistent retry" if persistent else "retry"
+                await on_retry_wait(
+                    f"Model request failed, {kind} in {max(1, int(round(remaining)))}s "
+                    f"(attempt {attempt})."
                 )
-                p._disable_failover = True
-                p.generation = self.generation
-                self._fallback_provider = p
-                self._fallback_provider_sig = sig
-            fallback_provider = self._fallback_provider
+            chunk = min(remaining, self._RETRY_HEARTBEAT_CHUNK)
+            await asyncio.sleep(chunk)
+            remaining -= chunk
 
-        chosen_model = settings["model"] or model
-        return await fallback_provider.chat_with_retry(
-            messages=messages,
-            tools=tools,
-            model=chosen_model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            tool_choice=tool_choice,
-            retry_mode=retry_mode,
-            **extra_kwargs,
-        )
-
-    async def chat_stream_with_retry(
+    async def _run_with_retry(
         self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: object = _SENTINEL,
-        temperature: object = _SENTINEL,
-        reasoning_effort: object = _SENTINEL,
-        tool_choice: str | dict[str, Any] | None = None,
-        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
-        retry_mode: str | None = None,
-        **extra_kwargs: Any,
+        call: Callable[..., Awaitable[LLMResponse]],
+        kw: dict[str, Any],
+        original_messages: list[dict[str, Any]],
+        *,
+        retry_mode: str,
+        on_retry_wait: Callable[[str], Awaitable[None]] | None,
     ) -> LLMResponse:
-        """Call chat_stream() with retry on transient provider failures."""
-        if max_tokens is self._SENTINEL:
-            max_tokens = self.generation.max_tokens
-        if temperature is self._SENTINEL:
-            temperature = self.generation.temperature
-        if reasoning_effort is self._SENTINEL:
-            reasoning_effort = self.generation.reasoning_effort
-
-        failover = await self._load_failover_settings()
-        now = time.time()
-        if failover and now < self._fallback_active_until:
-            logger.warning(
-                "Failover active ({}s remaining): routing stream request to backup model '{}'",
-                int(self._fallback_active_until - now),
-                failover["model"],
-            )
-            fb = await self._fallback_chat_with_retry(
-                settings=failover,
-                messages=messages,
-                tools=tools,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                reasoning_effort=reasoning_effort,
-                tool_choice=tool_choice,
-                retry_mode=retry_mode,
-                **extra_kwargs,
-            )
-            if on_content_delta and fb.content:
-                await on_content_delta(fb.content)
-            return fb
-
-        kw: dict[str, Any] = dict(
-            messages=messages, tools=tools, model=model,
-            max_tokens=max_tokens, temperature=temperature,
-            reasoning_effort=reasoning_effort, tool_choice=tool_choice,
-            on_content_delta=on_content_delta,
-        )
-
-        for attempt, delay in enumerate(self._CHAT_RETRY_DELAYS, start=1):
-            response = await self._safe_chat_stream(**kw)
-
+        attempt = 0
+        delays = list(self._CHAT_RETRY_DELAYS)
+        persistent = retry_mode == "persistent"
+        last_response: LLMResponse | None = None
+        last_error_key: str | None = None
+        identical_error_count = 0
+        while True:
+            attempt += 1
+            response = await call(**kw)
             if response.finish_reason != "error":
-                self._fallback_consecutive_529 = 0
+                return response
+            last_response = response
+            error_key = ((response.content or "").strip().lower() or None)
+            if error_key and error_key == last_error_key:
+                identical_error_count += 1
+            else:
+                last_error_key = error_key
+                identical_error_count = 1 if error_key else 0
+
+            if not self._is_transient_response(response):
+                stripped = self._strip_image_content(original_messages)
+                if stripped is not None and stripped != kw["messages"]:
+                    logger.warning(
+                        "Non-transient LLM error with image content, retrying without images"
+                    )
+                    retry_kw = dict(kw)
+                    retry_kw["messages"] = stripped
+                    result = await call(**retry_kw)
+                    # Permanently strip images from the original messages so
+                    # subsequent iterations do not repeat the error-retry cycle.
+                    if result.finish_reason != "error":
+                        self._strip_image_content_inplace(original_messages)
+                    return result
                 return response
 
-            if not self._is_transient_error(response.content):
-                stripped = self._strip_image_content(messages)
-                if stripped is not None:
-                    logger.warning("Non-transient LLM error with image content, retrying without images")
-                    return await self._safe_chat_stream(**{**kw, "messages": stripped})
+            if persistent and identical_error_count >= self._PERSISTENT_IDENTICAL_ERROR_LIMIT:
+                logger.warning(
+                    "Stopping persistent retry after {} identical transient errors: {}",
+                    identical_error_count,
+                    (response.content or "")[:120].lower(),
+                )
+                if on_retry_wait:
+                    await on_retry_wait(
+                        f"Persistent retry stopped after {identical_error_count} identical errors."
+                    )
                 return response
+
+            if not persistent and attempt > len(delays):
+                logger.warning(
+                    "LLM request failed after {} retries, giving up: {}",
+                    attempt,
+                    (response.content or "")[:120].lower(),
+                )
+                if on_retry_wait:
+                    await on_retry_wait(
+                        f"Model request failed after {attempt} retries, giving up."
+                    )
+                break
+
+            base_delay = delays[min(attempt - 1, len(delays) - 1)]
+            delay = self._extract_retry_after_from_response(response) or base_delay
+            if persistent:
+                delay = min(delay, self._PERSISTENT_MAX_DELAY)
 
             logger.warning(
-                "LLM transient error (attempt {}/{}), retrying in {}s: {}",
-                attempt, len(self._CHAT_RETRY_DELAYS), delay,
+                "LLM transient error (attempt {}{}), retrying in {}s: {}",
+                attempt,
+                "+" if persistent and attempt > len(delays) else f"/{len(delays)}",
+                int(round(delay)),
                 (response.content or "")[:120].lower(),
             )
-            await asyncio.sleep(delay)
-
-        final = await self._safe_chat_stream(**kw)
-
-        if (
-            failover
-            and final.finish_reason == "error"
-            and self._is_529_overload_error(final.content)
-        ):
-            self._fallback_consecutive_529 += 1
-            trigger = int(failover.get("trigger_529_count") or 3)
-            if self._fallback_consecutive_529 >= trigger:
-                recover_seconds = int(failover.get("recover_seconds") or 900)
-                self._fallback_active_until = time.time() + recover_seconds
-                self._fallback_consecutive_529 = 0
-                logger.warning(
-                    "Primary model stream hit 529 {} times; switching to backup model '{}' for {}s",
-                    trigger,
-                    failover.get("model"),
-                    recover_seconds,
-                )
-                fallback_resp = await self._fallback_chat_with_retry(
-                    settings=failover,
-                    messages=messages,
-                    tools=tools,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    reasoning_effort=reasoning_effort,
-                    tool_choice=tool_choice,
-                    retry_mode=retry_mode,
-                    **extra_kwargs,
-                )
-                if fallback_resp.finish_reason != "error":
-                    if on_content_delta and fallback_resp.content:
-                        await on_content_delta(fallback_resp.content)
-                    return fallback_resp
-                logger.warning("Backup model stream request failed too, returning primary error response")
-
-        return final
-
-    async def chat_with_retry(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: object = _SENTINEL,
-        temperature: object = _SENTINEL,
-        reasoning_effort: object = _SENTINEL,
-        tool_choice: str | dict[str, Any] | None = None,
-        retry_mode: str | None = None,
-        **extra_kwargs: Any,
-    ) -> LLMResponse:
-        """Call chat() with retry on transient provider failures.
-
-        Parameters default to ``self.generation`` when not explicitly passed,
-        so callers no longer need to thread temperature / max_tokens /
-        reasoning_effort through every layer.
-        """
-        if max_tokens is self._SENTINEL:
-            max_tokens = self.generation.max_tokens
-        if temperature is self._SENTINEL:
-            temperature = self.generation.temperature
-        if reasoning_effort is self._SENTINEL:
-            reasoning_effort = self.generation.reasoning_effort
-
-        failover = await self._load_failover_settings()
-        now = time.time()
-        if failover and now < self._fallback_active_until:
-            logger.warning(
-                "Failover active ({}s remaining): routing request to backup model '{}'",
-                int(self._fallback_active_until - now),
-                failover["model"],
-            )
-            return await self._fallback_chat_with_retry(
-                settings=failover,
-                messages=messages,
-                tools=tools,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                reasoning_effort=reasoning_effort,
-                tool_choice=tool_choice,
-                retry_mode=retry_mode,
-                **extra_kwargs,
+            await self._sleep_with_heartbeat(
+                delay,
+                attempt=attempt,
+                persistent=persistent,
+                on_retry_wait=on_retry_wait,
             )
 
-        kw: dict[str, Any] = dict(
-            messages=messages, tools=tools, model=model,
-            max_tokens=max_tokens, temperature=temperature,
-            reasoning_effort=reasoning_effort, tool_choice=tool_choice,
-        )
-
-        for attempt, delay in enumerate(self._CHAT_RETRY_DELAYS, start=1):
-            response = await self._safe_chat(**kw)
-
-            if response.finish_reason != "error":
-                self._fallback_consecutive_529 = 0
-                return response
-
-            if not self._is_transient_error(response.content):
-                stripped = self._strip_image_content(messages)
-                if stripped is not None:
-                    logger.warning("Non-transient LLM error with image content, retrying without images")
-                    return await self._safe_chat(**{**kw, "messages": stripped})
-                return response
-
-            logger.warning(
-                "LLM transient error (attempt {}/{}), retrying in {}s: {}",
-                attempt, len(self._CHAT_RETRY_DELAYS), delay,
-                (response.content or "")[:120].lower(),
-            )
-            await asyncio.sleep(delay)
-
-        final = await self._safe_chat(**kw)
-
-        if (
-            failover
-            and final.finish_reason == "error"
-            and self._is_529_overload_error(final.content)
-        ):
-            self._fallback_consecutive_529 += 1
-            trigger = int(failover.get("trigger_529_count") or 3)
-            if self._fallback_consecutive_529 >= trigger:
-                recover_seconds = int(failover.get("recover_seconds") or 900)
-                self._fallback_active_until = time.time() + recover_seconds
-                self._fallback_consecutive_529 = 0
-                logger.warning(
-                    "Primary model hit 529 {} times; switching to backup model '{}' for {}s",
-                    trigger,
-                    failover.get("model"),
-                    recover_seconds,
-                )
-                fallback_resp = await self._fallback_chat_with_retry(
-                    settings=failover,
-                    messages=messages,
-                    tools=tools,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    reasoning_effort=reasoning_effort,
-                    tool_choice=tool_choice,
-                    retry_mode=retry_mode,
-                    **extra_kwargs,
-                )
-                if fallback_resp.finish_reason != "error":
-                    return fallback_resp
-                logger.warning("Backup model request failed too, returning primary error response")
-
-        return final
+        return last_response if last_response is not None else await call(**kw)
 
     @abstractmethod
     def get_default_model(self) -> str:
