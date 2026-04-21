@@ -22,3 +22,12 @@ export NANOBOT_PROVIDER_FAILOVER_MODULE=extensions.provider_failover
 `
 
 It reads existing failover settings from NANOBOT_FAILOVER_SETTINGS_URL and related NANOBOT_FALLBACK_* env vars.
+## QQ WeChat plugin
+
+To enable QQ WeChat sidecar handling:
+
+`ash
+export NANOBOT_QQ_WECHAT_MODULE=extensions.qq_wechat
+`
+
+It externalizes QQ WeChat grounded query handling and delivery ACK cache updates.

@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
+import inspect
 import json
 import mimetypes
 import os
@@ -267,6 +269,47 @@ class QQChannel(BaseChannel):
         self._chat_type_cache: dict[str, str] = {}
 
         self._media_root: Path = self._init_media_root()
+        self._qq_wechat_plugin = self._load_qq_wechat_plugin()
+
+    @staticmethod
+    def _load_qq_wechat_plugin():
+        module_name = os.environ.get("NANOBOT_QQ_WECHAT_MODULE", "").strip()
+        if not module_name:
+            return None
+        try:
+            return importlib.import_module(module_name)
+        except Exception:
+            logger.exception("Failed to load QQ wechat plugin: {}", module_name)
+            return None
+
+    async def _call_qq_wechat_plugin_async(self, method: str, **kwargs: Any) -> Any:
+        plugin = self._qq_wechat_plugin
+        if plugin is None:
+            return None
+        fn = getattr(plugin, method, None)
+        if not callable(fn):
+            return None
+        try:
+            result = fn(channel=self, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        except Exception:
+            logger.exception("QQ wechat plugin async error: method={}", method)
+            return None
+
+    def _call_qq_wechat_plugin_sync(self, method: str, **kwargs: Any) -> Any:
+        plugin = self._qq_wechat_plugin
+        if plugin is None:
+            return None
+        fn = getattr(plugin, method, None)
+        if not callable(fn):
+            return None
+        try:
+            return fn(channel=self, **kwargs)
+        except Exception:
+            logger.exception("QQ wechat plugin sync error: method={}", method)
+            return None
 
     # ---------------------------
     # Lifecycle
@@ -600,6 +643,16 @@ class QQChannel(BaseChannel):
         return any(hint in text for hint in _WECHAT_TITLE_HINTS) or "latest title" in lower or "latest article" in lower
 
     async def _try_handle_wechat_grounded(self, user_id: str, chat_id: str, content: str, message_id: str) -> bool:
+        plugin_result = await self._call_qq_wechat_plugin_async(
+            "try_handle_wechat_grounded",
+            user_id=user_id,
+            chat_id=chat_id,
+            content=content,
+            message_id=message_id,
+        )
+        if isinstance(plugin_result, bool):
+            return plugin_result
+
         if not self.is_allowed(user_id):
             return False
 
@@ -795,6 +848,17 @@ class QQChannel(BaseChannel):
             logger.warning("QQ yage delivery ack failed chat_id={} err={}", chat_id, e)
 
     def _extract_wechat_ack_marker(self, body: str) -> tuple[str, tuple[int, int] | None]:
+        plugin_result = self._call_qq_wechat_plugin_sync(
+            "extract_wechat_ack_marker",
+            body=body,
+        )
+        if (
+            isinstance(plugin_result, tuple)
+            and len(plugin_result) == 2
+            and isinstance(plugin_result[0], str)
+        ):
+            return plugin_result
+
         """Strip internal wechat ACK marker from body and return ack tuple."""
         text = body or ""
         m = _WECHAT_ACK_MARKER_RE.search(text)
@@ -808,6 +872,14 @@ class QQChannel(BaseChannel):
     async def _ack_wechat_delivery(
         self, ack: tuple[int, int] | None, chat_id: str
     ) -> None:
+        plugin_result = await self._call_qq_wechat_plugin_async(
+            "ack_wechat_delivery",
+            ack=ack,
+            chat_id=chat_id,
+        )
+        if plugin_result is True:
+            return
+
         """Update wechat sidecar cache only after QQ send has succeeded."""
         if not ack:
             return
