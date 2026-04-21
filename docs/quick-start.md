@@ -53,15 +53,28 @@ nanobot-exp recommends keeping custom features in a separate extension repo:
 ```bash
 scripts/install_extentions.sh \
   --repo git@github.com:YOUR_ORG/nanobot-extensions.git \
-  --ref main \
+  --ref v0.3.1 \
   --modules extensions.reflexio
 
 source ~/.nanobot/extensions.env
 ```
 
+Tips:
+
+- `--ref` supports branch/tag/commit.
+- The installer writes `~/.nanobot/extensions.lock` for rollback and auditing.
+
 Then start nanobot again.
 
-## 6. Useful Commands
+## 6. Fast Smoke Check
+
+Before push/deploy, run:
+
+```bash
+scripts/run_smoke.sh
+```
+
+## 7. Useful Commands
 
 ```bash
 nanobot --help
@@ -69,7 +82,7 @@ nanobot channels --help
 nanobot gateway --help
 ```
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 - Config error: validate JSON format in `~/.nanobot/config.json`.
 - Provider error: verify API key and provider/model match.

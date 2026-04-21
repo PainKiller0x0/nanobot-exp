@@ -31,18 +31,27 @@ nanobot agent
 
 ## External Extensions (Recommended)
 
-Use the glue installer:
+Use the glue installer and pin with tag/commit:
 
 ```bash
 scripts/install_extentions.sh \
   --repo git@github.com:YOUR_ORG/nanobot-extensions.git \
-  --ref main \
+  --ref v0.3.1 \
   --modules extensions.reflexio
 
 source ~/.nanobot/extensions.env
+cat ~/.nanobot/extensions.lock
 ```
 
 Then start nanobot as usual (CLI / service / docker).
+
+## Fast Regression Check
+
+Run the minimal smoke suite before push/deploy:
+
+```bash
+scripts/run_smoke.sh
+```
 
 ## Docs
 
@@ -57,7 +66,7 @@ Suggested workflow:
 ```bash
 git fetch official main
 git merge official/main
-# run regression tests
+scripts/run_smoke.sh
 ```
 
 ## Disclaimer

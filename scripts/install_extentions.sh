@@ -9,25 +9,30 @@ REF="main"
 DEST_ROOT="${HOME}/.nanobot/extensions-runtime"
 MODULES=""
 WRITE_ENV="${HOME}/.nanobot/extensions.env"
+LOCK_FILE="${HOME}/.nanobot/extensions.lock"
+WRITE_LOCK=true
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
   scripts/install_extentions.sh --repo <git_url_or_local_path> [options]
 
 Options:
   --repo <value>         Extension source (git URL or local path), required.
-  --ref <value>          Git ref to checkout when --repo is a Git URL. Default: main
+  --ref <value>          Git ref (branch/tag/commit). Default: main
   --dest <path>          Install root. Default: ~/.nanobot/extensions-runtime
   --modules <list>       Value for NANOBOT_EXTENSION_MODULES (comma-separated)
   --env-file <path>      Output env file path. Default: ~/.nanobot/extensions.env
+  --lock-file <path>     Write lock metadata. Default: ~/.nanobot/extensions.lock
+  --no-lock              Do not write lock metadata file
   -h, --help             Show this help
 
 Examples:
   scripts/install_extentions.sh --repo https://github.com/you/nanobot-extensions.git
-  scripts/install_extentions.sh --repo git@github.com:you/nanobot-extensions.git --ref dev
+  scripts/install_extentions.sh --repo git@github.com:you/nanobot-extensions.git --ref v0.3.1
+  scripts/install_extentions.sh --repo git@github.com:you/nanobot-extensions.git --ref 2f4c9b3
   scripts/install_extentions.sh --repo /opt/nanobot-extensions --modules extensions.reflexio
-EOF
+USAGE
 }
 
 while [[ $# -gt 0 ]]; do
@@ -37,6 +42,8 @@ while [[ $# -gt 0 ]]; do
     --dest) DEST_ROOT="${2:-}"; shift 2 ;;
     --modules) MODULES="${2:-}"; shift 2 ;;
     --env-file) WRITE_ENV="${2:-}"; shift 2 ;;
+    --lock-file) LOCK_FILE="${2:-}"; shift 2 ;;
+    --no-lock) WRITE_LOCK=false; shift 1 ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "Unknown argument: $1" >&2
@@ -56,20 +63,48 @@ mkdir -p "$(dirname "$WRITE_ENV")"
 SRC_DIR="$DEST_ROOT/src"
 
 is_git_url=false
-if [[ "$REPO_URL" =~ ^(https://|git@|ssh://) ]]; then
+if [[ "$REPO_URL" =~ ^(https://|http://|git@|ssh://|file://) ]]; then
   is_git_url=true
 fi
 
+resolve_git_ref() {
+  local target_ref="$1"
+
+  if git -C "$SRC_DIR" rev-parse --verify --quiet "origin/${target_ref}^{commit}" >/dev/null; then
+    git -C "$SRC_DIR" checkout --detach "origin/${target_ref}" >/dev/null
+    return 0
+  fi
+
+  if git -C "$SRC_DIR" rev-parse --verify --quiet "${target_ref}^{commit}" >/dev/null; then
+    git -C "$SRC_DIR" checkout --detach "${target_ref}" >/dev/null
+    return 0
+  fi
+
+  return 1
+}
+
 if $is_git_url; then
   if [[ -d "$SRC_DIR/.git" ]]; then
-    echo "[extensions] updating existing repo: $SRC_DIR"
-    git -C "$SRC_DIR" fetch --all --tags --prune
-    git -C "$SRC_DIR" checkout "$REF"
-    git -C "$SRC_DIR" reset --hard "origin/$REF" || true
-  else
+    CURRENT_ORIGIN="$(git -C "$SRC_DIR" remote get-url origin 2>/dev/null || true)"
+    if [[ "$CURRENT_ORIGIN" != "$REPO_URL" ]]; then
+      echo "[extensions] origin changed, re-cloning: $CURRENT_ORIGIN -> $REPO_URL"
+      rm -rf "$SRC_DIR"
+      git clone "$REPO_URL" "$SRC_DIR"
+    fi
+  fi
+
+  if [[ ! -d "$SRC_DIR/.git" ]]; then
     rm -rf "$SRC_DIR"
     echo "[extensions] cloning: $REPO_URL -> $SRC_DIR"
-    git clone --depth 1 --branch "$REF" "$REPO_URL" "$SRC_DIR"
+    git clone "$REPO_URL" "$SRC_DIR"
+  fi
+
+  echo "[extensions] fetching latest refs/tags"
+  git -C "$SRC_DIR" fetch --all --tags --prune
+
+  if ! resolve_git_ref "$REF"; then
+    echo "Error: cannot resolve ref '$REF' in $REPO_URL" >&2
+    exit 1
   fi
 else
   if [[ ! -d "$REPO_URL" ]]; then
@@ -86,10 +121,23 @@ if [[ ! -d "$SRC_DIR" ]]; then
   exit 1
 fi
 
+RESOLVED_COMMIT=""
+RESOLVED_DESC=""
+ACTUAL_REPO="$REPO_URL"
+if $is_git_url; then
+  RESOLVED_COMMIT="$(git -C "$SRC_DIR" rev-parse HEAD)"
+  RESOLVED_DESC="$(git -C "$SRC_DIR" describe --tags --always 2>/dev/null || true)"
+  ACTUAL_REPO="$(git -C "$SRC_DIR" remote get-url origin 2>/dev/null || echo "$REPO_URL")"
+fi
+
 # Optional editable install when extension repo is a Python package.
+# Fallback: keep going if pip install is blocked by system policy (PEP 668),
+# because PYTHONPATH wiring is still enough for runtime import.
 if [[ -f "$SRC_DIR/pyproject.toml" || -f "$SRC_DIR/setup.py" ]]; then
-  echo "[extensions] python package detected, running editable install"
-  python3 -m pip install -e "$SRC_DIR"
+  echo "[extensions] python package detected, trying editable install"
+  if ! python3 -m pip install -e "$SRC_DIR"; then
+    echo "[extensions] warning: editable install failed, continue with PYTHONPATH only" >&2
+  fi
 fi
 
 AUTO_PROVIDER_FAILOVER=""
@@ -107,8 +155,34 @@ fi
   if [[ -n "$MODULES" ]]; then
     printf 'export NANOBOT_EXTENSION_MODULES="%s"\n' "$MODULES"
   fi
+  printf 'export NANOBOT_EXTENSIONS_REPO="%s"\n' "$ACTUAL_REPO"
+  printf 'export NANOBOT_EXTENSIONS_REF="%s"\n' "$REF"
+  if [[ -n "$RESOLVED_COMMIT" ]]; then
+    printf 'export NANOBOT_EXTENSIONS_COMMIT="%s"\n' "$RESOLVED_COMMIT"
+  fi
+  if [[ -n "$RESOLVED_DESC" ]]; then
+    printf 'export NANOBOT_EXTENSIONS_VERSION="%s"\n' "$RESOLVED_DESC"
+  fi
 } > "$WRITE_ENV"
 
+if $WRITE_LOCK; then
+  mkdir -p "$(dirname "$LOCK_FILE")"
+  {
+    echo "# Generated by scripts/install_extentions.sh"
+    printf 'repo=%q\n' "$ACTUAL_REPO"
+    printf 'ref=%q\n' "$REF"
+    printf 'commit=%q\n' "$RESOLVED_COMMIT"
+    printf 'version=%q\n' "$RESOLVED_DESC"
+    printf 'installed_at=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$LOCK_FILE"
+fi
+
 echo "[extensions] done"
+if [[ -n "$RESOLVED_COMMIT" ]]; then
+  echo "[extensions] pinned to commit: $RESOLVED_COMMIT"
+fi
 echo "[extensions] source this file before starting nanobot:"
 echo "  source $WRITE_ENV"
+if $WRITE_LOCK; then
+  echo "[extensions] lock metadata written: $LOCK_FILE"
+fi
