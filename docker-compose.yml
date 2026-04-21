@@ -20,7 +20,6 @@ services:
       - TZ=Asia/Shanghai
       - NANOBOT_EXTENSION_MODULES=extensions.reflexio
       - NANOBOT_PROVIDER_FAILOVER_MODULE=extensions.provider_failover
-      - NANOBOT_QQ_WECHAT_MODULE=extensions.qq_wechat
       - REFLEXIO_URL=http://172.17.0.1:8081
       - NANOBOT_FAILOVER_SETTINGS_URL=http://150.158.121.88:8000/admin/failover
     networks:

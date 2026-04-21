@@ -1,6 +1,6 @@
 # Extensions
 
-This directory contains optional add-ons that are intentionally kept outside nanobot core.
+This directory contains optional add-ons intentionally kept outside nanobot core.
 
 ## Enable extensions
 
@@ -12,22 +12,14 @@ Example:
 export NANOBOT_EXTENSION_MODULES=extensions.reflexio
 ```
 
-When unset, nanobot core runs without loading any external extension logic.
+When unset, nanobot core runs without loading extension hooks.
+
 ## Provider failover plugin
 
 To enable provider-side 529 failover:
 
-`ash
+```bash
 export NANOBOT_PROVIDER_FAILOVER_MODULE=extensions.provider_failover
-`
+```
 
-It reads existing failover settings from NANOBOT_FAILOVER_SETTINGS_URL and related NANOBOT_FALLBACK_* env vars.
-## QQ WeChat plugin
-
-To enable QQ WeChat sidecar handling:
-
-`ash
-export NANOBOT_QQ_WECHAT_MODULE=extensions.qq_wechat
-`
-
-It externalizes QQ WeChat grounded query handling and delivery ACK cache updates.
+It reads failover settings from `NANOBOT_FAILOVER_SETTINGS_URL` and related `NANOBOT_FALLBACK_*` env vars.
