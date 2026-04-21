@@ -49,6 +49,16 @@ app = typer.Typer(
 console = Console()
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 
+class SafeFileHistory(FileHistory):
+    """FileHistory variant that tolerates lone surrogate input characters."""
+
+    @staticmethod
+    def _sanitize(text: str) -> str:
+        return text.encode("utf-8", errors="replace").decode("utf-8")
+
+    def store_string(self, string: str) -> None:
+        super().store_string(self._sanitize(string))
+
 # ---------------------------------------------------------------------------
 # CLI input: prompt_toolkit for editing, paste, history, and display
 # ---------------------------------------------------------------------------
@@ -112,7 +122,7 @@ def _init_prompt_session() -> None:
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
     _PROMPT_SESSION = PromptSession(
-        history=FileHistory(str(history_file)),
+        history=SafeFileHistory(str(history_file)),
         enable_open_in_editor=False,
         multiline=False,   # Enter submits (single line mode)
     )
