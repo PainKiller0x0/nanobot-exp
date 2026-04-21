@@ -1,7 +1,7 @@
 """CLI commands for nanobot."""
 
 import asyncio
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 
 import os
 import re
