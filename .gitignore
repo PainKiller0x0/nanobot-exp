@@ -97,3 +97,6 @@ temp/
 /docker-compose.slim.yml
 /docker-compose.reflexio.yml
 /docker-compose.runtime.yml
+
+# Runtime backup artifacts
+*.bak_pre_override
