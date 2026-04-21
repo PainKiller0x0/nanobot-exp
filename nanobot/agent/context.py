@@ -3,7 +3,6 @@
 import base64
 import mimetypes
 import platform
-import os
 
 from pathlib import Path
 from typing import Any
