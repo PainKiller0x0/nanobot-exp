@@ -11,10 +11,10 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Config
-from nanobot.utils.restart import consume_restart_notice_from_env, format_restart_completed_message
 
 # Retry delays for message sending (exponential backoff: 1s, 2s, 4s)
 _SEND_RETRY_DELAYS = (1, 2, 4)
+_SILENT_MARKER = "(NOOUTPUTKEEP_SILENT)"
 
 
 class ChannelManager:
@@ -39,8 +39,7 @@ class ChannelManager:
         """Initialize channels discovered via pkgutil scan + entry_points plugins."""
         from nanobot.channels.registry import discover_all
 
-        transcription_provider = self.config.channels.transcription_provider
-        transcription_key = self._resolve_transcription_key(transcription_provider)
+        groq_key = self.config.providers.groq.api_key
 
         for name, cls in discover_all().items():
             section = getattr(self.config.channels, name, None)
@@ -55,8 +54,7 @@ class ChannelManager:
                 continue
             try:
                 channel = cls(section, self.bus)
-                channel.transcription_provider = transcription_provider
-                channel.transcription_api_key = transcription_key
+                channel.transcription_api_key = groq_key
                 self.channels[name] = channel
                 logger.info("{} channel enabled", cls.display_name)
             except Exception as e:
@@ -64,26 +62,9 @@ class ChannelManager:
 
         self._validate_allow_from()
 
-    def _resolve_transcription_key(self, provider: str) -> str:
-        """Pick the API key for the configured transcription provider."""
-        try:
-            if provider == "openai":
-                return self.config.providers.openai.api_key
-            return self.config.providers.groq.api_key
-        except AttributeError:
-            return ""
-
     def _validate_allow_from(self) -> None:
         for name, ch in self.channels.items():
-            cfg = ch.config
-            if isinstance(cfg, dict):
-                if "allow_from" in cfg:
-                    allow = cfg.get("allow_from")
-                else:
-                    allow = cfg.get("allowFrom")
-            else:
-                allow = getattr(cfg, "allow_from", None)
-            if allow == []:
+            if getattr(ch.config, "allow_from", None) == []:
                 raise SystemExit(
                     f'Error: "{name}" has empty allowFrom (denies all). '
                     f'Set ["*"] to allow everyone, or add specific user IDs.'
@@ -111,27 +92,8 @@ class ChannelManager:
             logger.info("Starting {} channel...", name)
             tasks.append(asyncio.create_task(self._start_channel(name, channel)))
 
-        self._notify_restart_done_if_needed()
-
         # Wait for all to complete (they should run forever)
         await asyncio.gather(*tasks, return_exceptions=True)
-
-    def _notify_restart_done_if_needed(self) -> None:
-        """Send restart completion message when runtime env markers are present."""
-        notice = consume_restart_notice_from_env()
-        if not notice:
-            return
-        target = self.channels.get(notice.channel)
-        if not target:
-            return
-        asyncio.create_task(self._send_with_retry(
-            target,
-            OutboundMessage(
-                channel=notice.channel,
-                chat_id=notice.chat_id,
-                content=format_restart_completed_message(notice.started_at_raw),
-            ),
-        ))
 
     async def stop_all(self) -> None:
         """Stop all channels and the dispatcher."""
@@ -183,6 +145,13 @@ class ChannelManager:
                 if msg.metadata.get("_stream_delta") and not msg.metadata.get("_stream_end"):
                     msg, extra_pending = self._coalesce_stream_deltas(msg)
                     pending.extend(extra_pending)
+
+                # Defense-in-depth: never allow internal silent marker to be delivered.
+                if isinstance(msg.content, str) and _SILENT_MARKER in msg.content:
+                    msg.content = msg.content.replace(_SILENT_MARKER, "").strip()
+                    if not msg.content and not msg.media:
+                        logger.debug("Suppressed outbound NOOUTPUTKEEP_SILENT marker for {}", msg.channel)
+                        continue
 
                 channel = self.channels.get(msg.channel)
                 if channel:

@@ -20,7 +20,6 @@ from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.subagent import SubagentManager
-from nanobot.agent.reflexio_hook import ReflexioHook
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
@@ -245,9 +244,6 @@ class AgentLoop:
         self._register_default_tools()
         self.commands = CommandRouter()
         register_builtin_commands(self.commands)
-
-        # Reflexio Auto-Reflection Hook
-        self._extra_hooks.append(ReflexioHook(self.bus))
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -659,7 +655,6 @@ class AgentLoop:
                 chat_id=chat_id,
                 content=final_content or "Background task completed.",
             )
-
         # Extract document text from media at the processing boundary so all
         # channels benefit without format-specific logic in ContextBuilder.
         if msg.media:
@@ -705,6 +700,9 @@ class AgentLoop:
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
+            if "Model request failed" in content:
+                logger.info("Suppressed progress notification: {}", content)
+                return
             meta["_tool_hint"] = tool_hint
             await self.bus.publish_outbound(
                 OutboundMessage(
@@ -767,6 +765,10 @@ class AgentLoop:
         meta = dict(msg.metadata or {})
         if on_stream is not None and stop_reason != "error":
             meta["_streamed"] = True
+        if "(NOOUTPUTKEEP_SILENT)" in (final_content or ""):
+            logger.info("Suppressed silent model output")
+            return None
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
