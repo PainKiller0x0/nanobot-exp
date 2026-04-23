@@ -39,6 +39,17 @@ _EVALUATE_TOOL = [
     }
 ]
 
+
+def _is_silent_marker_response(response: str) -> bool:
+    normalized = (response or "").strip().upper().replace(" ", "")
+    return normalized in {
+        "(NOOUTPUTKEEP_SILENT)",
+        "(NO_OUTPUT_KEEP_SILENT)",
+        "NOOUTPUTKEEP_SILENT",
+        "NO_OUTPUT_KEEP_SILENT",
+    }
+
+
 async def evaluate_response(
     response: str,
     task_context: str,
@@ -51,6 +62,10 @@ async def evaluate_response(
     ``_decide()``).  Falls back to ``True`` (notify) on any failure so
     that important messages are never silently dropped.
     """
+    if _is_silent_marker_response(response):
+        logger.info("evaluate_response: silent marker detected, suppress notify")
+        return False
+
     try:
         llm_response = await provider.chat_with_retry(
             messages=[

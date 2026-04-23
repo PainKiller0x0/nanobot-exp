@@ -296,6 +296,47 @@ class ChannelManager:
         )
         return merged, non_matching
 
+    async def _send_delivery_alert(
+        self,
+        channel: BaseChannel,
+        msg: OutboundMessage,
+        max_attempts: int,
+        err: Exception,
+    ) -> None:
+        if msg.channel != "qq":
+            return
+        if msg.metadata.get("_delivery_alert"):
+            return
+        if msg.metadata.get("_progress") or msg.metadata.get("_stream_delta") or msg.metadata.get("_stream_end"):
+            return
+
+        alert = OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=(
+                f"⚠️ 消息发送失败（已重试{max_attempts}次）\n"
+                f"渠道: {msg.channel}\n"
+                f"错误: {type(err).__name__}: {err}"
+            ),
+            metadata={"_delivery_alert": True},
+        )
+
+        try:
+            await self._send_once(channel, alert)
+            logger.warning(
+                "Fallback delivery alert sent to {}:{} after send failure",
+                msg.channel,
+                msg.chat_id,
+            )
+        except Exception as alert_err:
+            logger.error(
+                "Fallback delivery alert also failed for {}:{}: {} - {}",
+                msg.channel,
+                msg.chat_id,
+                type(alert_err).__name__,
+                alert_err,
+            )
+
     async def _send_with_retry(self, channel: BaseChannel, msg: OutboundMessage) -> None:
         """Send a message with retry on failure using exponential backoff.
 
@@ -315,6 +356,7 @@ class ChannelManager:
                         "Failed to send to {} after {} attempts: {} - {}",
                         msg.channel, max_attempts, type(e).__name__, e
                     )
+                    await self._send_delivery_alert(channel, msg, max_attempts, e)
                     return
                 delay = _SEND_RETRY_DELAYS[min(attempt, len(_SEND_RETRY_DELAYS) - 1)]
                 logger.warning(

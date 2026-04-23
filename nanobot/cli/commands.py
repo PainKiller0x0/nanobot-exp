@@ -744,6 +744,11 @@ def _run_gateway(
 
         response = resp.content if resp else ""
 
+        normalized_response = (response or "").strip().lower()
+        if normalized_response.startswith("error calling llm"):
+            logger.warning("Cron job {} LLM failure suppressed from user delivery: {}", job.id, response)
+            return response
+
         message_tool = agent.tools.get("message")
         if job.payload.deliver and isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
             return response

@@ -12,6 +12,8 @@ BACKUP_NAME="wechat-rss-sidecar-backup"
 HOST_PORT="8091"
 NANOBOT_HOME="${HOME}/.nanobot"
 NANOBOT_REPO="/root/nanobot"
+CACHE_ROOT="${HOME}/.cache/rust-buildx"
+CACHE_SCOPE="wechat-rss-rs"
 APPLY=false
 FORCE=false
 
@@ -28,6 +30,8 @@ Options:
   --host-port <port>       Host port. Default: 8091
   --nanobot-home <path>    Host nanobot home mount. Default: ~/.nanobot
   --nanobot-repo <path>    Host nanobot repo mount. Default: /root/nanobot
+  --cache-root <path>      Build cache root. Default: ~/.cache/rust-buildx
+  --cache-scope <name>     Build cache scope name. Default: wechat-rss-rs
   --force                  Skip placeholder check
   --apply                  Apply migration
   -h, --help               Show help
@@ -47,6 +51,8 @@ while [[ $# -gt 0 ]]; do
     --host-port) HOST_PORT="${2:-}"; shift 2 ;;
     --nanobot-home) NANOBOT_HOME="${2:-}"; shift 2 ;;
     --nanobot-repo) NANOBOT_REPO="${2:-}"; shift 2 ;;
+    --cache-root) CACHE_ROOT="${2:-}"; shift 2 ;;
+    --cache-scope) CACHE_SCOPE="${2:-}"; shift 2 ;;
     --force) FORCE=true; shift ;;
     --apply) APPLY=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -73,12 +79,30 @@ if ! $FORCE && grep -q 'Hello, world!' "$RS_REPO/src/main.rs"; then
   exit 1
 fi
 
+mkdir -p "$CACHE_ROOT"
+CACHE_DIR="${CACHE_ROOT}/${CACHE_SCOPE}"
+mkdir -p "$CACHE_DIR"
+
+if ! docker buildx version >/dev/null 2>&1; then
+  echo "Error: docker buildx is required for persistent cache build." >&2
+  exit 1
+fi
+
 echo "[wechat-rs] building image: $IMAGE"
-docker build -t "$IMAGE" -f - "$RS_REPO" <<'DOCKERFILE'
+# syntax=docker/dockerfile:1.7
+DOCKER_BUILDKIT=1 docker buildx build --load \
+  --cache-from "type=local,src=${CACHE_DIR}" \
+  --cache-to "type=local,dest=${CACHE_DIR},mode=max" \
+  -t "$IMAGE" -f - "$RS_REPO" <<'DOCKERFILE'
+# syntax=docker/dockerfile:1.7
 FROM rust:1.90-bookworm AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release
+ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo build --release
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
