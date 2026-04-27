@@ -24,6 +24,8 @@ import json
 import mimetypes
 import os
 import re
+import time
+import urllib.request
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -242,6 +244,9 @@ class QQConfig(Base):
 
     # QQ can truncate/deny oversized text payloads. Split long replies into chunks.
     text_chunk_max_len: int = 1200
+
+    # Optional immediate acknowledgement for inbound messages. Empty disables it.
+    ack_message: str = ""
 
     # Signature validation alert reporting
     signature_alert_enabled: bool = True
@@ -747,16 +752,22 @@ class QQChannel(BaseChannel):
 
     def _verify_and_unwrap_signed_payload(self, content: str) -> str | None:
         """Verify signed payload and return body using QQ-Sidecar-RS."""
-        import urllib.request, json
         try:
-            req = urllib.request.Request("http://172.17.0.1:8092/verify", data=json.dumps({"content": content}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+            req = urllib.request.Request(
+                "http://172.17.0.1:8092/verify",
+                data=json.dumps({"content": content}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                if data.get("success"): return data.get("body")
+                if data.get("success"):
+                    return data.get("body")
                 return None
         except Exception as e:
-            logger.error(f"QQ sidecar verify error: {e}")
+            logger.error("QQ sidecar verify error: {}", e)
             return None
+
     def _extract_yage_source_url(self, body: str) -> str | None:
         """Extract yage source URL from signed payload body."""
         text = (body or "").strip()
@@ -985,9 +996,8 @@ class QQChannel(BaseChannel):
                     logger.info("QQ outbound suppressed by silent marker chat_id={}", msg.chat_id)
                     return
             is_signed_payload = msg.content.startswith(_SIGNED_PAYLOAD_PREFIX)
-            if self._requires_signed_payload(msg.content) and not msg.content.startswith(
-                _SIGNED_PAYLOAD_PREFIX
-            ):
+            requires_signature = self._requires_signed_payload(msg.content)
+            if requires_signature and not is_signed_payload:
                 logger.warning(
                     "QQ outbound blocked: yage-like payload without signature chat_id={}",
                     msg.chat_id,
@@ -999,7 +1009,9 @@ class QQChannel(BaseChannel):
                 )
                 return
 
-            safe_content = self._verify_and_unwrap_signed_payload(msg.content)
+            safe_content = msg.content
+            if is_signed_payload:
+                safe_content = self._verify_and_unwrap_signed_payload(msg.content)
             if safe_content is None:
                 # Cron may occasionally reconstruct signed payload incorrectly.
                 # Self-heal by fetching latest signed raw article directly and retrying once.
@@ -1086,12 +1098,16 @@ class QQChannel(BaseChannel):
             for chunk in split_message(safe_content, max_len):
                 if not chunk:
                     continue
-                await self._send_text_only(
-                    chat_id=msg.chat_id,
-                    is_group=is_group,
-                    msg_id=msg_id,
-                    content=chunk,
-                )
+                try:
+                    await self._send_text_only(
+                        chat_id=msg.chat_id,
+                        is_group=is_group,
+                        msg_id=msg_id,
+                        content=chunk,
+                    )
+                except Exception as e:
+                    logger.error("QQ text send failed chat_id={} err={}", msg.chat_id, e)
+                    return
             if is_signed_payload:
                 await self._ack_yage_delivery(safe_content, msg.chat_id)
                 await self._ack_wechat_delivery(wechat_ack, msg.chat_id)
@@ -1212,6 +1228,9 @@ class QQChannel(BaseChannel):
 
             logger.info("QQ media sent: {}", filename)
             return True
+        except (aiohttp.ClientError, OSError) as e:
+            logger.error("QQ send media network failed filename={} err={}", filename, e)
+            raise
         except Exception as e:
             logger.error("QQ send media failed filename={} err={}", filename, e)
             return False
@@ -1295,11 +1314,16 @@ class QQChannel(BaseChannel):
             id_key: chat_id,
             "file_type": file_type,
             "file_data": file_data,
-            "file_name": file_name,
             "srv_send_msg": srv_send_msg,
         }
+        if file_type != QQ_FILE_TYPE_IMAGE and file_name:
+            payload["file_name"] = file_name
+
         route = Route("POST", endpoint, **{id_key: chat_id})
-        return await self._client.api._http.request(route, json=payload)
+        result = await self._client.api._http.request(route, json=payload)
+        if isinstance(result, dict) and "file_info" in result:
+            return {"file_info": result["file_info"]}
+        return result
 
     # ---------------------------
     # Inbound (receive)
@@ -1311,18 +1335,35 @@ class QQChannel(BaseChannel):
             return
         self._processed_ids.append(data.id)
 
+        author = getattr(data, "author", None)
         if is_group:
-            chat_id = data.group_openid
-            user_id = data.author.member_openid
+            chat_id = getattr(data, "group_openid", "")
+            user_id = getattr(author, "member_openid", "unknown")
+            if not chat_id:
+                logger.warning(
+                    "QQ group message missing group_openid message_id={}",
+                    getattr(data, "id", "unknown"),
+                )
+                return
             self._chat_type_cache[chat_id] = "group"
         else:
-            chat_id = str(
-                getattr(data.author, "id", None) or getattr(data.author, "user_openid", "unknown")
-            )
+            chat_id = str(getattr(author, "id", None) or getattr(author, "user_openid", "unknown"))
             user_id = chat_id
             self._chat_type_cache[chat_id] = "c2c"
 
-        content = (data.content or "").strip()
+        ack_message = (getattr(self.config, "ack_message", "") or "").strip()
+        if ack_message:
+            try:
+                await self._send_text_only(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=data.id,
+                    content=ack_message,
+                )
+            except Exception as e:
+                logger.warning("QQ ack send failed message_id={} err={}", data.id, e)
+
+        content = (getattr(data, "content", "") or "").strip()
 
         # the data used by tests don't contain attachments property
         # so we use getattr with a default of [] to avoid AttributeError in tests
@@ -1412,10 +1453,6 @@ class QQChannel(BaseChannel):
         filename_hint: str = "",
     ) -> str | None:
         """Download an inbound attachment using QQ-Sidecar-RS."""
-        import time
-        from urllib.parse import urlparse
-        from pathlib import Path
-        
         ts = int(time.time() * 1000)
         safe = _sanitize_filename(filename_hint)
         ext = Path(urlparse(url).path).suffix
