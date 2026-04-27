@@ -153,6 +153,8 @@ _YAGE_URL_BARE_RE = re.compile(r"https?://yage-ai\.kit\.com/posts/[^\s)\]]+")
 _YAGE_DATE_IN_URL_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
 _WECHAT_CACHE_FILE = "/root/.nanobot/workspace/skills/wechat-rss-sidecar/wechat_push_cache.json"
 _WECHAT_ACK_MARKER_RE = re.compile(r"<!--\s*NBACK_WECHAT\s+sub:(\d+)\s+entry:(\d+)\s*-->")
+_GENERIC_URL_RE = re.compile(r"https?://[^\s<>\]）)\"']+")
+_INBOX_SPECIAL_HOSTS = ("mp.weixin.qq.com", "yage-ai.kit.com", "jintiankansha.me")
 
 
 def _sanitize_filename(name: str) -> str:
@@ -1342,6 +1344,8 @@ class QQChannel(BaseChannel):
             return "system"
         if any(k in compact for k in ("定时任务", "cron", "任务状态", "任务报错", "哪些任务在跑")):
             return "tasks"
+        if any(k in compact for k in ("今天怎么安排", "有什么建议", "决策建议", "下一步做什么", "现在该干嘛")):
+            return "decision"
         if any(k in compact for k in ("鸭哥", "微信文章", "rss文章", "今天文章", "文章有哪些", "文章更新")):
             return "articles"
         if any(k in compact for k in ("lof", "qdii", "基金溢价", "溢价机会", "套利机会")):
@@ -1400,6 +1404,114 @@ class QQChannel(BaseChannel):
         logger.info("QQ personal ops fast path handled command={} message_id={}", command, message_id)
         return True
 
+    def _match_knowledge_inbox_command(self, content: str) -> list[str] | None:
+        """Map link/inbox prompts to the local knowledge inbox script."""
+        text = (content or "").strip()
+        compact = re.sub(r"[\s，。！？!?、:：；;,.]+", "", text.lower())
+        if not compact:
+            return None
+
+        urls = [u.rstrip("。.,，、；;!！?？") for u in _GENERIC_URL_RE.findall(text)]
+        if not urls:
+            if any(k in compact for k in ("待读简报", "收件箱简报", "稍后看简报", "今天先看什么")):
+                return ["brief", "--limit", "8"]
+            if any(k in compact for k in ("收件箱", "待读列表", "链接清单", "稍后看清单")):
+                return ["list", "--limit", "8"]
+            return None
+
+        url = urls[0]
+        host = urlparse(url).netloc.lower()
+        explicit_inbox = any(
+            k in compact
+            for k in (
+                "收一下",
+                "存一下",
+                "加入收件箱",
+                "放收件箱",
+                "放到收件箱",
+                "稍后看",
+                "待读",
+                "链接收件箱",
+            )
+        )
+        decision = any(
+            k in compact
+            for k in (
+                "值得看",
+                "值不值得",
+                "要不要看",
+                "要不要读",
+                "该不该看",
+                "帮我判断",
+                "帮我看看",
+                "决策",
+            )
+        )
+        only_url = text == url or text.strip(" \t\r\n。.,，、；;!！?？") == url
+
+        # WeChat/Yage links have dedicated handlers. Do not steal them unless the
+        # user explicitly asks to put the link into the generic inbox.
+        if any(special in host for special in _INBOX_SPECIAL_HOSTS) and not explicit_inbox:
+            return None
+        if decision:
+            question = _GENERIC_URL_RE.sub("", text).strip()
+            return ["decide", url, "--question", question[:180] or "这个值得看吗"]
+        if explicit_inbox or only_url:
+            return ["capture", url]
+        return None
+
+    async def _run_knowledge_inbox_command(self, args: list[str]) -> str:
+        """Run the knowledge inbox script without involving the LLM."""
+        script = Path("/root/.nanobot/workspace/skills/knowledge-inbox/inbox.py")
+        if not script.exists():
+            return "知识收件箱脚本不存在，暂时无法处理链接。"
+
+        proc = await asyncio.create_subprocess_exec(
+            "python3",
+            str(script),
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=35)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return "知识收件箱抓取超时了，可能是目标网页太慢或禁止访问。"
+
+        out = stdout.decode("utf-8", errors="replace").strip()
+        err = stderr.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            detail = err or out or f"exit {proc.returncode}"
+            return f"知识收件箱失败：{detail[:500]}"
+        return out or "知识收件箱处理完成，但没有输出。"
+
+    async def _try_handle_knowledge_inbox_query(
+        self,
+        *,
+        chat_id: str,
+        is_group: bool,
+        message_id: str,
+        content: str,
+    ) -> bool:
+        args = self._match_knowledge_inbox_command(content)
+        if not args:
+            return False
+
+        reply = await self._run_knowledge_inbox_command(args)
+        max_len = max(200, int(getattr(self.config, "text_chunk_max_len", 1200) or 1200))
+        for chunk in split_message(reply, max_len):
+            if chunk.strip():
+                await self._send_text_only(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=message_id,
+                    content=chunk,
+                )
+        logger.info("QQ knowledge inbox fast path handled args={} message_id={}", args, message_id)
+        return True
+
 
     # ---------------------------
     # Inbound (receive)
@@ -1446,6 +1558,13 @@ class QQChannel(BaseChannel):
         attachments = getattr(data, "attachments", None) or []
         if content and not attachments:
             if await self._try_handle_personal_ops_query(
+                chat_id=chat_id,
+                is_group=is_group,
+                message_id=data.id,
+                content=content,
+            ):
+                return
+            if await self._try_handle_knowledge_inbox_query(
                 chat_id=chat_id,
                 is_group=is_group,
                 message_id=data.id,
