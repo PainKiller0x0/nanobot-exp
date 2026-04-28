@@ -19,6 +19,7 @@ Start here for setup, everyday usage, and deployment.
 | In-chat commands | [`chat-commands.md`](./chat-commands.md) | Slash commands and periodic task behavior |
 | OpenAI-compatible API | [`openai-api.md`](./openai-api.md) | Local API endpoints, request format, and file uploads |
 | Deployment | [`deployment.md`](./deployment.md) | Docker and Linux service setup |
+| Architecture | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | nanobot-exp sidecar topology, boundaries, ports, and change checklist |
 
 ## Advanced Docs
 

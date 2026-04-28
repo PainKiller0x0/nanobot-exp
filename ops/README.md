@@ -4,6 +4,8 @@ This is the lightweight operations snapshot for the live Nanobot server.
 
 It tracks only service wiring and helper scripts. Secrets and runtime data stay outside this repo.
 
+Architecture notes live in [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
+
 ## Useful commands
 
 ```bash

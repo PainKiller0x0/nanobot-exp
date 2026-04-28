@@ -47,6 +47,8 @@ Personal production fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot).
 
 这个结构的重点是：nanobot 负责核心聊天/Agent 循环，sidecar 负责具体业务系统。这样上游更新时，主仓库不会被个人业务逻辑缠死。
 
+更多架构细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ### 和上游有什么不同
 
 - 增加了线上部署脚本和精简脚本。
@@ -212,6 +214,7 @@ git push exp main
 
 ### 相关文档
 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/quick-start.md](docs/quick-start.md)
 - [docs/configuration.md](docs/configuration.md)
 - [docs/chat-apps.md](docs/chat-apps.md)
