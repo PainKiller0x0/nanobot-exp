@@ -41,6 +41,12 @@
   notify-sidecar-rs     127.0.0.1:8094    systemd
 ```
 
+健康检查约定：
+
+- 服务健康以 `8093/api/sidecars` 聚合结果为准，不再让脚本各自猜端口。
+- QQ Sidecar 线上通过 `20-podman-bridge.conf` 绑定 `172.17.0.1:8092`，不是 `127.0.0.1:8092`。
+- HERMES 自检必须读 sidecar manager API，避免端口绑定变化造成误报。
+
 只有 `lof-sidecar-rs` 作为公网入口。它负责：
 
 - `/` 和 `/lof`：LOF/QDII 看板。
@@ -81,10 +87,14 @@ nanobot-exp/
       config.example.json          示例配置，不含真实 QQ 目标 ID
     bin/sidecarctl                 日常运维 CLI
     scripts/deploy-sidecar.sh      构建、安装、重启、状态检查入口
+    scripts/check-nanobot-exp-patches.sh
+                                    上游同步后检查 exp 必保留补丁
     sbin/                          主机辅助脚本
     systemd/                       systemd unit 和 drop-in
     sources/
       _shared/                     skill 客户端共享 Python helper
+      hermes-check/                HERMES 自检脚本快照
+      qdii-monitor/                LOF notify 包装脚本快照
       *-rs/                        Rust sidecar 源码快照
       *-assistant/                 Nanobot skill 源码快照
 ```
@@ -161,6 +171,13 @@ Nanobot core 不应该负责：
 
 如果一个功能可以表达为 `HTTP API + CLI/script + dashboard`，通常应该做成 sidecar 或 skill，而不是继续改 core。
 
+当前仍然必须承认的 `nanobot-exp` 本体/运行时补丁：
+
+- QQ channel：`ops/config/overrides/qq.py` 是线上 QQ 通道覆盖实现，容器启动时由 `/root/.nanobot/overrides/apply_overrides.py` 覆盖到 `/app/nanobot/channels/qq.py`。它包含签名校验、长文本发送、媒体、fast path 和 sidecar 下载等线上能力。
+- Gateway heartbeat：`gateway.heartbeat.deliveryChannel` / `deliveryChatId` 用来固定原生 heartbeat 投递目标，避免“最近活跃渠道”把自省报告发到 WeChat。
+- 上游同步后必须跑 `ops/scripts/check-nanobot-exp-patches.sh /root/nanobot`，至少确认 heartbeat 投递、HERMES manager check、LOF refresh-before-send 这些补丁还在。
+- 若怀疑 core drift，先看 `git diff official/main...HEAD -- nanobot/`，再判断要不要把逻辑继续 sidecar 化。
+
 ## Skills 和公共 helper
 
 个人 skill 的源码快照放在 `ops/sources/*`，线上运行副本在 workspace。
@@ -173,11 +190,19 @@ ops/sources/_shared/ops_common.py
 
 当前提供：
 
-- `JsonHttpClient`：base URL fallback、JSON GET/POST、文本请求。
+- `JsonHttpClient`：base URL fallback、JSON GET/POST、文本请求，支持浮点秒级 timeout。
 - `parse_dt`、`fmt_time`、`now_shanghai`。
 - `short`：适合 QQ 输出的短文本截断。
 
-这样 `trend-radar`、`personal-ops-assistant`、`wechat-rss-sidecar-skill` 不需要各自复制 HTTP fallback 和时间解析逻辑。
+目前应复用它的脚本包括：
+
+- `trend-radar/trend_client.py`
+- `personal-ops-assistant/ops_summary.py`
+- `wechat-rss-sidecar-skill/client.py`
+- `hermes-check/hermes_check.py`
+- `qdii-monitor/send_qq.py`
+
+这样 skill/ops 脚本不需要各自复制 HTTP fallback、JSON 解析、timeout 和时间解析逻辑。
 
 抽取原则：
 
@@ -191,8 +216,18 @@ ops/sources/_shared/ops_common.py
 
 - `8093` 公网入口。
 - LOF/QDII 看板、报告、历史溢价视图。
+- `/api/run` 是同步刷新接口；`/api/status` 是状态和缓存读取接口。
 - 内部 sidecar 反代。
 - 服务矩阵和健康聚合。
+
+LOF 定时报告不是直接读缓存发送。Notify 任务调用 `qdii-monitor/send_qq.py`，脚本会：
+
+1. 先 POST `/api/run` 触发同步刷新。
+2. 最多等待 `LOF_RUN_TIMEOUT_SECS`，默认 60 秒。
+3. 成功则发送新报告。
+4. 刷新失败或超时才回退当天新鲜缓存，并在输出前加 `[WARN]`。
+
+这个顺序很重要：交易时段 5 分钟差异足够影响判断，不能优先发旧缓存。
 
 ### `wechat-rss-rs`
 
@@ -207,7 +242,10 @@ ops/sources/_shared/ops_common.py
 - cron-like 调度。
 - retry/timeout 状态。
 - 通过 QQ bridge 或 Nanobot 配置分发通知。
+- 负责 HERMES、天气、RSS/鸭哥、LOF 报告等主动推送。
 - 把循环任务从 Nanobot core 内存里拿出去。
+
+HERMES 任务调用 `hermes-check/hermes_check.py`。脚本应读取 `8093/api/sidecars` 聚合健康状态，而不是硬编码逐个端口探测。
 
 ### `trend-sidecar-rs`
 
@@ -261,6 +299,7 @@ QQ 回复 / dashboard 摘要
 - 服务矩阵和 `sidecarctl` 让 health/log/restart 有统一入口。
 - Trend Radar 提供新闻采集和 MCP 风格工具，但没有把重 Python 服务塞进 core。
 - `_shared/ops_common.py` 已经减少 skill 客户端重复代码。
+- 最近一次实现 review 已将 HERMES 和 LOF notify wrapper 的 HTTP/JSON/timeout 逻辑收口到 `JsonHttpClient`，去掉了 LOF wrapper 对 `requests` 的依赖。
 
 主要技术债：
 
@@ -277,6 +316,20 @@ QQ 回复 / dashboard 摘要
 3. `wechat-rss-rs` 拆 DB、settings、crawler、LLM client 模块。
 4. 增加 `ops/scripts/check-architecture.sh`，检查 sidecars registry、systemd unit、文档端口是否一致。
 5. 新个人自动化默认采用 `skill + sidecar API`，除非确实必须改 Nanobot core。
+
+## 上游同步 checklist
+
+同步 `HKUDS/nanobot` 后先做这些检查：
+
+```bash
+git diff official/main...HEAD -- nanobot/
+ops/scripts/check-nanobot-exp-patches.sh /root/nanobot
+PYTHONPATH=/root/nanobot uv run pytest tests/cli/test_commands.py::test_heartbeat_delivery_target_config_aliases
+```
+
+注意：服务器上可能装有系统级旧 `nanobot` 包；本地回测必须加 `PYTHONPATH=/root/nanobot`，否则 pytest 可能导入 `/usr/local/lib/python.../dist-packages/nanobot` 而不是当前源码。
+
+如果 `check-nanobot-exp-patches.sh` 失败，先不要重启线上服务，先确认是上游重构导致的真实冲突，还是 ops 快照没有同步。
 
 ## 变更 checklist
 
@@ -295,6 +348,7 @@ deploy-sidecar <target>
 deploy-sidecar all --status
 python3 -m py_compile <changed-python-scripts>
 cargo check --offline --manifest-path <changed-rust-sidecar>/Cargo.toml
+ops/scripts/check-nanobot-exp-patches.sh /root/nanobot
 ```
 
-8. 只要服务图或边界变化，就同步更新本文档。
+8. 只要服务图、core patch、端口绑定、主动推送链路或共享 helper 边界变化，就同步更新本文档。
