@@ -1,12 +1,14 @@
 mod config;
 mod proxy;
+mod stats;
 
 use crate::config::{load_config, save_config, Channel};
 use crate::proxy::{handle_proxy, ProxyState};
+use crate::stats::{load_stats, save_stats, UsageStats};
 use axum::{
     extract::{Path, State},
     response::Html,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Json, Router,
 };
 use reqwest::Client;
@@ -15,6 +17,7 @@ use std::{env, net::SocketAddr};
 use tokio::sync::Mutex;
 
 const CONFIG_PATH: &str = "data/config.json";
+const STATS_PATH: &str = "data/stats.json";
 
 #[tokio::main]
 async fn main() {
@@ -22,19 +25,24 @@ async fn main() {
     std::fs::create_dir_all("data").ok();
 
     let channels = load_config(CONFIG_PATH);
+    let stats = load_stats(STATS_PATH);
     let state = Arc::new(ProxyState {
         client: Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap(),
         channels: Mutex::new(channels),
+        stats: Mutex::new(stats),
         index: Mutex::new(0),
+        config_path: CONFIG_PATH.to_string(),
+        stats_path: STATS_PATH.to_string(),
     });
 
     let app = Router::new()
         .route("/", get(dashboard))
         .route("/v1/chat/completions", post(handle_proxy))
         .route("/admin/channels", get(get_channels).post(add_channel))
+        .route("/admin/stats", get(get_stats).delete(clear_stats))
         .route(
             "/admin/channels/{id}",
             put(update_channel).delete(delete_channel),
@@ -58,7 +66,24 @@ async fn dashboard() -> Html<&'static str> {
 
 async fn get_channels(State(state): State<Arc<ProxyState>>) -> Json<serde_json::Value> {
     let channels = state.channels.lock().await;
-    Json(serde_json::json!({ "channels": *channels, "logs": [] }))
+    let stats = state.stats.lock().await;
+    Json(serde_json::json!({
+        "channels": &*channels,
+        "stats": &*stats,
+        "logs": &stats.recent,
+    }))
+}
+
+async fn get_stats(State(state): State<Arc<ProxyState>>) -> Json<UsageStats> {
+    let stats = state.stats.lock().await;
+    Json(stats.clone())
+}
+
+async fn clear_stats(State(state): State<Arc<ProxyState>>) -> Json<serde_json::Value> {
+    let mut stats = state.stats.lock().await;
+    *stats = UsageStats::default();
+    save_stats(&state.stats_path, &stats);
+    Json(serde_json::json!({ "status": "ok" }))
 }
 
 async fn add_channel(
@@ -73,7 +98,7 @@ async fn add_channel(
             .as_secs(),
     );
     channels.push(ch.clone());
-    save_config(CONFIG_PATH, &channels);
+    save_config(&state.config_path, &channels);
     Json(ch)
 }
 
@@ -86,7 +111,7 @@ async fn update_channel(
     if let Some(ch) = channels.iter_mut().find(|c| c.id == Some(id)) {
         updated_ch.id = Some(id);
         *ch = updated_ch;
-        save_config(CONFIG_PATH, &channels);
+        save_config(&state.config_path, &channels);
         return Json(serde_json::json!({ "status": "ok" }));
     }
     Json(serde_json::json!({ "status": "not_found" }))
@@ -98,6 +123,6 @@ async fn delete_channel(
 ) -> Json<serde_json::Value> {
     let mut channels = state.channels.lock().await;
     channels.retain(|c| c.id != Some(id));
-    save_config(CONFIG_PATH, &channels);
+    save_config(&state.config_path, &channels);
     Json(serde_json::json!({ "status": "ok" }))
 }
