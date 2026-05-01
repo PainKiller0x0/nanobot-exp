@@ -138,21 +138,24 @@ def _init_prompt_session() -> None:
     )
 
 
+def _stdout_isatty() -> bool:
+    return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+
 def _make_console() -> Console:
-    return Console(file=sys.stdout)
+    return Console(file=sys.stdout, force_terminal=_stdout_isatty())
 
 
 def _render_interactive_ansi(render_fn) -> str:
     """Render Rich output to ANSI so prompt_toolkit can print it safely."""
     ansi_console = Console(
-        force_terminal=True,
+        force_terminal=_stdout_isatty(),
         color_system=console.color_system or "standard",
         width=console.width,
     )
     with ansi_console.capture() as capture:
         render_fn(ansi_console)
     return capture.get()
-
 
 def _print_agent_response(
     response: str,
@@ -717,15 +720,22 @@ def _run_gateway(
         from nanobot.utils.evaluator import evaluate_response
 
         reminder_note = (
-            "[Scheduled Task] Timer finished.\n\n"
-            f"Task '{job.name}' has been triggered.\n"
-            f"Scheduled instruction: {job.payload.message}"
+            "The scheduled time has arrived. Deliver this reminder to the user now, "
+            "as a brief and natural message in their language. Speak directly to them — "
+            "do not narrate progress, summarize, include user IDs, or add status reports "
+            "like 'Done' or 'Reminded'.\n\n"
+            f"Reminder: {job.payload.message}"
         )
 
         cron_tool = agent.tools.get("cron")
         cron_token = None
         if isinstance(cron_tool, CronTool):
             cron_token = cron_tool.set_cron_context(True)
+
+        message_tool = agent.tools.get("message")
+        message_record_token = None
+        if isinstance(message_tool, MessageTool):
+            message_record_token = message_tool.set_record_channel_delivery(True)
 
         async def _silent(*_args, **_kwargs):
             pass
@@ -741,6 +751,8 @@ def _run_gateway(
         finally:
             if isinstance(cron_tool, CronTool) and cron_token is not None:
                 cron_tool.reset_cron_context(cron_token)
+            if isinstance(message_tool, MessageTool) and message_record_token is not None:
+                message_tool.reset_record_channel_delivery(message_record_token)
 
         response = resp.content if resp else ""
 
@@ -759,11 +771,19 @@ def _run_gateway(
             )
             if should_notify:
                 from nanobot.bus.events import OutboundMessage
-                await bus.publish_outbound(OutboundMessage(
+
+                outbound = OutboundMessage(
                     channel=job.payload.channel or "cli",
                     chat_id=job.payload.to,
                     content=response,
-                ))
+                    metadata=dict(job.payload.channel_meta),
+                )
+                await bus.publish_outbound(outbound)
+
+                session_key = job.payload.session_key or f"{outbound.channel}:{outbound.chat_id}"
+                session = session_manager.get_or_create(session_key)
+                session.add_message("assistant", response, _channel_delivery=True)
+                session_manager.save(session)
         return response
 
     cron.on_job = on_cron_job
