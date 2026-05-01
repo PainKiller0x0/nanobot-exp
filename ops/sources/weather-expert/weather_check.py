@@ -292,8 +292,13 @@ def fetch_json_with_retry(url: str, timeout: int = 15, retries: int = 2) -> dict
     return {}
 
 
-def fetch_weather(location_key: str, now: datetime | None = None) -> dict[str, Any]:
+def fetch_weather(
+    location_key: str,
+    now: datetime | None = None,
+    forecast_date: date | None = None,
+) -> dict[str, Any]:
     now = now or datetime.now(LOCAL_TZ)
+    forecast_date = forecast_date or now.date()
     meta = LOCATIONS[location_key]
     data = fetch_json_with_retry(WTTR_API.format(query=meta['query']))
 
@@ -310,6 +315,8 @@ def fetch_weather(location_key: str, now: datetime | None = None) -> dict[str, A
             day_date = date.fromisoformat(str(raw_date))
         except Exception:
             day_date = now.date() + timedelta(days=day_index)
+        if day_date != forecast_date:
+            continue
 
         for block in day.get('hourly') or []:
             hour = hour_from_wttr_time(block.get('time'))
@@ -378,7 +385,7 @@ def build_advice(weather: dict[str, Any]) -> list[str]:
 def build_report(location_key: str, target_date: date | None = None) -> str:
     now = datetime.now(LOCAL_TZ)
     target_date = target_date or now.date()
-    weather = fetch_weather(location_key, now=now)
+    weather = fetch_weather(location_key, now=now, forecast_date=target_date)
     advice = build_advice(weather)
     weekday = WEEKDAY_NAMES[target_date.weekday()]
 
@@ -394,9 +401,11 @@ def build_report(location_key: str, target_date: date | None = None) -> str:
         f"建议：{advice_text}",
     ]
 
+    lines.append('\u4eca\u5929\u63a5\u4e0b\u6765\u51e0\u4e2a\u65f6\u6bb5\uff1a')
     if weather['hourly_items']:
-        lines.append('未来几个时段：')
         lines.extend(f'  {item}' for item in weather['hourly_items'])
+    else:
+        lines.append('  \u4eca\u5929\u5269\u4f59\u65f6\u6bb5\u6682\u65e0\u5c0f\u65f6\u9884\u62a5')
 
     return "\n".join(lines)
 
