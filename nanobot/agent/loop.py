@@ -1021,21 +1021,24 @@ class AgentLoop:
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-        if direct := build_direct_reply(
-            msg,
-            model=self.model,
-            start_time=self._start_time,
-            last_usage=self._last_usage,
-        ):
-            logger.info("Direct reply to {}:{}: {}", msg.channel, msg.sender_id, direct.content[:80])
-            return direct
-
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
         if self._restore_runtime_checkpoint(session):
             self.sessions.save(session)
         if self._restore_pending_user_turn(session):
             self.sessions.save(session)
+
+        direct_history = self._recent_direct_history(session)
+        if direct := build_direct_reply(
+            msg,
+            model=self.model,
+            start_time=self._start_time,
+            last_usage=self._last_usage,
+            history=direct_history,
+        ):
+            self._save_direct_turn(session, msg, direct)
+            logger.info("Direct reply to {}:{}: {}", msg.channel, msg.sender_id, direct.content[:80])
+            return direct
 
         session, pending = self.auto_compact.prepare_session(session, key)
 
@@ -1271,6 +1274,37 @@ class AgentLoop:
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
         session.updated_at = datetime.now()
+
+    @staticmethod
+    def _recent_direct_history(session: Session, max_messages: int = 6) -> list[dict[str, Any]]:
+        """Return a tiny raw tail for deterministic reply guards.
+
+        This intentionally avoids ``get_history()`` so the normal LLM history
+        replay path remains the only place that applies token budgets.
+        """
+        out: list[dict[str, Any]] = []
+        for message in session.messages[-max_messages:]:
+            role = message.get("role")
+            content = message.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str):
+                out.append({"role": role, "content": content})
+        return out
+
+    def _save_direct_turn(
+        self,
+        session: Session,
+        msg: InboundMessage,
+        direct: OutboundMessage,
+    ) -> None:
+        """Persist deterministic replies so follow-up small talk has context."""
+        media_paths = [p for p in (msg.media or []) if isinstance(p, str) and p]
+        if msg.content or media_paths:
+            extra: dict[str, Any] = {"media": list(media_paths)} if media_paths else {}
+            session.add_message("user", msg.content or "", **extra)
+        if direct.content:
+            session.add_message("assistant", direct.content)
+        session.enforce_file_cap(on_archive=self.context.memory.raw_archive)
+        self.sessions.save(session)
 
     def _persist_subagent_followup(self, session: Session, msg: InboundMessage) -> bool:
         """Persist subagent follow-ups before prompt assembly so history stays durable.

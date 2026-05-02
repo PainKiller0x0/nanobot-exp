@@ -5,13 +5,41 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 from nanobot.bus.events import InboundMessage, OutboundMessage
 
 
-_MEMORY_PATTERNS = (
-    re.compile(r"^(内存|内存怎么样|内存情况|内存占用|服务器内存|nanobot内存)[？?。!！\s]*$"),
-    re.compile(r"^(看下|看看|查下|查一下).{0,8}内存.{0,8}$"),
+_MEMORY_WORD = "\u5185\u5b58"
+_ACK_WORDS = {
+    "ok",
+    "okay",
+    "\u55ef",
+    "\u55ef\u55ef",
+    "\u597d",
+    "\u597d\u7684",
+    "\u597d\u53ef\u4ee5",
+    "\u53ef\u4ee5",
+    "\u884c",
+    "\u884c\u7684",
+    "\u6ca1\u95ee\u9898",
+    "\u6536\u5230",
+    "\u4e86\u89e3",
+    "\u660e\u767d",
+}
+_ACTION_HINTS = (
+    "?",
+    "\uff1f",
+    "\u5417",
+    "\u8981\u4e0d\u8981",
+    "\u662f\u5426",
+    "\u786e\u8ba4",
+    "\u9009\u62e9",
+    "\u9700\u8981\u6211",
+    "\u6211\u53ef\u4ee5",
+    "\u4f60\u8981",
+    "reply",
+    "choose",
 )
 
 
@@ -21,22 +49,71 @@ def build_direct_reply(
     model: str,
     start_time: float,
     last_usage: dict[str, int] | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> OutboundMessage | None:
-    """Return a deterministic reply for cheap status intents, if matched."""
+    """Return a deterministic reply for cheap status/chitchat intents, if matched."""
     text = (msg.content or "").strip()
     if _is_memory_query(text):
-        return OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=_format_memory_report(model, start_time, last_usage or {}),
-            metadata={**(msg.metadata or {}), "_direct_reply": True},
-        )
+        return _outbound(msg, _format_memory_report(model, start_time, last_usage or {}))
+    if _is_ack(text) and _can_direct_ack(history or []):
+        return _outbound(msg, "\u597d\uff0c\u6211\u5728\u3002")
     return None
 
 
+def _outbound(msg: InboundMessage, content: str) -> OutboundMessage:
+    return OutboundMessage(
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content=content,
+        metadata={**(msg.metadata or {}), "_direct_reply": True},
+    )
+
+
+def _compact_text(text: str) -> str:
+    return re.sub(r"[\s\uff0c\u3002\uff01\uff1f!?,.\u3001:\uff1a;\uff1b]+", "", text.lower())
+
+
 def _is_memory_query(text: str) -> bool:
-    compact = re.sub(r"\s+", "", text.lower())
-    return any(pattern.search(compact) for pattern in _MEMORY_PATTERNS)
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    exact = {
+        _MEMORY_WORD,
+        f"{_MEMORY_WORD}\u600e\u4e48\u6837",
+        f"{_MEMORY_WORD}\u60c5\u51b5",
+        f"{_MEMORY_WORD}\u5360\u7528",
+        f"\u670d\u52a1\u5668{_MEMORY_WORD}",
+        f"nanobot{_MEMORY_WORD}",
+    }
+    if compact in exact:
+        return True
+    return _MEMORY_WORD in compact and len(compact) <= 18 and compact.startswith((
+        "\u770b\u4e0b",
+        "\u770b\u770b",
+        "\u67e5\u4e0b",
+        "\u67e5\u4e00\u4e0b",
+    ))
+
+
+def _is_ack(text: str) -> bool:
+    compact = _compact_text(text)
+    return compact in _ACK_WORDS
+
+
+def _can_direct_ack(history: list[dict[str, Any]]) -> bool:
+    """Avoid swallowing confirmations for pending questions or proposed actions."""
+    last_assistant = ""
+    for item in reversed(history):
+        if item.get("role") != "assistant":
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            last_assistant = content
+            break
+    if not last_assistant:
+        return True
+    compact = _compact_text(last_assistant)
+    return not any(hint in compact for hint in _ACTION_HINTS)
 
 
 def _format_memory_report(model: str, start_time: float, last_usage: dict[str, int]) -> str:
@@ -45,31 +122,32 @@ def _format_memory_report(model: str, start_time: float, last_usage: dict[str, i
     rss = _read_process_rss()
     uptime = _format_duration(max(0, int(time.time() - start_time)))
 
-    lines = ["内存直查（未调用 LLM）"]
+    lines = ["\u5185\u5b58\u76f4\u67e5\uff08\u672a\u8c03\u7528 LLM\uff09"]
     if mem:
         total = mem.get("MemTotal", 0)
         available = mem.get("MemAvailable", 0)
         used = max(0, total - available)
         pct = (used / total * 100) if total else 0
         lines.append(
-            f"宿主机：{_fmt_kib(used)} / {_fmt_kib(total)}，可用 {_fmt_kib(available)}（{pct:.0f}%）"
+            f"\u5bbf\u4e3b\u673a\uff1a{_fmt_kib(used)} / {_fmt_kib(total)}\uff0c"
+            f"\u53ef\u7528 {_fmt_kib(available)}\uff08{pct:.0f}%\uff09"
         )
     if cgroup:
         current, limit = cgroup
         if limit:
             pct = current / limit * 100 if limit else 0
-            lines.append(f"容器：{_fmt_bytes(current)} / {_fmt_bytes(limit)}（{pct:.0f}%）")
+            lines.append(f"\u5bb9\u5668\uff1a{_fmt_bytes(current)} / {_fmt_bytes(limit)}\uff08{pct:.0f}%\uff09")
         else:
-            lines.append(f"容器：{_fmt_bytes(current)}")
+            lines.append(f"\u5bb9\u5668\uff1a{_fmt_bytes(current)}")
     if rss:
-        lines.append(f"nanobot 进程 RSS：{_fmt_kib(rss)}")
-    lines.append(f"运行时长：{uptime}")
-    lines.append(f"模型：{model}")
+        lines.append(f"nanobot \u8fdb\u7a0b RSS\uff1a{_fmt_kib(rss)}")
+    lines.append(f"\u8fd0\u884c\u65f6\u957f\uff1a{uptime}")
+    lines.append(f"\u6a21\u578b\uff1a{model}")
     if last_usage:
         prompt = last_usage.get("prompt_tokens", 0)
         cached = last_usage.get("cached_tokens", 0)
         completion = last_usage.get("completion_tokens", 0)
-        lines.append(f"上次 LLM：prompt {prompt}，cached {cached}，completion {completion}")
+        lines.append(f"\u4e0a\u6b21 LLM\uff1aprompt {prompt}\uff0ccached {cached}\uff0ccompletion {completion}")
     return "\n".join(lines)
 
 
@@ -145,9 +223,9 @@ def _format_duration(seconds: int) -> str:
     minutes, _ = divmod(rem, 60)
     parts = []
     if days:
-        parts.append(f"{days}天")
+        parts.append(f"{days}\u5929")
     if hours:
-        parts.append(f"{hours}小时")
+        parts.append(f"{hours}\u5c0f\u65f6")
     if minutes or not parts:
-        parts.append(f"{minutes}分钟")
+        parts.append(f"{minutes}\u5206\u949f")
     return "".join(parts)
