@@ -1,0 +1,207 @@
+[
+  {
+    "date": "2026-05-03",
+    "title": "能力与服务有了统一总控台",
+    "category": "可观测性",
+    "evidence": "commit 5f7341d1: feat: add capability registry dashboard",
+    "impact": "Nanobot 不再只是一堆脚本，能力、入口、支撑服务和健康状态可以统一查看。",
+    "metrics": [
+      {
+        "label": "登记能力",
+        "before": "散落在脚本和记忆里",
+        "after": "11+ 个能力统一注册",
+        "note": "能力菜单和总控台共用同一份 registry"
+      },
+      {
+        "label": "服务健康",
+        "before": "需要逐个 curl/systemctl",
+        "after": "9/9 sidecar 聚合检查",
+        "note": "8093 /sidecars 统一入口"
+      }
+    ],
+    "links": [
+      {
+        "label": "能力总控台",
+        "url": "/sidecars"
+      },
+      {
+        "label": "API",
+        "url": "/api/capabilities"
+      }
+    ],
+    "tags": [
+      "capability-registry",
+      "dashboard",
+      "sidecar"
+    ]
+  },
+  {
+    "date": "2026-05-03",
+    "title": "常见状态问题改成直连回复",
+    "category": "体验",
+    "evidence": "commit f7a9f2be: feat: route capability queries without llm",
+    "impact": "问“内存怎么样 / 服务状态 / 今天先看什么”不再等待 LLM，直接读真实数据。",
+    "metrics": [
+      {
+        "label": "能力菜单",
+        "before": "可能进入 LLM",
+        "after": "0ms 级本地回复",
+        "note": "容器内回测 menu 0ms"
+      },
+      {
+        "label": "状态摘要",
+        "before": "可能 50s+",
+        "after": "约 0.3-0.5s",
+        "note": "读取 8093 sidecar API"
+      }
+    ],
+    "links": [
+      {
+        "label": "总控台",
+        "url": "/sidecars"
+      }
+    ],
+    "tags": [
+      "direct-reply",
+      "latency",
+      "no-llm"
+    ]
+  },
+  {
+    "date": "2026-05-03",
+    "title": "直连回复公共实现抽取",
+    "category": "代码治理",
+    "evidence": "commit 59c5a698: refactor: extract capability direct replies",
+    "impact": "direct_reply.py 从“什么都管”变成意图路由器，能力/sidecar 摘要逻辑独立复用。",
+    "metrics": [
+      {
+        "label": "职责边界",
+        "before": "意图识别、API 读取、格式化混在一起",
+        "after": "capability_reply.py 独立承载公共逻辑",
+        "note": "减少后续功能互相污染"
+      },
+      {
+        "label": "回归测试",
+        "before": "容易凭感觉改",
+        "after": "2633 tests passed",
+        "note": "本地全量测试已验证"
+      }
+    ],
+    "links": [
+      {
+        "label": "能力 API",
+        "url": "/api/capabilities"
+      }
+    ],
+    "tags": [
+      "refactor",
+      "shared-code",
+      "tests"
+    ]
+  },
+  {
+    "date": "2026-05-03",
+    "title": "OBP 超时兜底上线",
+    "category": "稳定性",
+    "evidence": "commit 28207001: perf-add-obp-timeout-fallback",
+    "impact": "主模型卡住时可以切到兜底路径，减少 QQ 长时间无响应的体验风险。",
+    "metrics": [
+      {
+        "label": "模型链路",
+        "before": "单点超时影响体验",
+        "after": "OBP fallback 兜底",
+        "note": "配合 8093/obp 控制台观察"
+      }
+    ],
+    "links": [
+      {
+        "label": "OBP",
+        "url": "/obp/"
+      }
+    ],
+    "tags": [
+      "obp",
+      "fallback",
+      "llm"
+    ]
+  },
+  {
+    "date": "2026-05-02",
+    "title": "冷启动和第二句慢的问题被压下去",
+    "category": "性能",
+    "evidence": "commits a06d0abb / ed01a302 / 2b4d21b3",
+    "impact": "启动预热、热路径减负、consolidation 移出热路径，聊天体感更接近“在线”。",
+    "metrics": [
+      {
+        "label": "启动后首轮",
+        "before": "冷路径明显慢",
+        "after": "启动后主动 warmup",
+        "note": "Tokenizer 和 LLM 相关缓存预热"
+      },
+      {
+        "label": "热路径",
+        "before": "回复链路夹杂后台维护",
+        "after": "consolidation off hot path",
+        "note": "减少第二句仍慢的问题"
+      }
+    ],
+    "links": [],
+    "tags": [
+      "performance",
+      "warmup",
+      "hot-path"
+    ]
+  },
+  {
+    "date": "2026-05-01",
+    "title": "节假日和天气报告更贴近日常使用",
+    "category": "生活自动化",
+    "evidence": "commits 5db12e27 / 9cb9d360 / cb4bb208 / f53a010c",
+    "impact": "劳动节不再按工作日推送；天气只展示当天后续时段，格式更容易读。",
+    "metrics": [
+      {
+        "label": "节假日",
+        "before": "劳动节仍按工作日触发",
+        "after": "notify schedule 尊重节假日",
+        "note": "共享 holiday workday helper"
+      },
+      {
+        "label": "天气",
+        "before": "可能显示明天凌晨时段",
+        "after": "聚焦今天接下来几个小时",
+        "note": "符合你的实际关注点"
+      }
+    ],
+    "links": [],
+    "tags": [
+      "weather",
+      "holiday",
+      "notify"
+    ]
+  },
+  {
+    "date": "2026-04-29",
+    "title": "Nanobot 对齐上游 v0.1.5.post3",
+    "category": "上游同步",
+    "evidence": "commit 7ea504ec: Merge tag v0.1.5.post3",
+    "impact": "保留 nanobot-exp 自定义能力的同时继续跟上官方本体，降低长期分叉成本。",
+    "metrics": [
+      {
+        "label": "上游同步",
+        "before": "本地改动容易和官方脱节",
+        "after": "合并 v0.1.5.post3 并跑通测试",
+        "note": "继续保持可升级链条"
+      }
+    ],
+    "links": [
+      {
+        "label": "上游",
+        "url": "https://github.com/HKUDS/nanobot"
+      }
+    ],
+    "tags": [
+      "upstream",
+      "nanobot-core"
+    ]
+  }
+]

@@ -330,8 +330,10 @@ async fn main() {
         .route("/api/system", get(api_system))
         .route("/api/dashboard-history", get(api_dashboard_history))
         .route("/sidecars", get(sidecars_page))
+        .route("/evolution", get(evolution_page))
         .route("/api/sidecars", get(api_sidecars))
         .route("/api/capabilities", get(api_capabilities))
+        .route("/api/evolution", get(api_evolution))
         .route("/api/notify-jobs", get(api_notify_jobs))
         .route("/rss", any(proxy_rss_root))
         .route("/rss/", any(proxy_rss_root))
@@ -676,6 +678,10 @@ async fn api_capabilities(State(state): State<AppState>) -> impl IntoResponse {
     Json(capability_registry_snapshot(&state).await)
 }
 
+async fn api_evolution() -> impl IntoResponse {
+    Json(evolution_snapshot().await)
+}
+
 macro_rules! proxy_pair {
     ($root_fn:ident, $path_fn:ident, $upstream:literal, $prefix:literal) => {
         async fn $root_fn(
@@ -968,6 +974,7 @@ async fn dashboard() -> Html<String> {
       <div class="actions">
         <a class="btn" href="/lof">&#x6253;&#x5f00; LOF &#x770b;&#x677f;</a>
         <a class="btn secondary" href="/rss/">RSS &#x8ba2;&#x9605;</a>
+        <a class="btn secondary" href="/evolution">&#x8fdb;&#x5316;&#x65e5;&#x5fd7;</a>
         <a class="btn secondary" href="/sidecars">&#x670d;&#x52a1;&#x603b;&#x63a7;</a>
         <button class="btn secondary" onclick="loadAll(true)">&#x5237;&#x65b0;</button>
         <button class="btn secondary" onclick="toggleTheme()">&#x660e;&#x6697;</button>
@@ -984,7 +991,7 @@ async fn dashboard() -> Html<String> {
     <article class="panel card fade" style="animation-delay:.12s"><h2>&#x5b9a;&#x65f6;&#x4efb;&#x52a1;</h2><div class="metric" id="notifyMetrics"></div></article>
     <article class="panel card full fade" style="animation-delay:.13s"><h2>&#x4eca;&#x65e5;&#x6458;&#x8981;</h2><div id="todayBrief"></div></article>
     <article class="panel card wide fade" style="animation-delay:.14s"><h2>&#x9700;&#x8981;&#x4f60;&#x770b;</h2><div class="list" id="attention"></div></article>
-    <article class="panel card fade" style="animation-delay:.16s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/lof">LOF &#x96f7;&#x8fbe;<span>&#x4f30;&#x503c; / &#x6ea2;&#x4ef7; / &#x62a5;&#x544a;</span></a><a href="/rss/">RSS &#x6587;&#x7ae0;<span>&#x5fae;&#x4fe1; / &#x9e2d;&#x54e5; / Markdown</span></a><a href="/reflexio/">Reflexio<span>&#x8bb0;&#x5fc6;&#x4e0e;&#x53cd;&#x601d;</span></a><a href="/trends/">热点雷达<span>全网热榜 / MCP 工具 / 话题分析</span></a><a href="/sidecars">&#x670d;&#x52a1;&#x603b;&#x63a7;<span>&#x65e5;&#x5fd7; / &#x91cd;&#x542f;&#x547d;&#x4ee4;</span></a></div></article>
+    <article class="panel card fade" style="animation-delay:.16s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/lof">LOF &#x96f7;&#x8fbe;<span>&#x4f30;&#x503c; / &#x6ea2;&#x4ef7; / &#x62a5;&#x544a;</span></a><a href="/rss/">RSS &#x6587;&#x7ae0;<span>&#x5fae;&#x4fe1; / &#x9e2d;&#x54e5; / Markdown</span></a><a href="/reflexio/">Reflexio<span>&#x8bb0;&#x5fc6;&#x4e0e;&#x53cd;&#x601d;</span></a><a href="/trends/">热点雷达<span>全网热榜 / MCP 工具 / 话题分析</span></a><a href="/sidecars">&#x670d;&#x52a1;&#x603b;&#x63a7;<span>&#x65e5;&#x5fd7; / &#x91cd;&#x542f;&#x547d;&#x4ee4;</span></a><a href="/evolution">进化日志<span>能力变化 / 性能证据 / 修复记录</span></a></div></article>
     <article class="panel card wide fade" style="animation-delay:.18s"><h2>&#x6295;&#x8d44;&#x96f7;&#x8fbe;</h2><div id="lofRadar"></div></article>
     <article class="panel card fade" style="animation-delay:.20s"><h2>&#x4fe1;&#x606f;&#x96f7;&#x8fbe;</h2><div class="list" id="infoRadar"></div></article>
     <article class="panel card full fade" style="animation-delay:.21s"><h2>7 &#x5929;&#x5386;&#x53f2;</h2><div id="historyPanel"></div></article>
@@ -1072,6 +1079,48 @@ updateClock();setInterval(updateClock,1000);loadAll();setInterval(()=>loadAll(fa
     )
 }
 
+async fn evolution_page() -> impl IntoResponse {
+    Html(
+        r##"<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Nanobot 进化日志</title>
+<style>
+:root{--bg:#f4efe6;--panel:#fffdf8;--text:#1f241d;--muted:#68705f;--line:#ddd4c3;--accent:#b8642b;--accent2:#297f72;--ok:#18864b;--shadow:0 20px 60px rgba(73,50,24,.14)}
+[data-theme="dark"]{--bg:#111816;--panel:#1d2621;--text:#edf5ea;--muted:#a8b5a4;--line:#334038;--accent:#f0a35c;--accent2:#77c7b7;--ok:#77d39b;--shadow:0 22px 70px rgba(0,0,0,.36)}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(900px 520px at 0 -10%,rgba(184,100,43,.22),transparent 58%),radial-gradient(760px 460px at 100% 0,rgba(41,127,114,.18),transparent 55%),var(--bg);color:var(--text);font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:1120px;margin:0 auto;padding:26px 16px 42px}.hero{display:grid;grid-template-columns:1.3fr .7fr;gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:22px}.eyebrow{color:var(--accent2);font-size:12px;font-weight:900;letter-spacing:.16em}.title{font-family:Georgia,"Noto Serif SC",serif;font-size:44px;line-height:1.04;margin:8px 0 10px;letter-spacing:-.04em}.sub{color:var(--muted);line-height:1.75;margin:0}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}.btn{border:1px solid var(--line);border-radius:999px;padding:10px 14px;background:var(--text);color:var(--bg);font-weight:900;text-decoration:none;cursor:pointer}.btn.secondary{background:transparent;color:var(--text)}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{border:1px solid var(--line);border-radius:18px;padding:14px;background:rgba(255,255,255,.18)}.k{font-size:12px;color:var(--muted)}.v{font-size:30px;font-weight:950;letter-spacing:-.04em}.grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:14px}.event{position:relative;overflow:hidden}.event:before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--accent)}.eventHead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-left:8px}.date{font-weight:950;color:var(--accent2);white-space:nowrap}.name{font-size:22px;font-weight:950}.cat{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:5px 9px;color:var(--accent);font-size:12px;font-weight:900}.impact{color:var(--muted);line-height:1.65;margin:8px 0 12px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-left:8px}.metric{border:1px solid var(--line);border-radius:16px;padding:12px;background:rgba(255,255,255,.16)}.metric b{display:block;margin-bottom:6px}.arrow{color:var(--accent2);font-weight:950}.mini{font-size:12px;color:var(--muted);line-height:1.5}.tags{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0 0 8px}.tag{border:1px solid var(--line);border-radius:999px;padding:5px 8px;font-size:12px;color:var(--muted)}.links{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 0 8px}.links a{color:var(--accent2);font-weight:900;text-decoration:none}.links a:hover{text-decoration:underline}.empty{color:var(--muted);padding:24px}.foot{margin-top:14px;color:var(--muted);font-size:13px}@media(max-width:820px){.hero{grid-template-columns:1fr}.title{font-size:34px}.stats{grid-template-columns:1fr}.eventHead{display:block}.date{margin-top:8px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="hero">
+    <div class="panel">
+      <div class="eyebrow">EVOLUTION LOG</div>
+      <h1 class="title">Nanobot 进化日志</h1>
+      <p class="sub">这里不是情绪价值，是证据账本：能力新增、性能变好、重复错误减少、偏好被固化，都会沉淀成可检查的记录。</p>
+      <div class="toolbar"><a class="btn" href="/">回到驾驶舱</a><a class="btn secondary" href="/sidecars">能力总控</a><a class="btn secondary" href="/api/evolution" target="_blank">JSON</a><button class="btn secondary" onclick="toggleTheme()">明暗</button></div>
+    </div>
+    <div class="panel"><div class="stats" id="stats"><div class="empty">加载中...</div></div></div>
+  </section>
+  <section class="grid" id="events"></section>
+  <div class="foot" id="foot"></div>
+</div>
+<script>
+const root=document.documentElement;if(localStorage.evolutionTheme==='dark'||localStorage.sidecarTheme==='dark')root.setAttribute('data-theme','dark');
+function toggleTheme(){const d=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',d?'light':'dark');localStorage.evolutionTheme=d?'light':'dark'}
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function stat(k,v,n=''){return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="mini">${esc(n)}</div></div>`}
+function render(d){const s=d.summary||{};document.getElementById('stats').innerHTML=stat('总记录',s.total??0,'所有已沉淀变化')+stat('近 7 天',s.recent_7d??0,'最近还在变强的证据')+stat('分类',Object.keys(s.categories||{}).length,'性能 / 稳定性 / 治理等');const items=d.items||[];document.getElementById('events').innerHTML=items.length?items.map(item=>`<article class="panel event"><div class="eventHead"><div><div class="name">${esc(item.title)}</div><div class="impact">${esc(item.impact)}</div><span class="cat">${esc(item.category)}</span></div><div class="date">${esc(item.date)}</div></div><div class="metrics">${(item.metrics||[]).map(m=>`<div class="metric"><b>${esc(m.label)}</b><div class="mini">之前：${esc(m.before)}</div><div class="arrow">→ ${esc(m.after)}</div><div class="mini">${esc(m.note)}</div></div>`).join('')}</div><div class="tags">${(item.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div><div class="links">${(item.links||[]).map(l=>`<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join('')}<span class="mini">证据：${esc(item.evidence)}</span></div></article>`).join(''):'<div class="panel empty">暂无进化记录。</div>';document.getElementById('foot').textContent='最后刷新：'+(d.now||'-')+'；数据源：/root/.nanobot/evolution.json。'}
+fetch('/api/evolution',{cache:'no-store'}).then(r=>r.json()).then(render).catch(e=>{document.getElementById('events').innerHTML='<div class="panel empty">加载失败：'+esc(e.message)+'</div>'});
+</script>
+</body>
+</html>
+"##,
+    )
+}
+
 async fn sidecars_page() -> impl IntoResponse {
     Html(
         r##"<!doctype html>
@@ -1096,7 +1145,7 @@ async fn sidecars_page() -> impl IntoResponse {
     <div class="toolbar">
       <button onclick="loadAll()">&#x5237;&#x65b0;&#x72b6;&#x6001;</button>
       <button onclick="toggleTheme()">&#x5207;&#x6362;&#x660e;&#x6697;</button>
-      <a class="btn" href="/">&#x56de;&#x5230;&#x9a7e;&#x9a76;&#x8231;</a><a class="btn" href="/lof">LOF &#x770b;&#x677f;</a>
+      <a class="btn" href="/">&#x56de;&#x5230;&#x9a7e;&#x9a76;&#x8231;</a><a class="btn" href="/evolution">进化日志</a><a class="btn" href="/lof">LOF &#x770b;&#x677f;</a>
     </div>
   </section>
   <section class="stats" id="stats"></section>
@@ -1278,6 +1327,74 @@ async fn capability_registry_snapshot(state: &AppState) -> CapabilityRegistryRes
         items,
     }
 }
+
+async fn evolution_snapshot() -> serde_json::Value {
+    let mut items = load_evolution_events().await;
+    items.sort_by_key(|item| {
+        item.get("date")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    });
+    items.reverse();
+
+    let cutoff = (shanghai_now().date_naive() - ChronoDuration::days(7))
+        .format("%Y-%m-%d")
+        .to_string();
+    let recent_7d = items
+        .iter()
+        .filter(|item| {
+            item.get("date")
+                .and_then(|v| v.as_str())
+                .is_some_and(|date| date >= cutoff.as_str())
+        })
+        .count();
+    let mut categories: HashMap<String, usize> = HashMap::new();
+    for item in &items {
+        let category = item
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("未分类")
+            .to_string();
+        *categories.entry(category).or_insert(0) += 1;
+    }
+
+    serde_json::json!({
+        "ok": true,
+        "now": shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+        "summary": {
+            "total": items.len(),
+            "recent_7d": recent_7d,
+            "categories": categories,
+        },
+        "items": items,
+    })
+}
+
+async fn load_evolution_events() -> Vec<serde_json::Value> {
+    let path = std::env::var("EVOLUTION_LOG_CONFIG")
+        .unwrap_or_else(|_| "/root/.nanobot/evolution.json".to_string());
+    let text = tokio::fs::read_to_string(&path)
+        .await
+        .unwrap_or_else(|_| DEFAULT_EVOLUTION_LOG.to_string());
+    serde_json::from_str::<Vec<serde_json::Value>>(&text)
+        .unwrap_or_else(|_| serde_json::from_str(DEFAULT_EVOLUTION_LOG).unwrap_or_default())
+}
+
+const DEFAULT_EVOLUTION_LOG: &str = r#"[
+  {
+    "date": "2026-05-03",
+    "title": "Evolution log bootstrap",
+    "category": "observability",
+    "evidence": "built-in fallback",
+    "impact": "The service can explain how it changes even if /root/.nanobot/evolution.json is missing.",
+    "metrics": [
+      {"label": "visibility", "before": "implicit", "after": "observable", "note": "replace this fallback with evolution.json"}
+    ],
+    "links": [{"label": "API", "url": "/api/evolution"}],
+    "tags": ["evolution"]
+  }
+]"#;
 
 async fn load_managed_sidecars() -> Vec<ManagedSidecar> {
     let path = std::env::var("SIDECAR_MANAGER_CONFIG")

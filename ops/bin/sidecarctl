@@ -11,8 +11,10 @@ from pathlib import Path
 
 API = 'http://127.0.0.1:8093/api/sidecars'
 CAPABILITIES_API = 'http://127.0.0.1:8093/api/capabilities'
+EVOLUTION_API = 'http://127.0.0.1:8093/api/evolution'
 CONFIG = Path('/root/.nanobot/sidecars.json')
 CAPABILITIES_CONFIG = Path('/root/.nanobot/capabilities.json')
+EVOLUTION_CONFIG = Path('/root/.nanobot/evolution.json')
 STACK_TARGET = 'nanobot-stack.target'
 RESTART_ORDER = [
     'podman-public-rule',
@@ -52,6 +54,17 @@ def load_capabilities_config():
 def load_capabilities_api():
     with urllib.request.urlopen(CAPABILITIES_API, timeout=6) as resp:
         return json.loads(resp.read().decode('utf-8'))
+
+
+def load_evolution_api():
+    with urllib.request.urlopen(EVOLUTION_API, timeout=6) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def load_evolution_config():
+    if EVOLUTION_CONFIG.exists():
+        return json.loads(EVOLUTION_CONFIG.read_text())
+    return []
 
 
 def by_id():
@@ -165,6 +178,30 @@ def capabilities(raw=False):
             f"{ok:<4} "
             f"{item.get('name','-')}"
         )
+
+
+def evolution(raw=False):
+    try:
+        data = load_evolution_api()
+    except Exception:
+        items = load_evolution_config()
+        data = {
+            'now': 'offline-config',
+            'summary': {'total': len(items), 'recent_7d': 0, 'categories': {}},
+            'items': items,
+        }
+    if raw:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    summary = data.get('summary', {})
+    print(
+        'Evolution: '
+        f"{summary.get('total', 0)} records, "
+        f"{summary.get('recent_7d', 0)} in 7d @ {data.get('now', '-')}"
+    )
+    print(f"{'date':<12} {'category':<12} title")
+    for item in data.get('items', [])[:10]:
+        print(f"{item.get('date','-'):<12} {item.get('category','-'):<12} {item.get('title','-')}")
 
 
 def stack():
@@ -316,6 +353,7 @@ def usage():
     print('commands:')
     print('  status | list')
     print('  capabilities [--json]')
+    print('  evolution [--json]')
     print('  doctor')
     print('  stack')
     print('  units')
@@ -348,6 +386,8 @@ def main():
         return status()
     if cmd in ('capabilities', 'caps'):
         return capabilities('--json' in rest)
+    if cmd in ('evolution', 'evo'):
+        return evolution('--json' in rest)
     if cmd == 'doctor':
         return doctor()
     if cmd == 'stack':

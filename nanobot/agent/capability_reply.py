@@ -19,6 +19,7 @@ DASHBOARD_ENDPOINTS = {
     "notify": ("/api/notify-jobs", {}),
     "articles": ("/rss/api/entries?days=1&limit=5", {"items": []}),
     "lof": ("/api/status", {}),
+    "evolution": ("/api/evolution", {"items": []}),
 }
 
 
@@ -66,6 +67,28 @@ def format_capability_status() -> str:
         "\u5f02\u5e38\u670d\u52a1\uff1a" + ("\u3001".join(bad_sidecars[:5]) if bad_sidecars else "\u6682\u65e0"),
         "\u8be6\u60c5\uff1ahttp://150.158.121.88:8093/sidecars",
     ])
+
+
+def format_evolution_brief() -> str:
+    data = _dict(dashboard_json("/api/evolution", {"items": []}))
+    summary = _dict(data.get("summary"))
+    items = _items(data)[:5]
+    lines = [
+        "\U0001f9ed Nanobot \u8fdb\u5316\u62a5\u544a\uff08\u672a\u8c03\u7528 LLM\uff09",
+        f"\u5df2\u8bb0\u5f55\uff1a{summary.get('total', len(items))} \u6761\uff1b\u8fd1 7 \u5929\uff1a{summary.get('recent_7d', '-') } \u6761",
+    ]
+    for item in items:
+        metrics = _list(item.get("metrics"))
+        metric = _dict(metrics[0]) if metrics else {}
+        note = f"\uff1b{_short(metric.get('label'), 12)}\uff1a{_short(metric.get('after'), 18)}" if metric else ""
+        lines.append(
+            f"- {item.get('date', '-')} {_short(item.get('title'), 24)}"
+            f"\uff1a{_short(item.get('impact'), 44)}{note}"
+        )
+    if not items:
+        lines.append("- \u6682\u65e0\u8fdb\u5316\u8bb0\u5f55\uff0c\u5148\u68c0\u67e5 /root/.nanobot/evolution.json")
+    lines.append("\u8be6\u60c5\uff1ahttp://150.158.121.88:8093/evolution")
+    return "\n".join(lines)
 
 
 def format_today_brief() -> str:

@@ -10,6 +10,7 @@ from typing import Any
 from nanobot.agent.capability_reply import (
     format_capability_menu,
     format_capability_status,
+    format_evolution_brief,
     format_today_brief,
 )
 from nanobot.bus.events import InboundMessage, OutboundMessage
@@ -79,6 +80,8 @@ def build_direct_reply(
         return _outbound(msg, format_capability_status())
     if _is_today_brief_query(text):
         return _outbound(msg, format_today_brief())
+    if _is_evolution_query(text):
+        return _outbound(msg, format_evolution_brief())
     if _is_ack(text) and _can_direct_ack(history or []):
         return _outbound(msg, "\u597d\uff0c\u6211\u5728\u3002")
     if casual := _casual_reply(text):
@@ -171,6 +174,19 @@ def _is_today_brief_query(text: str) -> bool:
         "\u6709\u4ec0\u4e48\u5efa\u8bae",
     }
     return compact in exact
+
+
+def _is_evolution_query(text: str) -> bool:
+    compact = _compact_text(text)
+    exact = {
+        "\u4f60\u6700\u8fd1\u8fdb\u5316\u4e86\u5417",
+        "\u6700\u8fd1\u8fdb\u5316\u4e86\u5417",
+        "\u8fdb\u5316\u65e5\u5fd7",
+        "\u8fdb\u5316\u62a5\u544a",
+        "\u4f60\u53d8\u5f3a\u4e86\u5417",
+        "\u4f60\u6709\u4ec0\u4e48\u53d8\u5316",
+    }
+    return compact in exact or ("\u8fdb\u5316" in compact and len(compact) <= 18)
 
 
 def _is_ack(text: str) -> bool:

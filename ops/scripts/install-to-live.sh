@@ -9,6 +9,9 @@ install -m 0644 "$repo/config/sidecars.json" /root/.nanobot/sidecars.json
 if [ -f "$repo/config/capabilities.json" ]; then
   install -m 0644 "$repo/config/capabilities.json" /root/.nanobot/capabilities.json
 fi
+if [ -f "$repo/config/evolution.json" ]; then
+  install -m 0644 "$repo/config/evolution.json" /root/.nanobot/evolution.json
+fi
 for f in "$repo"/systemd/*.service "$repo"/systemd/*.target; do
   [ -e "$f" ] || continue
   install -m 0644 "$f" "/etc/systemd/system/$(basename "$f")"

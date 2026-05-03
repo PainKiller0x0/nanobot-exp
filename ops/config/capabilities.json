@@ -241,5 +241,26 @@
     "tags": ["weather", "cron", "life"],
     "mcp_tools": ["weather.forecast"],
     "notes": "天气类能力应该由 Notify 调度，nanobot 只负责触发和投递。"
+  },
+  {
+    "id": "evolution-log",
+    "name": "进化日志",
+    "description": "记录 nanobot 能力、性能、稳定性和偏好固化的可观测证据。",
+    "category": "记忆",
+    "kind": "dashboard",
+    "service_id": "lof",
+    "entry_url": "/evolution",
+    "enabled": true,
+    "trigger_phrases": ["你最近进化了吗", "进化日志", "你变强了吗"],
+    "commands": [
+      {
+        "label": "查看进化 API",
+        "command": "curl -fsS http://127.0.0.1:8093/api/evolution"
+      }
+    ],
+    "data_paths": ["/root/.nanobot/evolution.json"],
+    "tags": ["evolution", "observability", "memory"],
+    "mcp_tools": ["evolution.list"],
+    "notes": "把“变强了”落实为可检查的时间线、指标和证据。"
   }
 ]

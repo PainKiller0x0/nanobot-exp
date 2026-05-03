@@ -143,5 +143,31 @@ def test_today_brief_uses_dashboard_data_without_llm(monkeypatch) -> None:
     assert "\u6d4b\u8bd5\u6587\u7ae0" in out.content
 
 
+def test_evolution_query_uses_evolution_api_without_llm(monkeypatch) -> None:
+    def fake_fetch(path: str, default):
+        if path == "/api/evolution":
+            return {
+                "summary": {"total": 2, "recent_7d": 2},
+                "items": [
+                    {
+                        "date": "2026-05-03",
+                        "title": "\u76f4\u8fde\u56de\u590d\u63d0\u901f",
+                        "impact": "\u72b6\u6001\u95ee\u9898\u4e0d\u518d\u8d70 LLM",
+                        "metrics": [{"label": "\u5ef6\u8fdf", "after": "0.3s"}],
+                    }
+                ],
+            }
+        return default
+
+    monkeypatch.setattr(capability_reply, "dashboard_json", fake_fetch)
+
+    out = build_direct_reply(_msg("\u4f60\u6700\u8fd1\u8fdb\u5316\u4e86\u5417"), model="test-model", start_time=0)
+
+    assert out is not None
+    assert "\u8fdb\u5316\u62a5\u544a" in out.content
+    assert "\u76f4\u8fde\u56de\u590d\u63d0\u901f" in out.content
+    assert out.metadata["_direct_reply"] is True
+
+
 def test_non_status_message_falls_through() -> None:
     assert build_direct_reply(_msg("\u5e2e\u6211\u5199\u4e00\u6bb5\u603b\u7ed3"), model="test-model", start_time=0) is None
