@@ -1,4 +1,4 @@
-from nanobot.agent import direct_reply
+from nanobot.agent import capability_reply
 from nanobot.agent.direct_reply import build_direct_reply
 from nanobot.bus.events import InboundMessage
 
@@ -61,8 +61,8 @@ def test_ack_after_generic_question_stays_fast() -> None:
 
 def test_capability_menu_uses_registry_without_llm(monkeypatch) -> None:
     monkeypatch.setattr(
-        direct_reply,
-        "_load_capabilities",
+        capability_reply,
+        "load_capabilities",
         lambda: [
             {
                 "id": "ops-health",
@@ -106,7 +106,7 @@ def test_capability_status_uses_dashboard_api_without_llm(monkeypatch) -> None:
             }
         return default
 
-    monkeypatch.setattr(direct_reply, "_fetch_dashboard_json", fake_fetch)
+    monkeypatch.setattr(capability_reply, "dashboard_json", fake_fetch)
 
     out = build_direct_reply(_msg("\u670d\u52a1\u72b6\u6001"), model="test-model", start_time=0)
 
@@ -132,7 +132,7 @@ def test_today_brief_uses_dashboard_data_without_llm(monkeypatch) -> None:
             return {"last_board": {"rows": [{"code": "161129", "name": "\u539f\u6cb9", "rt_premium_pct": 6.2}]}}
         return default
 
-    monkeypatch.setattr(direct_reply, "_fetch_dashboard_json", fake_fetch)
+    monkeypatch.setattr(capability_reply, "dashboard_json", fake_fetch)
 
     out = build_direct_reply(_msg("\u4eca\u5929\u5148\u770b\u4ec0\u4e48"), model="test-model", start_time=0)
 
