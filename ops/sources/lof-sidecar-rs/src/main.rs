@@ -153,6 +153,68 @@ struct SidecarManagerResponse {
     items: Vec<ManagedSidecarStatus>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct CapabilityCommand {
+    label: String,
+    command: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Capability {
+    id: String,
+    name: String,
+    description: String,
+    category: String,
+    kind: String,
+    service_id: Option<String>,
+    entry_url: Option<String>,
+    enabled: bool,
+    trigger_phrases: Vec<String>,
+    commands: Vec<CapabilityCommand>,
+    data_paths: Vec<String>,
+    tags: Vec<String>,
+    mcp_tools: Vec<String>,
+    notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CapabilityStatus {
+    id: String,
+    name: String,
+    description: String,
+    category: String,
+    kind: String,
+    service_id: Option<String>,
+    entry_url: Option<String>,
+    enabled: bool,
+    ok: bool,
+    health_status: String,
+    sidecar_ok: Option<bool>,
+    trigger_phrases: Vec<String>,
+    commands: Vec<CapabilityCommand>,
+    data_paths: Vec<String>,
+    tags: Vec<String>,
+    mcp_tools: Vec<String>,
+    notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CapabilitySummary {
+    total: usize,
+    enabled: usize,
+    healthy: usize,
+    degraded: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CapabilityRegistryResponse {
+    now: String,
+    summary: CapabilitySummary,
+    items: Vec<CapabilityStatus>,
+}
+
 #[derive(Debug, Clone)]
 struct Fund {
     code: String,
@@ -269,6 +331,7 @@ async fn main() {
         .route("/api/dashboard-history", get(api_dashboard_history))
         .route("/sidecars", get(sidecars_page))
         .route("/api/sidecars", get(api_sidecars))
+        .route("/api/capabilities", get(api_capabilities))
         .route("/api/notify-jobs", get(api_notify_jobs))
         .route("/rss", any(proxy_rss_root))
         .route("/rss/", any(proxy_rss_root))
@@ -374,9 +437,12 @@ async fn refresh_dashboard_history(state: &AppState) -> serde_json::Value {
         })
         .count() as u64;
 
-    let rss = fetch_json_value(&state.http, "http://127.0.0.1:8091/api/entries?days=1&limit=100")
-        .await
-        .unwrap_or_else(|| serde_json::json!({}));
+    let rss = fetch_json_value(
+        &state.http,
+        "http://127.0.0.1:8091/api/entries?days=1&limit=100",
+    )
+    .await
+    .unwrap_or_else(|| serde_json::json!({}));
     let article_count = rss
         .get("items")
         .and_then(|v| v.as_array())
@@ -463,7 +529,10 @@ async fn read_dashboard_history(path: &Path) -> Vec<serde_json::Value> {
     }
 }
 
-async fn write_dashboard_history(path: &Path, history: &[serde_json::Value]) -> std::io::Result<()> {
+async fn write_dashboard_history(
+    path: &Path,
+    history: &[serde_json::Value],
+) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -495,9 +564,21 @@ fn update_dashboard_history_entry(existing: &mut serde_json::Value, sample: serd
             }
         }
     }
-    update_max_field(obj, "memory_used_max_mb", mem_value(&sample, "memory_used_max_mb"));
-    update_max_field(obj, "service_unhealthy_max", mem_value(&sample, "service_unhealthy_max"));
-    update_max_field(obj, "task_errors_max", mem_value(&sample, "task_errors_max"));
+    update_max_field(
+        obj,
+        "memory_used_max_mb",
+        mem_value(&sample, "memory_used_max_mb"),
+    );
+    update_max_field(
+        obj,
+        "service_unhealthy_max",
+        mem_value(&sample, "service_unhealthy_max"),
+    );
+    update_max_field(
+        obj,
+        "task_errors_max",
+        mem_value(&sample, "task_errors_max"),
+    );
     update_max_field(
         obj,
         "lof_high_premium_max",
@@ -591,6 +672,10 @@ async fn api_sidecars(State(state): State<AppState>) -> impl IntoResponse {
     Json(sidecar_manager_snapshot(&state).await)
 }
 
+async fn api_capabilities(State(state): State<AppState>) -> impl IntoResponse {
+    Json(capability_registry_snapshot(&state).await)
+}
+
 macro_rules! proxy_pair {
     ($root_fn:ident, $path_fn:ident, $upstream:literal, $prefix:literal) => {
         async fn $root_fn(
@@ -616,7 +701,12 @@ macro_rules! proxy_pair {
     };
 }
 
-proxy_pair!(proxy_rss_root, proxy_rss_path, "http://127.0.0.1:8091", "/rss");
+proxy_pair!(
+    proxy_rss_root,
+    proxy_rss_path,
+    "http://127.0.0.1:8091",
+    "/rss"
+);
 proxy_pair!(
     proxy_reflexio_root,
     proxy_reflexio_path,
@@ -694,7 +784,10 @@ fn is_obp_proxy_authorized(headers: &HeaderMap) -> bool {
         return true;
     }
 
-    let Some(auth) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
+    let Some(auth) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    else {
         return false;
     };
     let auth = auth.trim();
@@ -986,7 +1079,7 @@ async fn sidecars_page() -> impl IntoResponse {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Nanobot Sidecar &#x603b;&#x63a7;&#x53f0;</title>
+<title>Nanobot &#x80fd;&#x529b;&#x603b;&#x63a7;&#x53f0;</title>
 <style>
 :root{--bg:#eef3ea;--panel:#fffdf7;--text:#20231d;--muted:#68705f;--line:#d7decf;--ok:#18864b;--bad:#c13c2f;--warn:#b7791f;--accent:#2f6f88;--shadow:0 18px 45px rgba(35,48,32,.12)}
 [data-theme="dark"]{--bg:#141a17;--panel:#202821;--text:#edf5ea;--muted:#a9b6a5;--line:#354035;--ok:#68d391;--bad:#fc8181;--warn:#f6c177;--accent:#7dd3fc;--shadow:0 18px 45px rgba(0,0,0,.28)}
@@ -997,8 +1090,8 @@ async fn sidecars_page() -> impl IntoResponse {
 <div class="wrap">
   <section class="hero">
     <div>
-      <h1 class="title">Nanobot Sidecar &#x603b;&#x63a7;&#x53f0;</h1>
-      <p class="sub">&#x4e00;&#x4e2a;&#x8f7b;&#x91cf;&#x53ea;&#x8bfb;&#x603b;&#x63a7;&#x53f0;&#xff1a;&#x67e5;&#x770b;&#x5065;&#x5eb7;&#x72b6;&#x6001;&#x3001;&#x7aef;&#x53e3;&#x3001;&#x65e5;&#x5fd7;&#x547d;&#x4ee4;&#x3001;&#x516c;&#x7f51;&#x66b4;&#x9732;&#x548c;&#x6700;&#x8fd1;&#x544a;&#x8b66;&#x3002;&#x4e0d;&#x65b0;&#x589e;&#x5e38;&#x9a7b;&#x8fdb;&#x7a0b;&#x3002;</p>
+      <h1 class="title">Nanobot &#x80fd;&#x529b;&#x603b;&#x63a7;&#x53f0;</h1>
+      <p class="sub">&#x628a;&#x80fd;&#x529b;&#x3001;sidecar&#x3001;cron&#x3001;&#x811a;&#x672c;&#x5165;&#x53e3;&#x7edf;&#x4e00;&#x767b;&#x8bb0;&#x548c;&#x89c2;&#x6d4b;&#x3002;&#x9875;&#x9762;&#x53ea;&#x8bfb;&#xff0c;&#x4e0d;&#x65b0;&#x589e;&#x5e38;&#x9a7b;&#x8fdb;&#x7a0b;&#xff0c;&#x4f46;&#x8ba9; nanobot &#x771f;&#x6b63;&#x77e5;&#x9053;&#x81ea;&#x5df1;&#x4f1a;&#x4ec0;&#x4e48;&#x3001;&#x8c01;&#x5728;&#x652f;&#x6491;&#x3001;&#x600e;&#x4e48;&#x56de;&#x6d4b;&#x3002;</p>
     </div>
     <div class="toolbar">
       <button onclick="loadAll()">&#x5237;&#x65b0;&#x72b6;&#x6001;</button>
@@ -1008,13 +1101,7 @@ async fn sidecars_page() -> impl IntoResponse {
   </section>
   <section class="stats" id="stats"></section>
 
-  <section class="grid" id="abilityGrid" style="margin-bottom:14px">
-    <article class="card ok"><div class="row"><div><div class="name">知识收件箱</div><div class="desc">通用链接收纳、Markdown 抓取、待读列表和“值得看吗”判断。按需运行，不占常驻内存。</div></div><span class="pill ok">能力 · 按需</span></div><div class="meta"><span>触发语</span><b>收一下 + 链接 / 这个值得看吗 + 链接 / 收件箱</b><span>脚本</span><b>/root/.nanobot/workspace/skills/knowledge-inbox/inbox.py</b><span>数据</span><b>/root/.nanobot/data/knowledge-inbox</b></div></article>
-    <article class="card ok"><div class="row"><div><div class="name">个人决策助手</div><div class="desc">把系统状态、文章、LOF、定时任务合成“今天先看什么 / 下一步做什么”的建议。</div></div><span class="pill ok">能力 · 只读</span></div><div class="meta"><span>触发语</span><b>今天先看什么 / 今天怎么安排 / 有什么建议</b><span>脚本</span><b>/root/.nanobot/workspace/skills/personal-ops-assistant/ops_summary.py decision</b><span>来源</span><b>8093 API + RSS + Notify + LOF</b></div></article>
-    <article class="card ok"><div class="row"><div><div class="name">文章雷达</div><div class="desc">微信文章、鸭哥 AI、Markdown 预览和广告过滤。运行态由 RSS sidecar 提供。</div></div><span class="pill ok">能力 · sidecar backed</span></div><div class="meta"><span>触发语</span><b>今天文章有哪些 / 鸭哥更新了吗 / 微信文章有没有</b><span>入口</span><b>8093/rss/</b><span>服务</span><b>podman-wechat-rss-sidecar.service</b></div></article>
-    <article class="card ok"><div class="row"><div><div class="name">热点雷达</div><div class="desc">自动收集微博、知乎、B站、百度、财联社、华尔街见闻、今日头条热榜，提供搜索、话题趋势和 MCP 风格工具。</div></div><span class="pill ok">能力 · MCP ready</span></div><div class="meta"><span>触发语</span><b>今天热点 / AI 热点 / 某话题有什么新闻</b><span>入口</span><b>8093/trends/</b><span>服务</span><b>trend-sidecar-rs.service</b></div></article>
-    <article class="card ok"><div class="row"><div><div class="name">运维问答</div><div class="desc">内存、服务、cron、LOF 状态走真实本地数据，不再靠 LLM 猜。</div></div><span class="pill ok">能力 · 快捷查询</span></div><div class="meta"><span>触发语</span><b>内存怎么样 / 服务状态 / cron 任务怎么样 / LOF 有机会吗</b><span>脚本</span><b>/root/.nanobot/workspace/skills/personal-ops-assistant/ops_summary.py</b><span>说明</span><b>不重启服务，不改配置，默认只读</b></div></article>
-  </section>
+  <section class="grid" id="abilityGrid" style="margin-bottom:14px"></section>
   <section class="grid" id="grid"></section>
   <div class="foot" id="foot">&#x52a0;&#x8f7d;&#x4e2d;...</div>
 </div>
@@ -1044,28 +1131,54 @@ function exposureText(x){
   if(x.homepage_url)return '\u7ecf 8093 \u4ee3\u7406';
   return '\u4ec5\u5185\u90e8';
 }
-function render(d){
-  const s=d.summary||{total:0,healthy:0,unhealthy:0};
-  document.getElementById('stats').innerHTML=`<div class="stat"><span>\u603b\u670d\u52a1</span><b>${s.total}</b></div><div class="stat"><span>\u6b63\u5e38</span><b style="color:var(--ok)">${s.healthy}</b></div><div class="stat"><span>\u5f02\u5e38</span><b style="color:var(--bad)">${s.unhealthy}</b></div>`;
-  document.getElementById('grid').innerHTML=(d.items||[]).map(x=>`<article class="card ${x.ok?'ok':'bad'}">
-    <div class="row"><div><div class="name">${esc(x.name)}</div><div class="desc">${esc(x.description)}</div></div>${pill(x.ok,x.check_status)}</div>
-    <div class="meta">
-      <span>\u670d\u52a1 ID</span><b>${esc(x.id)}</b>
-      <span>\u8bbf\u95ee\u5165\u53e3</span><b>${esc(accessText(x))}</b>
-      <span>\u670d\u52a1\u76d1\u542c</span><b>${esc(listenText(x))}</b>
-      <span>\u66b4\u9732\u65b9\u5f0f</span><b>${esc(exposureText(x))}</b>
-      <span>\u7cfb\u7edf\u670d\u52a1</span><b>${esc(x.unit_status || (x.unit ? '\u672a\u77e5' : '\u672a\u6258\u7ba1'))}</b>
-      <span>\u5ef6\u8fdf</span><b>${x.latency_ms==null?'-':x.latency_ms+' ms'}</b>
-      <span>\u542f\u52a8</span><b>${esc(x.active_since||'-')}</b>
-      <span>\u9519\u8bef</span><b>${esc(x.error||'-')}</b>
-    </div>
-    ${(x.recent_errors||[]).length?`<div class="cmd">${cmdHtml('\u6700\u8fd1\u544a\u8b66 / \u9519\u8bef',(x.recent_errors||[]).join('\\n'))}</div>`:''}
-    <div class="links">${x.homepage_url?`<a href="${esc(x.homepage_url)}" target="_blank" rel="noopener">\u6253\u5f00\u9875\u9762</a>`:''}${x.id==='notify'?`<a href="#" onclick="openNotifyJobs();return false;">\u67e5\u770b\u4efb\u52a1\u8be6\u60c5</a>`:''}<a href="/api/sidecars" target="_blank">\u72b6\u6001 JSON</a></div>
-    <div class="cmd">${cmdHtml('\u67e5\u770b\u65e5\u5fd7',x.logs_command)}${cmdHtml('\u91cd\u542f\u670d\u52a1',x.restart_command)}</div>
-  </article>`).join('');
-  document.getElementById('foot').textContent=`\u6700\u540e\u5237\u65b0\uff1a${d.now || '-'}\u3002\u9875\u9762\u53ea\u8bfb\uff0c\u4e0d\u4f1a\u5728\u7f51\u9875\u4e0a\u6267\u884c\u91cd\u542f\uff1b\u9700\u8981\u64cd\u4f5c\u65f6\u8bf7\u590d\u5236\u547d\u4ee4\u5230 SSH \u7ec8\u7aef\u6267\u884c\u3002`;
+function kindText(x){const m={sidecar:'\u5e38\u9a7b sidecar',skill:'Nanobot skill',script:'\u6309\u9700\u811a\u672c',cron:'\u5b9a\u65f6\u4efb\u52a1',gateway:'\u7f51\u5173\u80fd\u529b',mcp:'MCP \u98ce\u683c\u5de5\u5177'};return m[x]||x||'-'}
+function healthPill(x){return '<span class="pill '+(x.ok?'ok':'bad')+'">'+(x.ok?'\u53ef\u7528':'\u5f02\u5e38')+' \u00b7 '+esc(x.health_status||'-')+'</span>'}
+function shortList(items,empty='-'){return (items||[]).length?(items||[]).map(v=>'<span class="pill warn">'+esc(v)+'</span>').join(' '):'<span class="muted">'+esc(empty)+'</span>'}
+function commandCards(commands){return (commands||[]).map(c=>cmdHtml(c.label||'\u547d\u4ee4',c.command||'')).join('')}
+function renderCapabilities(c){
+  const items=c.items||[];
+  document.getElementById('abilityGrid').innerHTML=items.map(x=>'<article class="card '+(x.ok?'ok':'bad')+'">'
+    +'<div class="row"><div><div class="name">'+esc(x.name)+'</div><div class="desc">'+esc(x.description)+'</div></div>'+healthPill(x)+'</div>'
+    +'<div class="meta">'
+      +'<span>\u80fd\u529b ID</span><b>'+esc(x.id)+'</b>'
+      +'<span>\u5206\u7c7b</span><b>'+esc(x.category||'-')+'</b>'
+      +'<span>\u7c7b\u578b</span><b>'+esc(kindText(x.kind))+'</b>'
+      +'<span>\u652f\u6491\u670d\u52a1</span><b>'+esc(x.service_id||'\u6309\u9700/\u65e0\u5e38\u9a7b\u670d\u52a1')+'</b>'
+      +'<span>\u5165\u53e3</span><b>'+(x.entry_url?'<a href="'+esc(x.entry_url)+'" target="_blank" rel="noopener">'+esc(x.entry_url)+'</a>':'\u65e0\u9875\u9762\u5165\u53e3')+'</b>'
+      +'<span>\u89e6\u53d1\u8bed</span><b>'+shortList(x.trigger_phrases,'\u672a\u767b\u8bb0')+'</b>'
+      +'<span>\u6807\u7b7e</span><b>'+shortList(x.tags,'\u65e0')+'</b>'
+      +'<span>MCP</span><b>'+shortList(x.mcp_tools,'\u672a\u66b4\u9732')+'</b>'
+      +'<span>\u6570\u636e</span><b>'+((x.data_paths||[]).map(esc).join('<br>')||'-')+'</b>'
+      +'<span>\u5907\u6ce8</span><b>'+esc(x.notes||'-')+'</b>'
+    +'</div>'
+    +((x.commands||[]).length?'<div class="cmd">'+commandCards(x.commands)+'</div>':'')
+    +'<div class="links">'+(x.entry_url?'<a href="'+esc(x.entry_url)+'" target="_blank" rel="noopener">\u6253\u5f00\u80fd\u529b\u5165\u53e3</a>':'')+'<a href="/api/capabilities" target="_blank">\u80fd\u529b JSON</a></div>'
+  +'</article>').join('') || '<article class="card bad"><div class="name">\u6ca1\u6709\u767b\u8bb0\u80fd\u529b</div><div class="desc">\u8bf7\u68c0\u67e5 /root/.nanobot/capabilities.json\u3002</div></article>';
 }
-async function loadAll(){try{const r=await fetch('/api/sidecars',{cache:'no-store'});render(await r.json())}catch(e){document.getElementById('foot').textContent='\u52a0\u8f7d\u5931\u8d25\uff1a'+e.message}}
+function render(d,c={summary:{}}){
+  const s=d.summary||{total:0,healthy:0,unhealthy:0};
+  const cs=c.summary||{total:0,enabled:0,healthy:0,degraded:0};
+  document.getElementById('stats').innerHTML='<div class="stat"><span>\u80fd\u529b\u603b\u6570</span><b>'+cs.total+'</b></div><div class="stat"><span>\u542f\u7528\u80fd\u529b</span><b style="color:var(--accent)">'+cs.enabled+'</b></div><div class="stat"><span>\u80fd\u529b\u53ef\u7528</span><b style="color:var(--ok)">'+cs.healthy+'</b></div><div class="stat"><span>\u670d\u52a1\u603b\u6570</span><b>'+s.total+'</b></div><div class="stat"><span>\u670d\u52a1\u6b63\u5e38</span><b style="color:var(--ok)">'+s.healthy+'</b></div><div class="stat"><span>\u670d\u52a1\u5f02\u5e38</span><b style="color:var(--bad)">'+s.unhealthy+'</b></div>';
+  renderCapabilities(c);
+  document.getElementById('grid').innerHTML=(d.items||[]).map(x=>'<article class="card '+(x.ok?'ok':'bad')+'">'
+    +'<div class="row"><div><div class="name">'+esc(x.name)+'</div><div class="desc">'+esc(x.description)+'</div></div>'+pill(x.ok,x.check_status)+'</div>'
+    +'<div class="meta">'
+      +'<span>\u670d\u52a1 ID</span><b>'+esc(x.id)+'</b>'
+      +'<span>\u8bbf\u95ee\u5165\u53e3</span><b>'+esc(accessText(x))+'</b>'
+      +'<span>\u670d\u52a1\u76d1\u542c</span><b>'+esc(listenText(x))+'</b>'
+      +'<span>\u66b4\u9732\u65b9\u5f0f</span><b>'+esc(exposureText(x))+'</b>'
+      +'<span>\u7cfb\u7edf\u670d\u52a1</span><b>'+esc(x.unit_status || (x.unit ? '\u672a\u77e5' : '\u672a\u6258\u7ba1'))+'</b>'
+      +'<span>\u5ef6\u8fdf</span><b>'+(x.latency_ms==null?'-':x.latency_ms+' ms')+'</b>'
+      +'<span>\u542f\u52a8</span><b>'+esc(x.active_since||'-')+'</b>'
+      +'<span>\u9519\u8bef</span><b>'+esc(x.error||'-')+'</b>'
+    +'</div>'
+    +((x.recent_errors||[]).length?'<div class="cmd">'+cmdHtml('\u6700\u8fd1\u544a\u8b66 / \u9519\u8bef',(x.recent_errors||[]).join('\n'))+'</div>':'')
+    +'<div class="links">'+(x.homepage_url?'<a href="'+esc(x.homepage_url)+'" target="_blank" rel="noopener">\u6253\u5f00\u9875\u9762</a>':'')+(x.id==='notify'?'<a href="#" onclick="openNotifyJobs();return false;">\u67e5\u770b\u4efb\u52a1\u8be6\u60c5</a>':'')+'<a href="/api/sidecars" target="_blank">\u72b6\u6001 JSON</a></div>'
+    +'<div class="cmd">'+cmdHtml('\u67e5\u770b\u65e5\u5fd7',x.logs_command)+cmdHtml('\u91cd\u542f\u670d\u52a1',x.restart_command)+'</div>'
+  +'</article>').join('');
+  document.getElementById('foot').textContent='\u6700\u540e\u5237\u65b0\uff1a'+(d.now || c.now || '-')+'\u3002\u80fd\u529b\u5361\u6765\u81ea capabilities.json\uff0c\u670d\u52a1\u5361\u6765\u81ea sidecars.json\uff1b\u9875\u9762\u53ea\u8bfb\uff0c\u4e0d\u4f1a\u5728\u7f51\u9875\u4e0a\u6267\u884c\u91cd\u542f\u3002';
+}
+async function loadAll(){try{const [sr,cr]=await Promise.all([fetch('/api/sidecars',{cache:'no-store'}),fetch('/api/capabilities',{cache:'no-store'})]);render(await sr.json(),await cr.json())}catch(e){document.getElementById('foot').textContent='\u52a0\u8f7d\u5931\u8d25\uff1a'+e.message}}
 function notifyStatusPill(st){const s=st||'-';const cls=s==='sent'?'ok':(s==='error'?'bad':(s==='running'?'warn':''));return `<span class="pill ${cls}">${esc(s)}</span>`}
 async function openNotifyJobs(){const modal=document.getElementById('notifyModal');modal.classList.add('show');document.getElementById('notifySub').textContent='\u52a0\u8f7d\u4e2d...';document.getElementById('notifyBody').innerHTML='';try{const r=await fetch('/api/notify-jobs',{cache:'no-store'});const d=await r.json();renderNotifyJobs(d)}catch(e){document.getElementById('notifySub').textContent='\u52a0\u8f7d\u5931\u8d25\uff1a'+e.message}}
 function closeNotifyModal(){document.getElementById('notifyModal').classList.remove('show')}
@@ -1105,6 +1218,67 @@ async fn sidecar_manager_snapshot(state: &AppState) -> SidecarManagerResponse {
     }
 }
 
+async fn capability_registry_snapshot(state: &AppState) -> CapabilityRegistryResponse {
+    let sidecars = sidecar_manager_snapshot(state).await;
+    let sidecar_by_id: HashMap<String, ManagedSidecarStatus> = sidecars
+        .items
+        .into_iter()
+        .map(|item| (item.id.clone(), item))
+        .collect();
+    let mut items = Vec::new();
+    for cap in load_capabilities().await {
+        let sidecar = cap
+            .service_id
+            .as_deref()
+            .and_then(|id| sidecar_by_id.get(id));
+        let sidecar_ok = sidecar.map(|item| item.ok);
+        let ok = cap.enabled && sidecar_ok.unwrap_or(true);
+        let health_status = if !cap.enabled {
+            "disabled".to_string()
+        } else if let Some(item) = sidecar {
+            if item.ok {
+                format!("sidecar ok: {}", item.check_status)
+            } else {
+                format!("sidecar degraded: {}", item.check_status)
+            }
+        } else {
+            "available on demand".to_string()
+        };
+        items.push(CapabilityStatus {
+            id: cap.id,
+            name: cap.name,
+            description: cap.description,
+            category: cap.category,
+            kind: cap.kind,
+            service_id: cap.service_id,
+            entry_url: cap.entry_url,
+            enabled: cap.enabled,
+            ok,
+            health_status,
+            sidecar_ok,
+            trigger_phrases: cap.trigger_phrases,
+            commands: cap.commands,
+            data_paths: cap.data_paths,
+            tags: cap.tags,
+            mcp_tools: cap.mcp_tools,
+            notes: cap.notes,
+        });
+    }
+    let total = items.len();
+    let enabled = items.iter().filter(|item| item.enabled).count();
+    let healthy = items.iter().filter(|item| item.ok).count();
+    CapabilityRegistryResponse {
+        now: shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+        summary: CapabilitySummary {
+            total,
+            enabled,
+            healthy,
+            degraded: total.saturating_sub(healthy),
+        },
+        items,
+    }
+}
+
 async fn load_managed_sidecars() -> Vec<ManagedSidecar> {
     let path = std::env::var("SIDECAR_MANAGER_CONFIG")
         .unwrap_or_else(|_| "/root/.nanobot/sidecars.json".to_string());
@@ -1128,6 +1302,38 @@ fn default_managed_sidecars() -> Vec<ManagedSidecar> {
         public: true,
         logs_command: "journalctl -u lof-sidecar.service -f".into(),
         restart_command: "systemctl restart lof-sidecar.service".into(),
+    }]
+}
+
+async fn load_capabilities() -> Vec<Capability> {
+    let path = std::env::var("CAPABILITY_REGISTRY_CONFIG")
+        .unwrap_or_else(|_| "/root/.nanobot/capabilities.json".to_string());
+    match tokio::fs::read_to_string(&path).await {
+        Ok(text) => serde_json::from_str::<Vec<Capability>>(&text)
+            .unwrap_or_else(|_| default_capabilities()),
+        Err(_) => default_capabilities(),
+    }
+}
+
+fn default_capabilities() -> Vec<Capability> {
+    vec![Capability {
+        id: "lof-monitor".into(),
+        name: "LOF Monitor".into(),
+        description: "Fallback capability registry when capabilities.json is missing.".into(),
+        category: "finance".into(),
+        kind: "sidecar".into(),
+        service_id: Some("lof".into()),
+        entry_url: Some("/lof".into()),
+        enabled: true,
+        trigger_phrases: vec!["lof status".into()],
+        commands: vec![CapabilityCommand {
+            label: "logs".into(),
+            command: "journalctl -u lof-sidecar.service -f".into(),
+        }],
+        data_paths: Vec::new(),
+        tags: vec!["finance".into(), "sidecar".into()],
+        mcp_tools: Vec::new(),
+        notes: Some("Install /root/.nanobot/capabilities.json for the full registry.".into()),
     }]
 }
 

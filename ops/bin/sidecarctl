@@ -10,7 +10,9 @@ import urllib.request
 from pathlib import Path
 
 API = 'http://127.0.0.1:8093/api/sidecars'
+CAPABILITIES_API = 'http://127.0.0.1:8093/api/capabilities'
 CONFIG = Path('/root/.nanobot/sidecars.json')
+CAPABILITIES_CONFIG = Path('/root/.nanobot/capabilities.json')
 STACK_TARGET = 'nanobot-stack.target'
 RESTART_ORDER = [
     'podman-public-rule',
@@ -38,6 +40,17 @@ def load_config():
 
 def load_api():
     with urllib.request.urlopen(API, timeout=6) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def load_capabilities_config():
+    if CAPABILITIES_CONFIG.exists():
+        return json.loads(CAPABILITIES_CONFIG.read_text())
+    return []
+
+
+def load_capabilities_api():
+    with urllib.request.urlopen(CAPABILITIES_API, timeout=6) as resp:
         return json.loads(resp.read().decode('utf-8'))
 
 
@@ -116,6 +129,42 @@ def urls(arg='all'):
 def units():
     for cfg in load_config():
         print(f"{cfg.get('id'):<20} {cfg.get('unit') or '-'}")
+
+
+def capabilities(raw=False):
+    try:
+        data = load_capabilities_api()
+    except Exception:
+        items = load_capabilities_config()
+        data = {
+            'now': 'offline-config',
+            'summary': {
+                'total': len(items),
+                'enabled': sum(1 for item in items if item.get('enabled')),
+                'healthy': 0,
+                'degraded': 0,
+            },
+            'items': items,
+        }
+    if raw:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    summary = data.get('summary', {})
+    print(
+        'Capabilities: '
+        f"{summary.get('healthy', 0)}/{summary.get('total', 0)} healthy, "
+        f"{summary.get('enabled', 0)} enabled @ {data.get('now', '-')}"
+    )
+    print(f"{'id':<24} {'kind':<10} {'service':<12} {'ok':<4} name")
+    for item in data.get('items', []):
+        ok = 'yes' if item.get('ok') else ('-' if 'ok' not in item else 'no')
+        print(
+            f"{item.get('id','-'):<24} "
+            f"{item.get('kind','-'):<10} "
+            f"{str(item.get('service_id') or '-'):<12} "
+            f"{ok:<4} "
+            f"{item.get('name','-')}"
+        )
 
 
 def stack():
@@ -266,6 +315,7 @@ def usage():
     print('usage: sidecarctl <command> [args]')
     print('commands:')
     print('  status | list')
+    print('  capabilities [--json]')
     print('  doctor')
     print('  stack')
     print('  units')
@@ -296,6 +346,8 @@ def main():
     rest = args[1:]
     if cmd in ('status', 'list'):
         return status()
+    if cmd in ('capabilities', 'caps'):
+        return capabilities('--json' in rest)
     if cmd == 'doctor':
         return doctor()
     if cmd == 'stack':

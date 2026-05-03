@@ -6,6 +6,9 @@ install -m 0755 "$repo/sbin/rust-sidecar-maintain" /usr/local/sbin/rust-sidecar-
 if [ -f "$repo/scripts/deploy-sidecar.sh" ]; then install -m 0755 "$repo/scripts/deploy-sidecar.sh" /usr/local/sbin/deploy-sidecar; fi
 if [ -f "$repo/sbin/podman-port-forward-allow.sh" ]; then install -m 0755 "$repo/sbin/podman-port-forward-allow.sh" /usr/local/sbin/podman-port-forward-allow.sh; fi
 install -m 0644 "$repo/config/sidecars.json" /root/.nanobot/sidecars.json
+if [ -f "$repo/config/capabilities.json" ]; then
+  install -m 0644 "$repo/config/capabilities.json" /root/.nanobot/capabilities.json
+fi
 for f in "$repo"/systemd/*.service "$repo"/systemd/*.target; do
   [ -e "$f" ] || continue
   install -m 0644 "$f" "/etc/systemd/system/$(basename "$f")"
