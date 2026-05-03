@@ -1,16 +1,18 @@
-﻿"""Local Reflexio memory direct replies."""
+"""Local Reflexio memory direct replies."""
 
 from __future__ import annotations
 
-import json
-import os
 import re
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+from nanobot.agent.direct_reply_common import (
+    compact_text as _compact,
+    get_json as _common_get_json,
+    post_json as _common_post_json,
+    short_text as _short,
+)
 
 REFLEXIO_TIMEOUT = 0.8
-DASHBOARD_BASES = ("http://172.17.0.1:8093", "http://127.0.0.1:8093")
 _SAVE_PATTERNS = (
     r"^\s*(?:帮我)?记住[：:，,\s]*(.+)$",
     r"^\s*(?:你)?记一下[：:，,\s]*(.+)$",
@@ -93,7 +95,9 @@ def format_memory_status() -> str:
         lines.append("最近记住：")
         for item in recent[:5]:
             if isinstance(item, dict):
-                lines.append(f"- {_short(item.get('content'), 44)}（{item.get('category', 'note')}）")
+                lines.append(
+                    f"- {_short(item.get('content'), 44)}（{item.get('category', 'note')}）"
+                )
     else:
         lines.append("最近记住：暂无。你可以说：记住 我喜欢……")
     lines.append("看板：http://150.158.121.88:8093/reflexio/")
@@ -119,50 +123,16 @@ def search_memory(query: str) -> str:
 
 
 def get_json(path: str, default: Any) -> Any:
-    return _request_json("GET", path, None, default)
+    return _common_get_json(path, default, timeout=REFLEXIO_TIMEOUT)
 
 
 def post_json(path: str, payload: dict[str, Any], default: Any) -> Any:
-    return _request_json("POST", path, payload, default)
-
-
-def _request_json(method: str, path: str, payload: dict[str, Any] | None, default: Any) -> Any:
-    body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    headers = {"Accept": "application/json"}
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-    for base in _dashboard_bases():
-        req = Request(base + path, data=body, headers=headers, method=method)
-        try:
-            with urlopen(req, timeout=REFLEXIO_TIMEOUT) as resp:
-                return json.loads(resp.read().decode("utf-8", errors="replace"))
-        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
-            continue
-    return default
-
-
-def _dashboard_bases() -> list[str]:
-    values = [os.environ.get("NANOBOT_DASHBOARD_URL", "").strip(), *DASHBOARD_BASES]
-    bases: list[str] = []
-    for value in values:
-        value = value.rstrip("/")
-        if value and value not in bases:
-            bases.append(value)
-    return bases
+    return _common_post_json(path, payload, default, timeout=REFLEXIO_TIMEOUT)
 
 
 def _guess_category(content: str) -> str:
     return "preference" if any(hint in content for hint in _PREFERENCE_HINTS) else "note"
 
 
-def _compact(text: str) -> str:
-    return re.sub(r"[\s，。！？!?,.、:：;；]+", "", text.lower())
-
-
 def _clean_content(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip())[:4000]
-
-
-def _short(value: Any, limit: int = 48) -> str:
-    text = str(value or "").strip().replace("\n", " ")
-    return text if len(text) <= limit else text[: max(1, limit - 1)] + "..."

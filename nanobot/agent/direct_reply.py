@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Any
 
 from nanobot.agent import memory_reply
+from nanobot.agent.direct_reply_common import compact_text as _compact_text
 from nanobot.agent.capability_reply import (
     format_capability_menu,
     format_capability_status,
@@ -105,10 +105,6 @@ def _outbound(msg: InboundMessage, content: str) -> OutboundMessage:
     )
 
 
-def _compact_text(text: str) -> str:
-    return re.sub(r"[\s\uff0c\u3002\uff01\uff1f!?,.\u3001:\uff1a;\uff1b]+", "", text.lower())
-
-
 def _casual_reply(text: str) -> str | None:
     return _CASUAL_REPLIES.get(_compact_text(text))
 
@@ -127,12 +123,18 @@ def _is_memory_query(text: str) -> bool:
     }
     if compact in exact:
         return True
-    return _MEMORY_WORD in compact and len(compact) <= 18 and compact.startswith((
-        "\u770b\u4e0b",
-        "\u770b\u770b",
-        "\u67e5\u4e0b",
-        "\u67e5\u4e00\u4e0b",
-    ))
+    return (
+        _MEMORY_WORD in compact
+        and len(compact) <= 18
+        and compact.startswith(
+            (
+                "\u770b\u4e0b",
+                "\u770b\u770b",
+                "\u67e5\u4e0b",
+                "\u67e5\u4e00\u4e0b",
+            )
+        )
+    )
 
 
 def _is_capability_menu_query(text: str) -> bool:
@@ -152,7 +154,9 @@ def _is_capability_menu_query(text: str) -> bool:
     }
     if compact in exact:
         return True
-    return "\u80fd\u529b" in compact and compact.endswith(("\u6709\u54ea\u4e9b", "\u662f\u4ec0\u4e48", "\u5217\u51fa\u6765"))
+    return "\u80fd\u529b" in compact and compact.endswith(
+        ("\u6709\u54ea\u4e9b", "\u662f\u4ec0\u4e48", "\u5217\u51fa\u6765")
+    )
 
 
 def _is_capability_status_query(text: str) -> bool:
@@ -237,7 +241,9 @@ def _format_memory_report(model: str, start_time: float, last_usage: dict[str, i
         current, limit = cgroup
         if limit:
             pct = current / limit * 100 if limit else 0
-            lines.append(f"\u5bb9\u5668\uff1a{_fmt_bytes(current)} / {_fmt_bytes(limit)}\uff08{pct:.0f}%\uff09")
+            lines.append(
+                f"\u5bb9\u5668\uff1a{_fmt_bytes(current)} / {_fmt_bytes(limit)}\uff08{pct:.0f}%\uff09"
+            )
         else:
             lines.append(f"\u5bb9\u5668\uff1a{_fmt_bytes(current)}")
     if rss:
@@ -248,7 +254,9 @@ def _format_memory_report(model: str, start_time: float, last_usage: dict[str, i
         prompt = last_usage.get("prompt_tokens", 0)
         cached = last_usage.get("cached_tokens", 0)
         completion = last_usage.get("completion_tokens", 0)
-        lines.append(f"\u4e0a\u6b21 LLM\uff1aprompt {prompt}\uff0ccached {cached}\uff0ccompletion {completion}")
+        lines.append(
+            f"\u4e0a\u6b21 LLM\uff1aprompt {prompt}\uff0ccached {cached}\uff0ccompletion {completion}"
+        )
     return "\n".join(lines)
 
 
