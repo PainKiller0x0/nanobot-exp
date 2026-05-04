@@ -34,6 +34,9 @@
   127.0.0.1    127.0.0.1  127.0.0.1   Radar     same process
   :8091        :8081      :8000       :8095
 
+  /inbox、/evolution、/assets/nb-common.js 由 LOF dashboard
+  同进程提供，不再额外增加常驻服务。
+
   Nanobot core 和内部桥接不直接暴露公网：
 
   nanobot-cage          127.0.0.1:8080    Podman
@@ -51,6 +54,9 @@
 
 - `/` 和 `/lof`：LOF/QDII 看板。
 - `/sidecars` 和 `/api/sidecars`：服务矩阵。
+- `/inbox` 和 `/api/inbox`：知识收件箱预览、删除和 JSON。
+- `/evolution` 和 `/api/evolution`：进化日志。
+- `/assets/nb-common.js`：sidecar 页面共享 JS helper。
 - `/rss/`、`/reflexio/`、`/obp/`、`/trends/`：反代到内部 sidecar。
 
 `podman-port-forward-allow.service` 是公网端口守卫。预期端口策略是：
@@ -67,7 +73,7 @@
 | `nanobot` | Nanobot Core | Podman | `8080` | 无 | QQ/WeChat 入口、agent loop、dream |
 | `rss` | RSS Sidecar | Podman | `8091` | `/rss/` | 微信文章、鸭哥 AI、Markdown 预览、广告过滤 |
 | `qq` | QQ Bridge | systemd | `8092` | 无 | QQ API 直连探测、签名发送支持 |
-| `lof` | LOF Dashboard | systemd | `8093` | `/` | QDII/LOF 看板、公网反代、服务总控 |
+| `lof` | LOF Dashboard | systemd | `8093` | `/` | QDII/LOF 看板、公网反代、服务总控、知识收件箱预览、进化日志 |
 | `notify` | Notify Bridge | systemd | `8094` | 无 | cron 调度、重试状态、QQ 通知分发 |
 | `trend` | Trend Radar | systemd | `8095` | `/trends/` | NewsNow 热榜、搜索、话题分析、MCP 风格工具 |
 | `reflexio` | Reflexio | systemd | `8081` | `/reflexio/` | 记忆和反思看板 |
@@ -173,7 +179,7 @@ Nanobot core 不应该负责：
 
 当前仍然必须承认的 `nanobot-exp` 本体/运行时补丁：
 
-- QQ channel：`ops/config/overrides/qq.py` 是线上 QQ 通道覆盖实现，容器启动时由 `/root/.nanobot/overrides/apply_overrides.py` 覆盖到 `/app/nanobot/channels/qq.py`。它包含签名校验、长文本发送、媒体、fast path 和 sidecar 下载等线上能力。
+- QQ channel：`ops/config/overrides/qq.py` 是线上 QQ 通道覆盖实现，容器启动时由 `/root/.nanobot/overrides/apply_overrides.py` 覆盖到 `/app/nanobot/channels/qq.py`。它包含签名校验、长文本发送、媒体、fast path 和 sidecar 下载等线上能力。短句“内存”查询必须走 `system` fast path，避免让 LLM 猜系统状态。
 - Gateway heartbeat：`gateway.heartbeat.deliveryChannel` / `deliveryChatId` 用来固定原生 heartbeat 投递目标，避免“最近活跃渠道”把自省报告发到 WeChat。
 - 上游同步后必须跑 `ops/scripts/check-nanobot-exp-patches.sh /root/nanobot`，至少确认 heartbeat 投递、HERMES manager check、LOF refresh-before-send 这些补丁还在。
 - 若怀疑 core drift，先看 `git diff official/main...HEAD -- nanobot/`，再判断要不要把逻辑继续 sidecar 化。
@@ -202,8 +208,18 @@ ops/sources/_shared/ops_common.py
 - `wechat-rss-sidecar-skill/client.py`
 - `hermes-check/hermes_check.py`
 - `qdii-monitor/send_qq.py`
+- `knowledge-inbox/inbox.py` 中需要 HTTP、时间或短文本输出的新增逻辑。
 
 这样 skill/ops 脚本不需要各自复制 HTTP fallback、JSON 解析、timeout 和时间解析逻辑。
+
+知识收件箱当前是按需 skill，不是常驻 sidecar：
+
+- 源码快照在 `ops/sources/knowledge-inbox/`。
+- 线上入口是 `/root/.nanobot/workspace/skills/knowledge-inbox/inbox.py`。
+- 数据归属 `/root/.nanobot/data/knowledge-inbox/items.json` 和 `markdown/`。
+- `capture` 支持普通网页和微信文章链接；微信文章抓取必须使用浏览器 UA，避免只得到空壳或“环境异常”。
+- 摘要优先用免费 `LongCat-Flash-Lite`；不满足免费模型条件时回退本地 extractive summary，不走付费 OBP。
+- `/inbox` 只做预览、删除和路径复制，不能把长 Markdown 路径和抓取噪音关键词直接铺在卡片上。
 
 抽取原则：
 
@@ -220,6 +236,14 @@ ops/sources/_shared/ops_common.py
 - `/api/run` 是同步刷新接口；`/api/status` 是状态和缓存读取接口。
 - 内部 sidecar 反代。
 - 服务矩阵和健康聚合。
+- 知识收件箱 `/inbox`、进化日志 `/evolution` 和对应 JSON API。
+- `/assets/nb-common.js` 承载 sidecar 页面共享前端 helper，目前只放稳定机制：HTML escape、明暗主题绑定、统计卡片、复制到剪贴板。
+
+前端公共 helper 边界：
+
+- 可以放跨页面稳定工具函数。
+- 不放业务 HTML 结构、具体文案、数据字段解释和 prompt。
+- 如果页面继续增长，优先拆静态 HTML/CSS/JS 文件或 Rust module，而不是继续把所有页面字符串塞进 `main.rs`。
 
 LOF 定时报告不是直接读缓存发送。Notify 任务调用 `qdii-monitor/send_qq.py`，脚本会：
 
@@ -299,6 +323,7 @@ HERMES 任务调用 `hermes-check/hermes_check.py`。脚本应读取 `8093/api/s
 - 默认模型保持 smart-routable：普通闲聊、状态查询、天气、cron、LOF/RSS 这类轻任务走默认模型。
 - 上下文压缩、记忆整理、反思、架构/review/排障等复杂任务才走 Pro。
 - 关键词只看当前最后一条用户消息，不扫描完整历史，避免历史里的“深度/架构/review”让普通闲聊误升 Pro。
+- Heartbeat 决策提示词包含 `Review the following HEARTBEAT.md`，但这只是轻量检查，必须强制保持 default route；判断依据是 `heartbeat.md` / heartbeat tool 文本模式，不能因为 `review` 关键词误升 Pro。
 - `x-obp-purpose` / `x-obp-intent` 或请求体 `metadata.purpose` / `metadata.intent` 可作为零额外延迟 hint；不额外调用分类模型。
 - 月预算降级只抑制自动升 Pro，不影响普通默认模型请求。
 - 月预算硬熔断优先走 backup；backup 失败后才走 emergency。日常主模型超时或上游报错时，fallback 顺序仍优先 emergency，保证体验。
@@ -313,6 +338,7 @@ HERMES 任务调用 `hermes-check/hermes_check.py`。脚本应读取 `8093/api/s
 | RSS LLM settings | `wechat-rss-rs::LlmSettings` | LLM 设置 merge、密钥遮蔽、保存/公开 JSON、免费策略状态、测试 URL | crawler 业务判断、文章格式化 |
 | Reflexio cost policy | `nanobot-reflexio-rs/src/cost_policy.rs` | 免费 LLM/embedding 默认值、环境开关、白名单、启用判断 | 具体 prompt、事实抽取、SQLite 检索 |
 | OBP route metadata | `obp-rs::{config,proxy,stats}` | 模型组、渠道配置、fallback、成本统计、响应头路由信息 | Nanobot agent 语义判断、sidecar 主动消费模型 |
+| Sidecar page JS | `/assets/nb-common.js` | HTML escape、主题绑定、统计卡片、复制按钮 | 页面布局、业务字段、具体文案 |
 
 抽取原则：
 
@@ -353,6 +379,9 @@ QQ 回复 / dashboard 摘要
 - `_shared/ops_common.py` 已经减少 skill 客户端重复代码，HERMES、LOF wrapper、Trend、RSS skill 和个人 ops summary 都复用同一套 HTTP/时间 helper。
 - RSS 的 LLM settings 重复逻辑已经收口到 `LlmSettings`，避免 handler、settings API、test endpoint 各自处理密钥遮蔽和 `free_only`。
 - Reflexio 的免费模型策略已经收口到 `cost_policy.rs`，`main.rs` 和 `embedding.rs` 不再各自复制 env bool 与免费白名单判断。
+- sidecar 页面已开始复用 `/assets/nb-common.js`，`inbox`、`evolution`、`sidecars` 不再各自复制 escape、主题切换和复制按钮逻辑。
+- 知识收件箱已经具备微信链接解析、免费 LongCat 摘要、删除、预览整理和噪音关键词过滤，适合作为按需 skill，而不是常驻服务。
+- OBP 已避免 heartbeat 的 `review` 文本误升 Pro；路由日志仍通过响应头进入 Nanobot provider 日志，便于追踪钱包行为。
 
 主要技术债：
 
@@ -362,10 +391,11 @@ QQ 回复 / dashboard 摘要
 - `/obp/` 和未来 MCP 入口的认证边界要继续显式维护，不能为了方便把 admin 面裸露出去。
 - 部分 systemd unit 指向 `/root/.nanobot` 线上路径，这是设计选择，但恢复环境时必须先恢复 workspace 和 secrets。
 - `weather-expert/weather_check.py` 仍有一套天气专用的节假日/时段逻辑；除非继续扩成多脚本复用，否则先不要硬抽，避免破坏天气文案。
+- 知识收件箱的抓取和摘要目前仍在一个 Python 文件里；如果后续增加更多来源，再拆 `fetchers`、`summarizer`、`store`。
 
 建议下一步重构：
 
-1. Rust sidecar 的大块 HTML/CSS 如果继续增长，拆到 `static` 或 `include_str!` 文件。
+1. Rust sidecar 的大块 HTML/CSS 如果继续增长，拆到 `static` 或 `include_str!` 文件；公共 JS 已有 `/assets/nb-common.js`，不要再复制基础工具函数。
 2. `lof-sidecar-rs` 如果继续加功能，把 reverse proxy、service manager、LOF domain 分 module。
 3. `wechat-rss-rs` 下一步优先拆 crawler、article formatter、settings routes；`LlmSettings` 继续保留为 settings/cost policy 入口。
 4. `weather-expert/weather_check.py` 如果出现第二个天气/通勤脚本，再把节假日和未来时段选择抽进 `_shared`。
@@ -399,9 +429,10 @@ python3 ops/scripts/smoke-model-switch.py --refresh-lof
 
 - sidecar manager、dashboard system、LOF 状态和刷新。
 - RSS 订阅、最近文章、Markdown 预览、自动刷新。
+- 知识收件箱 capture/list/delete、微信文章解析、免费摘要和 `/inbox` 预览。
 - Notify cron jobs、QQ sidecar、Reflexio stats。
 - Trend Radar 状态、MCP 工具列表和 MCP-like call。
-- OBP OpenAI shell、Anthropic shell、工具调用、compact 升 Pro、历史关键词防污染。
+- OBP OpenAI shell、Anthropic shell、工具调用、compact 升 Pro、heartbeat 不升 Pro、历史关键词防污染。
 - Nanobot provider 默认模型链路和 `podman logs -f nanobot-cage` 的 OBP route header。
 
 这套 smoke 的目标不是测模型智商，而是确认“换模型不丢 sidecar 能力、不误升 Pro、不破坏工具调用、不把预算熔断顺序打乱”。
