@@ -338,6 +338,7 @@ async fn main() {
         .route("/sidecars", get(sidecars_page))
         .route("/evolution", get(evolution_page))
         .route("/inbox", get(inbox_page))
+        .route("/assets/nb-common.js", get(common_js))
         .route("/api/sidecars", get(api_sidecars))
         .route("/api/inbox", get(api_inbox))
         .route("/api/inbox/:id", delete(api_delete_inbox))
@@ -1163,17 +1164,15 @@ async fn inbox_page() -> impl IntoResponse {
   </section>
   <section class="grid" id="items"></section>
 </div>
+<script src="/assets/nb-common.js"></script>
 <script>
-const root=document.documentElement;if(localStorage.dashboardTheme==='dark'||localStorage.inboxTheme==='dark')root.setAttribute('data-theme','dark');
-function toggleTheme(){const d=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',d?'light':'dark');localStorage.inboxTheme=d?'light':'dark'}
-function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-function stat(k,v,n=''){return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="mini">${esc(n)}</div></div>`}
+window.toggleTheme=NB.bindTheme('inboxTheme',{also:['dashboardTheme']});
+const esc=NB.esc, stat=NB.stat;
 function fmtTime(s){if(!s)return '-';try{return new Date(s).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}catch{return s}}
 function host(u){try{return new URL(u).host}catch{return '-'}}
 function cls(score){score=Number(score)||0;return score>=75?'ok':score>=58?'warn':'bad'}
 function label(item){return item.decision_label||((Number(item.decision_score)||0)>=75?'值得优先看':((Number(item.decision_score)||0)>=58?'可以稍后看':'扫一眼'))}
-function copyText(text,btn){if(!text)return;const done=()=>{const old=btn.textContent;btn.textContent='已复制';setTimeout(()=>btn.textContent=old,1200)};if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,done))}else fallbackCopy(text,done)}
-function fallbackCopy(text,done){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done&&done()}
+function copyText(text,btn){return NB.copyText(text,btn)}
 function cleanInline(s){return String(s??'').replace(/\*\*/g,'').replace(/^[\s\-•·]+/,'').replace(/\s+/g,' ').trim()}
 function summaryHtml(item){
   const raw=String(item.summary||item.description||'暂无摘要').trim();
@@ -1227,6 +1226,11 @@ loadAll();
     )
 }
 
+async fn common_js() -> Response {
+    const COMMON_JS: &str = r##"window.NB=window.NB||(()=>{const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));function bindTheme(key,opt={}){const root=document.documentElement;const also=opt.also||[];if(localStorage[key]==='dark'||also.some(k=>localStorage[k]==='dark'))root.setAttribute('data-theme','dark');return function(){const dark=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',dark?'light':'dark');localStorage[key]=dark?'light':'dark'}}function stat(k,v,n=''){return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="mini">${esc(n)}</div></div>`}function fallbackCopy(text,done){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done&&done()}function copyText(text,btn){if(!text)return;const done=()=>{if(!btn)return;const old=btn.textContent;btn.textContent='已复制';setTimeout(()=>btn.textContent=old,1200)};if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,done));else fallbackCopy(text,done)}return{esc,bindTheme,stat,copyText,fallbackCopy}})();"##;
+    ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], COMMON_JS).into_response()
+}
+
 async fn evolution_page() -> impl IntoResponse {
     Html(
         r##"<!doctype html>
@@ -1255,11 +1259,10 @@ async fn evolution_page() -> impl IntoResponse {
   <section class="grid" id="events"></section>
   <div class="foot" id="foot"></div>
 </div>
+<script src="/assets/nb-common.js"></script>
 <script>
-const root=document.documentElement;if(localStorage.evolutionTheme==='dark'||localStorage.sidecarTheme==='dark')root.setAttribute('data-theme','dark');
-function toggleTheme(){const d=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',d?'light':'dark');localStorage.evolutionTheme=d?'light':'dark'}
-function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-function stat(k,v,n=''){return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="mini">${esc(n)}</div></div>`}
+window.toggleTheme=NB.bindTheme('evolutionTheme',{also:['sidecarTheme']});
+const esc=NB.esc, stat=NB.stat;
 function render(d){const s=d.summary||{};document.getElementById('stats').innerHTML=stat('总记录',s.total??0,'所有已沉淀变化')+stat('近 7 天',s.recent_7d??0,'最近还在变强的证据')+stat('分类',Object.keys(s.categories||{}).length,'性能 / 稳定性 / 治理等');const items=d.items||[];document.getElementById('events').innerHTML=items.length?items.map(item=>`<article class="panel event"><div class="eventHead"><div><div class="name">${esc(item.title)}</div><div class="impact">${esc(item.impact)}</div><span class="cat">${esc(item.category)}</span></div><div class="date">${esc(item.date)}</div></div><div class="metrics">${(item.metrics||[]).map(m=>`<div class="metric"><b>${esc(m.label)}</b><div class="mini">之前：${esc(m.before)}</div><div class="arrow">→ ${esc(m.after)}</div><div class="mini">${esc(m.note)}</div></div>`).join('')}</div><div class="tags">${(item.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div><div class="links">${(item.links||[]).map(l=>`<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join('')}<span class="mini">证据：${esc(item.evidence)}</span></div></article>`).join(''):'<div class="panel empty">暂无进化记录。</div>';document.getElementById('foot').textContent='最后刷新：'+(d.now||'-')+'；数据源：/root/.nanobot/evolution.json。'}
 fetch('/api/evolution',{cache:'no-store'}).then(r=>r.json()).then(render).catch(e=>{document.getElementById('events').innerHTML='<div class="panel empty">加载失败：'+esc(e.message)+'</div>'});
 </script>
@@ -1303,17 +1306,12 @@ async fn sidecars_page() -> impl IntoResponse {
   <div class="foot" id="foot">&#x52a0;&#x8f7d;&#x4e2d;...</div>
 </div>
 <div class="modal" id="notifyModal" onclick="if(event.target.id==='notifyModal')closeNotifyModal()"><div class="dialog"><div class="dialogHead"><div><h2 class="dialogTitle">Notify &#x4efb;&#x52a1;&#x8be6;&#x60c5;</h2><div class="muted" id="notifySub">Loading...</div></div><button onclick="closeNotifyModal()">&#x5173;&#x95ed;</button></div><div class="dialogBody" id="notifyBody"></div></div></div>
+<script src="/assets/nb-common.js"></script>
 <script>
-const root=document.documentElement;if(localStorage.sidecarTheme==='dark')root.setAttribute('data-theme','dark');
-function toggleTheme(){const d=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',d?'light':'dark');localStorage.sidecarTheme=d?'light':'dark'}
-function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+window.toggleTheme=NB.bindTheme('sidecarTheme');
+const esc=NB.esc;
 function pill(ok,text){return `<span class="pill ${ok?'ok':'bad'}">${ok?'\u6b63\u5e38':'\u5f02\u5e38'} \u00b7 ${esc(text||'-')}</span>`}
-function copyText(text,btn){
-  const done=()=>{const old=btn.textContent;btn.textContent='\u5df2\u590d\u5236';setTimeout(()=>btn.textContent=old,1200)};
-  if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,done));}
-  else{fallbackCopy(text,done);}
-}
-function fallbackCopy(text,done){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done&&done();}
+function copyText(text,btn){return NB.copyText(text,btn)}
 function cmdHtml(label,text){return `<div class="cmdtop"><span>${esc(label)}</span><button class="copybtn" onclick='copyText(${JSON.stringify(text||'')},this)'>\u590d\u5236</button></div><code>${esc(text||'-')}</code>`}
 function accessText(x){
   if(x.homepage_url){try{const u=new URL(x.homepage_url, window.location.origin);return u.origin+u.pathname;}catch(e){return x.homepage_url}}
