@@ -1441,7 +1441,7 @@ async fn sidecars_page() -> impl IntoResponse {
 <style>
 :root{--bg:#eef3ea;--panel:#fffdf7;--text:#20231d;--muted:#68705f;--line:#d7decf;--ok:#18864b;--bad:#c13c2f;--warn:#b7791f;--accent:#2f6f88;--shadow:0 18px 45px rgba(35,48,32,.12)}
 [data-theme="dark"]{--bg:#141a17;--panel:#202821;--text:#edf5ea;--muted:#a9b6a5;--line:#354035;--ok:#68d391;--bad:#fc8181;--warn:#f6c177;--accent:#7dd3fc;--shadow:0 18px 45px rgba(0,0,0,.28)}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(900px 500px at 0 -10%,rgba(102,153,102,.28),transparent 55%),radial-gradient(720px 420px at 100% 0,rgba(47,111,136,.20),transparent 50%),var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft Yahei",sans-serif}.wrap{max-width:1180px;margin:0 auto;padding:24px 16px 34px}.hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:16px}.title{margin:0;font-size:30px;letter-spacing:-.03em}.sub{margin:8px 0 0;color:var(--muted);line-height:1.6}.toolbar{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:12px;padding:10px 13px;box-shadow:var(--shadow);text-decoration:none;font-weight:700;cursor:pointer}.copybtn{box-shadow:none;padding:6px 9px;border-radius:9px;font-size:12px}.cmdtop{display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--muted);font-size:13px}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:16px 0}.stat{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:var(--shadow)}.stat b{display:block;font-size:28px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:14px}.card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:var(--shadow);position:relative;overflow:hidden}.card:before{content:"";position:absolute;inset:0 0 auto;height:4px;background:var(--accent)}.card.ok:before{background:var(--ok)}.card.bad:before{background:var(--bad)}.row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.name{font-size:18px;font-weight:800}.desc{color:var(--muted);margin:7px 0 12px;line-height:1.55}.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 9px;font-size:12px;font-weight:800;border:1px solid var(--line);white-space:nowrap}.pill.ok{color:var(--ok);background:rgba(24,134,75,.08);border-color:rgba(24,134,75,.3)}.pill.bad{color:var(--bad);background:rgba(193,60,47,.08);border-color:rgba(193,60,47,.3)}.pill.warn{color:var(--warn)}.meta{display:grid;grid-template-columns:90px 1fr;gap:6px 8px;color:var(--muted);font-size:13px}.meta b{color:var(--text);font-weight:700;overflow-wrap:anywhere}.cmd{margin-top:12px;display:grid;gap:7px}code{display:block;white-space:pre-wrap;overflow:auto;background:rgba(90,100,80,.12);border:1px solid var(--line);border-radius:10px;padding:8px;color:var(--text);user-select:text}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.links a{color:var(--accent);font-weight:800;text-decoration:none}.links a:hover{text-decoration:underline}.foot{margin-top:16px;color:var(--muted);font-size:13px}.modal{position:fixed;inset:0;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center;padding:18px;z-index:20}.modal.show{display:flex}.dialog{width:min(940px,100%);max-height:88vh;overflow:auto;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:22px;box-shadow:0 24px 80px rgba(0,0,0,.35)}.dialogHead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:18px 18px 12px;border-bottom:1px solid var(--line)}.dialogTitle{margin:0;font-size:22px}.dialogBody{padding:16px 18px 18px}.miniTable{width:100%;border-collapse:collapse;min-width:760px}.miniTable th,.miniTable td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}.miniTable th{color:var(--muted);font-size:12px}.pre{display:block;white-space:pre-wrap;overflow:auto;max-height:180px;background:rgba(90,100,80,.12);border:1px solid var(--line);border-radius:10px;padding:8px}.jobDetail{margin-top:8px;border:1px solid var(--line);border-radius:14px;padding:10px 12px;background:rgba(90,100,80,.08)}.jobDetail summary{cursor:pointer;color:var(--accent);font-weight:800}.jobDetail summary:hover{text-decoration:underline}.jobDetail[open]{background:rgba(90,100,80,.12)}.jobDetailBody{margin-top:10px}.miniTable td:nth-child(3){white-space:nowrap}.miniTable td:nth-child(5){white-space:nowrap}@media(max-width:720px){.hero{display:block}.toolbar{margin-top:12px}.stats,.portGrid{grid-template-columns:1fr}.portHead{display:block}.portHead button{margin-top:10px}.title{font-size:25px}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(900px 500px at 0 -10%,rgba(102,153,102,.28),transparent 55%),radial-gradient(720px 420px at 100% 0,rgba(47,111,136,.20),transparent 50%),var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft Yahei",sans-serif}.wrap{max-width:1180px;margin:0 auto;padding:24px 16px 34px}.hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:16px}.title{margin:0;font-size:30px;letter-spacing:-.03em}.sub{margin:8px 0 0;color:var(--muted);line-height:1.6}.toolbar{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:12px;padding:10px 13px;box-shadow:var(--shadow);text-decoration:none;font-weight:700;cursor:pointer}.copybtn{box-shadow:none;padding:6px 9px;border-radius:9px;font-size:12px}.cmdtop{display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--muted);font-size:13px}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:16px 0}.stat{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:var(--shadow)}.stat b{display:block;font-size:28px}.sectionHead{display:flex;justify-content:space-between;gap:12px;align-items:flex-end;margin:20px 0 10px}.sectionHead h2{margin:0;font-size:20px}.sectionHead p{margin:5px 0 0;color:var(--muted);line-height:1.55;font-size:13px}.abilityGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:18px}.abilityCard{background:linear-gradient(180deg,rgba(255,255,255,.20),rgba(255,255,255,.06)),var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px;box-shadow:var(--shadow);position:relative;overflow:hidden}.abilityCard:before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--accent)}.abilityCard.ok:before{background:var(--ok)}.abilityCard.bad:before{background:var(--bad)}.abilityTop{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.abilityCard .name{font-size:17px}.abilityCard .desc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:6px 0 10px}.abilityMeta{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.abilityMeta span{border:1px solid var(--line);border-radius:999px;padding:4px 8px;color:var(--muted);font-size:12px;font-weight:800}.abilityTriggers{margin-top:8px}.abilityTriggers b{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}.abilityActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.abilityActions a{color:var(--accent);font-weight:800;text-decoration:none}.cmdFold{margin-top:10px;border:1px solid var(--line);border-radius:12px;padding:8px 10px;background:rgba(90,100,80,.08)}.cmdFold summary{cursor:pointer;color:var(--accent);font-weight:800}.cmdFold[open]{background:rgba(90,100,80,.12)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:14px}.card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:var(--shadow);position:relative;overflow:hidden}.card:before{content:"";position:absolute;inset:0 0 auto;height:4px;background:var(--accent)}.card.ok:before{background:var(--ok)}.card.bad:before{background:var(--bad)}.row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.name{font-size:18px;font-weight:800}.desc{color:var(--muted);margin:7px 0 12px;line-height:1.55}.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 9px;font-size:12px;font-weight:800;border:1px solid var(--line);white-space:nowrap}.pill.ok{color:var(--ok);background:rgba(24,134,75,.08);border-color:rgba(24,134,75,.3)}.pill.bad{color:var(--bad);background:rgba(193,60,47,.08);border-color:rgba(193,60,47,.3)}.pill.warn{color:var(--warn)}.meta{display:grid;grid-template-columns:90px 1fr;gap:6px 8px;color:var(--muted);font-size:13px}.meta b{color:var(--text);font-weight:700;overflow-wrap:anywhere}.cmd{margin-top:12px;display:grid;gap:7px}code{display:block;white-space:pre-wrap;overflow:auto;background:rgba(90,100,80,.12);border:1px solid var(--line);border-radius:10px;padding:8px;color:var(--text);user-select:text}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.links a{color:var(--accent);font-weight:800;text-decoration:none}.links a:hover{text-decoration:underline}.foot{margin-top:16px;color:var(--muted);font-size:13px}.modal{position:fixed;inset:0;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center;padding:18px;z-index:20}.modal.show{display:flex}.dialog{width:min(940px,100%);max-height:88vh;overflow:auto;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:22px;box-shadow:0 24px 80px rgba(0,0,0,.35)}.dialogHead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:18px 18px 12px;border-bottom:1px solid var(--line)}.dialogTitle{margin:0;font-size:22px}.dialogBody{padding:16px 18px 18px}.miniTable{width:100%;border-collapse:collapse;min-width:760px}.miniTable th,.miniTable td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}.miniTable th{color:var(--muted);font-size:12px}.pre{display:block;white-space:pre-wrap;overflow:auto;max-height:180px;background:rgba(90,100,80,.12);border:1px solid var(--line);border-radius:10px;padding:8px}.jobDetail{margin-top:8px;border:1px solid var(--line);border-radius:14px;padding:10px 12px;background:rgba(90,100,80,.08)}.jobDetail summary{cursor:pointer;color:var(--accent);font-weight:800}.jobDetail summary:hover{text-decoration:underline}.jobDetail[open]{background:rgba(90,100,80,.12)}.jobDetailBody{margin-top:10px}.miniTable td:nth-child(3){white-space:nowrap}.miniTable td:nth-child(5){white-space:nowrap}@media(max-width:720px){.hero{display:block}.toolbar{margin-top:12px}.stats,.portGrid{grid-template-columns:1fr}.portHead{display:block}.portHead button{margin-top:10px}.title{font-size:25px}}
 </style>
 </head>
 <body>
@@ -1454,12 +1454,14 @@ async fn sidecars_page() -> impl IntoResponse {
     <div class="toolbar">
       <button onclick="loadAll()">&#x5237;&#x65b0;&#x72b6;&#x6001;</button>
       <button onclick="toggleTheme()">&#x5207;&#x6362;&#x660e;&#x6697;</button>
-      <a class="btn" href="/">&#x56de;&#x5230;&#x9a7e;&#x9a76;&#x8231;</a><a class="btn" href="/evolution">进化日志</a><a class="btn" href="/lof">LOF &#x770b;&#x677f;</a>
+      <a class="btn" href="/">&#x56de;&#x5230;&#x9a7e;&#x9a76;&#x8231;</a><a class="btn" href="/evolution">进化日志</a><a class="btn" href="/lof">LOF &#x770b;&#x677f;</a><a class="btn" href="/api/capabilities" target="_blank">能力 JSON</a><a class="btn" href="/api/sidecars" target="_blank">服务 JSON</a>
     </div>
   </section>
   <section class="stats" id="stats"></section>
 
-  <section class="grid" id="abilityGrid" style="margin-bottom:14px"></section>
+  <section class="sectionHead"><div><h2>能力层：我能做什么</h2><p>这里只展示触发语、入口和运行形态；不再把日志、重启、端口这些服务细节重复摊开。</p></div></section>
+  <section class="abilityGrid" id="abilityGrid"></section>
+  <section class="sectionHead"><div><h2>支撑服务层：谁在跑</h2><p>这里负责健康状态、端口、日志、重启命令，以及每个服务支撑了哪些能力。</p></div></section>
   <section class="grid" id="grid"></section>
   <div class="foot" id="foot">&#x52a0;&#x8f7d;&#x4e2d;...</div>
 </div>
@@ -1470,7 +1472,8 @@ window.toggleTheme=NB.bindTheme('sidecarTheme');
 const esc=NB.esc;
 function pill(ok,text){return `<span class="pill ${ok?'ok':'bad'}">${ok?'\u6b63\u5e38':'\u5f02\u5e38'} \u00b7 ${esc(text||'-')}</span>`}
 function copyText(text,btn){return NB.copyText(text,btn)}
-function cmdHtml(label,text){return `<div class="cmdtop"><span>${esc(label)}</span><button class="copybtn" onclick='copyText(${JSON.stringify(text||'')},this)'>\u590d\u5236</button></div><code>${esc(text||'-')}</code>`}
+function cmdHtml(label,text){return `<div class="cmdtop"><span>${esc(label)}</span><button class="copybtn" data-copy="${esc(text||'')}" onclick="copyFromButton(this)">\u590d\u5236</button></div><code>${esc(text||'-')}</code>`}
+function copyFromButton(btn){return copyText(btn.dataset.copy||'',btn)}
 function accessText(x){
   if(x.homepage_url){try{const u=new URL(x.homepage_url, window.location.origin);return u.origin+u.pathname;}catch(e){return x.homepage_url}}
   return '\u65e0\u516c\u7f51\u5165\u53e3';
@@ -1488,48 +1491,57 @@ function kindText(x){const m={sidecar:'\u5e38\u9a7b sidecar',skill:'Nanobot skil
 function healthPill(x){return '<span class="pill '+(x.ok?'ok':'bad')+'">'+(x.ok?'\u53ef\u7528':'\u5f02\u5e38')+' \u00b7 '+esc(x.health_status||'-')+'</span>'}
 function shortList(items,empty='-'){return (items||[]).length?(items||[]).map(v=>'<span class="pill warn">'+esc(v)+'</span>').join(' '):'<span class="muted">'+esc(empty)+'</span>'}
 function commandCards(commands){return (commands||[]).map(c=>cmdHtml(c.label||'\u547d\u4ee4',c.command||'')).join('')}
+function supportText(x){return x.service_id?('支撑：'+x.service_id):'按需 / 无常驻服务'}
 function renderCapabilities(c){
   const items=c.items||[];
-  document.getElementById('abilityGrid').innerHTML=items.map(x=>'<article class="card '+(x.ok?'ok':'bad')+'">'
-    +'<div class="row"><div><div class="name">'+esc(x.name)+'</div><div class="desc">'+esc(x.description)+'</div></div>'+healthPill(x)+'</div>'
-    +'<div class="meta">'
-      +'<span>\u80fd\u529b ID</span><b>'+esc(x.id)+'</b>'
-      +'<span>\u5206\u7c7b</span><b>'+esc(x.category||'-')+'</b>'
-      +'<span>\u7c7b\u578b</span><b>'+esc(kindText(x.kind))+'</b>'
-      +'<span>\u652f\u6491\u670d\u52a1</span><b>'+esc(x.service_id||'\u6309\u9700/\u65e0\u5e38\u9a7b\u670d\u52a1')+'</b>'
-      +'<span>\u5165\u53e3</span><b>'+(x.entry_url?'<a href="'+esc(x.entry_url)+'" target="_blank" rel="noopener">'+esc(x.entry_url)+'</a>':'\u65e0\u9875\u9762\u5165\u53e3')+'</b>'
-      +'<span>\u89e6\u53d1\u8bed</span><b>'+shortList(x.trigger_phrases,'\u672a\u767b\u8bb0')+'</b>'
-      +'<span>\u6807\u7b7e</span><b>'+shortList(x.tags,'\u65e0')+'</b>'
-      +'<span>MCP</span><b>'+shortList(x.mcp_tools,'\u672a\u66b4\u9732')+'</b>'
-      +'<span>\u6570\u636e</span><b>'+((x.data_paths||[]).map(esc).join('<br>')||'-')+'</b>'
-      +'<span>\u5907\u6ce8</span><b>'+esc(x.notes||'-')+'</b>'
-    +'</div>'
-    +((x.commands||[]).length?'<div class="cmd">'+commandCards(x.commands)+'</div>':'')
-    +'<div class="links">'+(x.entry_url?'<a href="'+esc(x.entry_url)+'" target="_blank" rel="noopener">\u6253\u5f00\u80fd\u529b\u5165\u53e3</a>':'')+'<a href="/api/capabilities" target="_blank">\u80fd\u529b JSON</a></div>'
-  +'</article>').join('') || '<article class="card bad"><div class="name">\u6ca1\u6709\u767b\u8bb0\u80fd\u529b</div><div class="desc">\u8bf7\u68c0\u67e5 /root/.nanobot/capabilities.json\u3002</div></article>';
+  document.getElementById('abilityGrid').innerHTML=items.map(x=>{
+    const detail=[];
+    if((x.commands||[]).length) detail.push(commandCards(x.commands));
+    if((x.data_paths||[]).length) detail.push(cmdHtml('数据路径',(x.data_paths||[]).join('\n')));
+    if(x.notes) detail.push('<div class="desc">'+esc(x.notes)+'</div>');
+    const detailHtml=detail.length?'<details class="cmdFold"><summary>命令 / 数据 / 备注</summary><div class="cmd">'+detail.join('')+'</div></details>':'';
+    const tools=(x.mcp_tools||[]).length?'<div class="abilityTriggers"><b>MCP / 工具</b>'+shortList(x.mcp_tools,'未暴露')+'</div>':'';
+    return '<article class="abilityCard '+(x.ok?'ok':'bad')+'">'
+      +'<div class="abilityTop"><div><div class="name">'+esc(x.name)+'</div><div class="desc">'+esc(x.description)+'</div></div>'+healthPill(x)+'</div>'
+      +'<div class="abilityMeta"><span>'+esc(x.category||'-')+'</span><span>'+esc(kindText(x.kind))+'</span><span>'+esc(supportText(x))+'</span></div>'
+      +'<div class="abilityTriggers"><b>触发语</b>'+shortList(x.trigger_phrases,'未登记')+'</div>'
+      +tools
+      +'<div class="abilityActions">'+(x.entry_url?'<a href="'+esc(x.entry_url)+'" target="_blank" rel="noopener">打开入口</a>':'')+'</div>'
+      +detailHtml
+    +'</article>';
+  }).join('') || '<article class="abilityCard bad"><div class="name">没有登记能力</div><div class="desc">请检查 /root/.nanobot/capabilities.json。</div></article>';
 }
 function render(d,c={summary:{}}){
   const s=d.summary||{total:0,healthy:0,unhealthy:0};
   const cs=c.summary||{total:0,enabled:0,healthy:0,degraded:0};
-  document.getElementById('stats').innerHTML='<div class="stat"><span>\u80fd\u529b\u603b\u6570</span><b>'+cs.total+'</b></div><div class="stat"><span>\u542f\u7528\u80fd\u529b</span><b style="color:var(--accent)">'+cs.enabled+'</b></div><div class="stat"><span>\u80fd\u529b\u53ef\u7528</span><b style="color:var(--ok)">'+cs.healthy+'</b></div><div class="stat"><span>\u670d\u52a1\u603b\u6570</span><b>'+s.total+'</b></div><div class="stat"><span>\u670d\u52a1\u6b63\u5e38</span><b style="color:var(--ok)">'+s.healthy+'</b></div><div class="stat"><span>\u670d\u52a1\u5f02\u5e38</span><b style="color:var(--bad)">'+s.unhealthy+'</b></div>';
+  const caps=c.items||[];
+  const supported={};
+  caps.forEach(cap=>{if(cap.service_id){(supported[cap.service_id]||(supported[cap.service_id]=[])).push(cap.name)}});
+  document.getElementById('stats').innerHTML='<div class="stat"><span>能力总数</span><b>'+cs.total+'</b></div><div class="stat"><span>启用能力</span><b style="color:var(--accent)">'+cs.enabled+'</b></div><div class="stat"><span>能力可用</span><b style="color:var(--ok)">'+cs.healthy+'</b></div><div class="stat"><span>服务总数</span><b>'+s.total+'</b></div><div class="stat"><span>服务正常</span><b style="color:var(--ok)">'+s.healthy+'</b></div><div class="stat"><span>服务异常</span><b style="color:var(--bad)">'+s.unhealthy+'</b></div>';
   renderCapabilities(c);
-  document.getElementById('grid').innerHTML=(d.items||[]).map(x=>'<article class="card '+(x.ok?'ok':'bad')+'">'
-    +'<div class="row"><div><div class="name">'+esc(x.name)+'</div><div class="desc">'+esc(x.description)+'</div></div>'+pill(x.ok,x.check_status)+'</div>'
-    +'<div class="meta">'
-      +'<span>\u670d\u52a1 ID</span><b>'+esc(x.id)+'</b>'
-      +'<span>\u8bbf\u95ee\u5165\u53e3</span><b>'+esc(accessText(x))+'</b>'
-      +'<span>\u670d\u52a1\u76d1\u542c</span><b>'+esc(listenText(x))+'</b>'
-      +'<span>\u66b4\u9732\u65b9\u5f0f</span><b>'+esc(exposureText(x))+'</b>'
-      +'<span>\u7cfb\u7edf\u670d\u52a1</span><b>'+esc(x.unit_status || (x.unit ? '\u672a\u77e5' : '\u672a\u6258\u7ba1'))+'</b>'
-      +'<span>\u5ef6\u8fdf</span><b>'+(x.latency_ms==null?'-':x.latency_ms+' ms')+'</b>'
-      +'<span>\u542f\u52a8</span><b>'+esc(x.active_since||'-')+'</b>'
-      +'<span>\u9519\u8bef</span><b>'+esc(x.error||'-')+'</b>'
-    +'</div>'
-    +((x.recent_errors||[]).length?'<div class="cmd">'+cmdHtml('\u6700\u8fd1\u544a\u8b66 / \u9519\u8bef',(x.recent_errors||[]).join('\n'))+'</div>':'')
-    +'<div class="links">'+(x.homepage_url?'<a href="'+esc(x.homepage_url)+'" target="_blank" rel="noopener">\u6253\u5f00\u9875\u9762</a>':'')+(x.id==='notify'?'<a href="#" onclick="openNotifyJobs();return false;">\u67e5\u770b\u4efb\u52a1\u8be6\u60c5</a>':'')+'<a href="/api/sidecars" target="_blank">\u72b6\u6001 JSON</a></div>'
-    +'<div class="cmd">'+cmdHtml('\u67e5\u770b\u65e5\u5fd7',x.logs_command)+cmdHtml('\u91cd\u542f\u670d\u52a1',x.restart_command)+'</div>'
-  +'</article>').join('');
-  document.getElementById('foot').textContent='\u6700\u540e\u5237\u65b0\uff1a'+(d.now || c.now || '-')+'\u3002\u80fd\u529b\u5361\u6765\u81ea capabilities.json\uff0c\u670d\u52a1\u5361\u6765\u81ea sidecars.json\uff1b\u9875\u9762\u53ea\u8bfb\uff0c\u4e0d\u4f1a\u5728\u7f51\u9875\u4e0a\u6267\u884c\u91cd\u542f\u3002';
+  document.getElementById('grid').innerHTML=(d.items||[]).map(x=>{
+    const supportNames=supported[x.id]||[];
+    const actionLinks=(x.homepage_url?'<a href="'+esc(x.homepage_url)+'" target="_blank" rel="noopener">打开页面</a>':'')+(x.id==='notify'?'<a href="#" onclick="openNotifyJobs();return false;">查看任务详情</a>':'');
+    const ops='<details class="cmdFold"><summary>日志 / 重启命令</summary><div class="cmd">'+cmdHtml('查看日志',x.logs_command)+cmdHtml('重启服务',x.restart_command)+'</div></details>';
+    return '<article class="card '+(x.ok?'ok':'bad')+'">'
+      +'<div class="row"><div><div class="name">'+esc(x.name)+'</div><div class="desc">'+esc(x.description)+'</div></div>'+pill(x.ok,x.check_status)+'</div>'
+      +'<div class="meta">'
+        +'<span>服务 ID</span><b>'+esc(x.id)+'</b>'
+        +'<span>支撑能力</span><b>'+shortList(supportNames,'未绑定能力')+'</b>'
+        +'<span>访问入口</span><b>'+esc(accessText(x))+'</b>'
+        +'<span>服务监听</span><b>'+esc(listenText(x))+'</b>'
+        +'<span>暴露方式</span><b>'+esc(exposureText(x))+'</b>'
+        +'<span>系统服务</span><b>'+esc(x.unit_status || (x.unit ? '未知' : '未托管'))+'</b>'
+        +'<span>延迟</span><b>'+(x.latency_ms==null?'-':x.latency_ms+' ms')+'</b>'
+        +'<span>启动</span><b>'+esc(x.active_since||'-')+'</b>'
+        +'<span>错误</span><b>'+esc(x.error||'-')+'</b>'
+      +'</div>'
+      +((x.recent_errors||[]).length?'<div class="cmd">'+cmdHtml('最近告警 / 错误',(x.recent_errors||[]).join('\n'))+'</div>':'')
+      +(actionLinks?'<div class="links">'+actionLinks+'</div>':'')
+      +ops
+    +'</article>';
+  }).join('');
+  document.getElementById('foot').textContent='最后刷新：'+(d.now || c.now || '-')+'。上方是能力层，下方是支撑服务层；JSON 入口已收口到顶部，页面只读，不会在网页上执行重启。';
 }
 async function loadAll(){try{const [sr,cr]=await Promise.all([fetch('/api/sidecars',{cache:'no-store'}),fetch('/api/capabilities',{cache:'no-store'})]);render(await sr.json(),await cr.json())}catch(e){document.getElementById('foot').textContent='\u52a0\u8f7d\u5931\u8d25\uff1a'+e.message}}
 function notifyStatusPill(st){const s=st||'-';const cls=s==='sent'?'ok':(s==='error'?'bad':(s==='running'?'warn':''));return `<span class="pill ${cls}">${esc(s)}</span>`}
@@ -1538,7 +1550,7 @@ function closeNotifyModal(){document.getElementById('notifyModal').classList.rem
 function renderNotifyJobs(d){
   const jobs=d.job_details||[];
   document.getElementById('notifySub').textContent=`${d.now||'-'} \u00b7 ${jobs.length} \u4e2a\u4efb\u52a1 \u00b7 ${d.target_set?'QQ \u76ee\u6807\u5df2\u914d\u7f6e':'QQ \u76ee\u6807\u672a\u914d\u7f6e'}`;
-  document.getElementById('notifyBody').innerHTML=`<div style="overflow:auto"><table class="miniTable"><thead><tr><th>\u4efb\u52a1</th><th>\u89c4\u5219</th><th>\u4e0b\u6b21\u8fd0\u884c</th><th>\u72b6\u6001</th><th>\u6700\u8fd1\u5b8c\u6210</th><th>\u8be6\u60c5</th></tr></thead><tbody>${jobs.map(j=>`<tr><td><b>${esc(j.name)}</b><br><span class="muted">${esc(j.id)}</span></td><td><code>${esc(j.schedule)}</code><br><span class="muted">${esc(j.schedule_note)}</span></td><td>${esc((j.next_runs||[])[0]||'-')}</td><td>${j.enabled?'<span class="pill ok">\u542f\u7528</span>':'<span class="pill">\u6682\u505c</span>'}<br>${notifyStatusPill(j.status?.last_status)}</td><td>${esc(j.status?.last_finished_at||'-')}</td><td><details class="jobDetail"><summary>\u5c55\u5f00</summary><div class="jobDetailBody"><b>\u672a\u6765\u89e6\u53d1</b><br>${(j.next_runs||[]).map(x=>`<span class="pill warn">${esc(x)}</span>`).join(' ')||'<span class="muted">-</span>'}<br><br><b>\u5b9e\u9645\u547d\u4ee4</b><button class="copybtn" style="margin-left:8px" onclick='copyText(${JSON.stringify(j.command||'')},this)'>\u590d\u5236</button><div class="pre">${esc(j.command||'-')}</div>${j.status?.last_error?`<br><b>\u6700\u8fd1\u9519\u8bef</b><div class="pre">${esc(j.status.last_error)}</div>`:''}${j.status?.last_stdout_preview?`<br><b>\u6700\u8fd1\u8f93\u51fa\u6458\u8981</b><div class="pre">${esc(j.status.last_stdout_preview)}</div>`:''}</div></details></td></tr>`).join('')}</tbody></table></div>`
+  document.getElementById('notifyBody').innerHTML=`<div style="overflow:auto"><table class="miniTable"><thead><tr><th>\u4efb\u52a1</th><th>\u89c4\u5219</th><th>\u4e0b\u6b21\u8fd0\u884c</th><th>\u72b6\u6001</th><th>\u6700\u8fd1\u5b8c\u6210</th><th>\u8be6\u60c5</th></tr></thead><tbody>${jobs.map(j=>`<tr><td><b>${esc(j.name)}</b><br><span class="muted">${esc(j.id)}</span></td><td><code>${esc(j.schedule)}</code><br><span class="muted">${esc(j.schedule_note)}</span></td><td>${esc((j.next_runs||[])[0]||'-')}</td><td>${j.enabled?'<span class="pill ok">\u542f\u7528</span>':'<span class="pill">\u6682\u505c</span>'}<br>${notifyStatusPill(j.status?.last_status)}</td><td>${esc(j.status?.last_finished_at||'-')}</td><td><details class="jobDetail"><summary>\u5c55\u5f00</summary><div class="jobDetailBody"><b>\u672a\u6765\u89e6\u53d1</b><br>${(j.next_runs||[]).map(x=>`<span class="pill warn">${esc(x)}</span>`).join(' ')||'<span class="muted">-</span>'}<br><br><b>\u5b9e\u9645\u547d\u4ee4</b><button class="copybtn" style="margin-left:8px" data-copy="${esc(j.command||'')}" onclick="copyFromButton(this)">\u590d\u5236</button><div class="pre">${esc(j.command||'-')}</div>${j.status?.last_error?`<br><b>\u6700\u8fd1\u9519\u8bef</b><div class="pre">${esc(j.status.last_error)}</div>`:''}${j.status?.last_stdout_preview?`<br><b>\u6700\u8fd1\u8f93\u51fa\u6458\u8981</b><div class="pre">${esc(j.status.last_stdout_preview)}</div>`:''}</div></details></td></tr>`).join('')}</tbody></table></div>`
 }
 loadAll();setInterval(loadAll,15000);
 </script>
