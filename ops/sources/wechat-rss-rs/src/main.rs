@@ -287,8 +287,17 @@ fn load_auto_refresh_config(path: &PathBuf) -> AutoRefreshConfig {
     }
 }
 
-fn ad_score(title: &str, summary: &str, _content: &str) -> i32 {
-    let text = format!("{}\n{}", title, summary).to_lowercase();
+fn ad_score(title: &str, summary: &str, content: &str) -> i32 {
+    let title_l = title.to_lowercase();
+    let summary_l = summary.to_lowercase();
+    let body_l = content
+        .chars()
+        .take(12_000)
+        .collect::<String>()
+        .to_lowercase();
+    let front = format!("{}\n{}", title_l, summary_l);
+    let all = format!("{}\n{}", front, body_l);
+
     let hard_title = ["八段锦的猛料", "刺痛了多少中国女人"];
     let hard = [
         "-广告-",
@@ -297,8 +306,6 @@ fn ad_score(title: &str, summary: &str, _content: &str) -> i32 {
         "报名通道",
         "仅需0元",
         "免费社群陪伴",
-        "一堂课告诉你",
-        "课告诉你",
     ];
     let soft = [
         "广告",
@@ -318,6 +325,32 @@ fn ad_score(title: &str, summary: &str, _content: &str) -> i32 {
         "先到先得",
         "体验营",
     ];
+    let course_title = ["一堂课告诉你", "课告诉你"];
+    let commercial_context = [
+        "点击图片报名",
+        "点击报名",
+        "优惠名额",
+        "前100名",
+        "仅需",
+        "9.9",
+        "课程官网价",
+        "为期6天",
+        "直播课",
+        "选修课",
+        "奖励课",
+        "具体收费",
+        "课程由",
+        "授课",
+        "课程信息",
+        "领取",
+        "社群",
+        "训练营",
+        "体验营",
+        "客服",
+        "扫码",
+        "加微信",
+    ];
+
     let mut s = 0_i32;
     for k in hard_title {
         if title.contains(k) {
@@ -325,14 +358,32 @@ fn ad_score(title: &str, summary: &str, _content: &str) -> i32 {
         }
     }
     for k in hard {
-        if text.contains(k) {
+        if front.contains(k) {
             s += 3;
+        } else if all.contains(k) {
+            s += 2;
         }
     }
     for k in soft {
-        if text.contains(k) {
+        if front.contains(k) {
             s += 1;
         }
+    }
+
+    let has_course_title = course_title.iter().any(|k| title_l.contains(*k));
+    let context_hits = commercial_context
+        .iter()
+        .filter(|k| all.contains(**k))
+        .count() as i32;
+    if has_course_title && context_hits >= 2 {
+        s += 3;
+    } else if has_course_title && context_hits == 1 {
+        s += 1;
+    }
+    if context_hits >= 4 {
+        s += 2;
+    } else if context_hits >= 2 {
+        s += 1;
     }
     s
 }
@@ -1892,6 +1943,29 @@ async fn auto_refresh_loop(st: Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ad_score_uses_body_context_for_course_packaging() {
+        let title = "为什么普通人创业就赔钱？一堂课告诉你商业的真正逻辑";
+        let summary = "一次关于创业选择的复盘";
+        let content = "推荐给大家第29次。100个优惠名额。课程官网价199元。前100名仅需9.9元。点击图片报名。为期6天的线上训练，包含2节直播课、选修课和奖励课。";
+
+        assert!(ad_score(title, summary, content) >= 2);
+    }
+
+    #[test]
+    fn ad_score_does_not_block_course_style_title_without_commerce() {
+        let title = "一堂课告诉你如何理解概率";
+        let summary = "普通学习笔记";
+        let content = "本文整理阅读笔记和个人理解，讨论概率思维、日常选择与学习方法。";
+
+        assert!(ad_score(title, summary, content) < 2);
+    }
+
+    #[test]
+    fn ad_score_keeps_known_hard_title_blocklist() {
+        assert!(ad_score("八段锦的猛料，刺痛了多少中国女人", "", "") >= 2);
+    }
 
     #[test]
     fn yage_new_kit_html_wrapper_is_removed_before_markdown() {
