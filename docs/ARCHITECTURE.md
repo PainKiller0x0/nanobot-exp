@@ -53,7 +53,8 @@
 
 只有 `lof-sidecar-rs` 作为公网入口。它负责：
 
-- `/` 和 `/lof`：LOF/QDII 看板。
+- `/`：今日驾驶舱。
+- `/lof`：LOF/QDII 看板。
 - `/sidecars`、`/api/sidecars`、`/api/capabilities`：能力总控台和服务矩阵。
 - `/workbench`：内容工作台，聚合 RSS、知识收件箱和热点雷达，本地标记已读/收藏。
 - `/inbox` 和 `/api/inbox`：知识收件箱预览、删除和 JSON。
@@ -76,7 +77,7 @@
 | `nanobot` | Nanobot Core | Podman | `8080` | 无 | QQ/WeChat 入口、agent loop、dream |
 | `rss` | RSS Sidecar | Podman | `8091` | `/rss/` | 微信文章、鸭哥 AI、Markdown 预览、广告过滤 |
 | `qq` | QQ Bridge | systemd | `8092` | 无 | QQ API 直连探测、签名发送支持 |
-| `lof` | LOF Dashboard | systemd | `8093` | `/` | QDII/LOF 看板、公网反代、服务总控、知识收件箱预览、进化日志 |
+| `lof` | LOF Dashboard | systemd | `8093` | `/lof` | QDII/LOF 看板；同进程还提供 `/` 今日驾驶舱、公网反代、服务总控、知识收件箱预览、进化日志 |
 | `notify` | Notify Bridge | systemd | `8094` | 无 | cron 调度、重试状态、QQ 通知分发 |
 | `trend` | Trend Radar | systemd | `8095` | `/trends/` | NewsNow 热榜、搜索、话题分析、MCP 风格工具 |
 | `reflexio` | Reflexio | systemd | `8081` | `/reflexio/` | 记忆和反思看板 |

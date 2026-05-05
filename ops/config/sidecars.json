@@ -44,7 +44,7 @@
     "description": "LOF/QDII 估值看板、历史溢价和报告。公网入口，也是本管理页所在服务。",
     "port": 8093,
     "unit": "lof-sidecar.service",
-    "homepage_url": "/",
+    "homepage_url": "/lof",
     "check_url": "http://127.0.0.1:8093/health",
     "check_kind": "http",
     "public": true,

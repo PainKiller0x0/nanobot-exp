@@ -297,6 +297,8 @@ fn ad_score(title: &str, summary: &str, _content: &str) -> i32 {
         "报名通道",
         "仅需0元",
         "免费社群陪伴",
+        "一堂课告诉你",
+        "课告诉你",
     ];
     let soft = [
         "广告",
