@@ -557,6 +557,27 @@ fn yage_decode_content_field(article_html: &str) -> Option<String> {
     )
 }
 
+fn yage_prepare_content_html(raw: &str) -> String {
+    let mut html = raw.trim().to_string();
+    if let Some(idx) = html.to_ascii_lowercase().find("</style>") {
+        // Kit sometimes wraps the actual post in a full HTML document inside a
+        // layout table.  html2md treats that outer table and CSS as content, so
+        // start from the real body after the embedded stylesheet.
+        html = html[idx + "</style>".len()..].to_string();
+    }
+    for pattern in [
+        r"(?is)<script\b[^>]*>.*?</script>",
+        r"(?is)<style\b[^>]*>.*?</style>",
+        r"(?is)<title\b[^>]*>.*?</title>",
+        r"(?is)<meta\b[^>]*>",
+    ] {
+        if let Ok(re) = Regex::new(pattern) {
+            html = re.replace_all(&html, "").to_string();
+        }
+    }
+    html.trim().to_string()
+}
+
 fn yage_extract_title_line(markdown: &str) -> String {
     for raw in markdown.lines() {
         let mut s = raw.trim();
@@ -594,7 +615,8 @@ async fn fetch_yage_article_markdown(
         .await
         .ok()?;
     let raw = yage_decode_content_field(&article_html)?;
-    let markdown = parse_html(&raw).trim().to_string();
+    let cleaned = yage_prepare_content_html(&raw);
+    let markdown = parse_html(&cleaned).trim().to_string();
     if markdown.is_empty() {
         return None;
     }
@@ -1862,6 +1884,37 @@ async fn auto_refresh_loop(st: Arc<AppState>) {
             }
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yage_new_kit_html_wrapper_is_removed_before_markdown() {
+        let raw = r#"
+<table><tbody><tr><td><div>
+<meta>
+<title>Noise title</title>
+<style>
+body { font-family: sans-serif; }
+h1 { color: red; }
+</style>
+<h1>[鸭哥 AI 手记] 2026-05-03: 正文标题</h1>
+<p>&gt; 第一段摘要。</p>
+<p><strong>懒人包：真正的正文。</strong></p>
+</div></td></tr></tbody></table>
+"#;
+        let cleaned = yage_prepare_content_html(raw);
+        let markdown = parse_html(&cleaned);
+
+        assert!(markdown.contains("[鸭哥 AI 手记] 2026-05-03: 正文标题"));
+        assert!(markdown.contains("第一段摘要"));
+        assert!(markdown.contains("懒人包"));
+        assert!(!markdown.contains("font-family"));
+        assert!(!markdown.contains("Noise title"));
+        assert!(!markdown.trim_start().starts_with('|'));
     }
 }
 
