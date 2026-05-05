@@ -338,6 +338,9 @@ async fn main() {
         .route("/sidecars", get(sidecars_page))
         .route("/evolution", get(evolution_page))
         .route("/inbox", get(inbox_page))
+        .route("/workbench", get(workbench_page))
+        .route("/workbench/", get(workbench_page))
+        .route("/assets/nb-shell.js", get(shell_js))
         .route("/assets/nb-common.js", get(common_js))
         .route("/api/sidecars", get(api_sidecars))
         .route("/api/inbox", get(api_inbox))
@@ -907,6 +910,11 @@ async fn reverse_proxy(
         match String::from_utf8(bytes.to_vec()) {
             Ok(text) => {
                 let rewritten = rewrite_proxy_text(text, prefix);
+                let rewritten = if content_type.contains("text/html") {
+                    inject_sidecar_shell(rewritten, prefix)
+                } else {
+                    rewritten
+                };
                 let builder = Response::builder()
                     .status(status)
                     .header(header::CONTENT_TYPE, content_type);
@@ -975,6 +983,30 @@ fn rewrite_proxy_text(mut text: String, prefix: &str) -> String {
     text
 }
 
+
+fn inject_sidecar_shell(mut text: String, prefix: &str) -> String {
+    if text.contains("/assets/nb-shell.js") || text.contains("nb-sidecar-shell") {
+        return text;
+    }
+    let label = match prefix {
+        "/rss" => "RSS 文章",
+        "/obp" => "OBP 模型网关",
+        "/trends" => "热点雷达",
+        "/reflexio" => "Reflexio",
+        _ => "Sidecar",
+    };
+    let script = format!(
+        r#"<script src="/assets/nb-shell.js" data-prefix="{}" data-label="{}" defer></script>"#,
+        prefix, label
+    );
+    if let Some(pos) = text.rfind("</body>") {
+        text.insert_str(pos, &script);
+    } else {
+        text.push_str(&script);
+    }
+    text
+}
+
 async fn api_notify_jobs(State(state): State<AppState>) -> impl IntoResponse {
     match state
         .http
@@ -1028,7 +1060,8 @@ async fn dashboard() -> Html<String> {
       <h1 class="title">&#x4eca;&#x65e5;&#x9a7e;&#x9a76;&#x8231;</h1>
       <p class="sub">&#x628a;&#x6587;&#x7ae0;&#x3001;LOF&#x3001;&#x5b9a;&#x65f6;&#x4efb;&#x52a1;&#x548c;&#x670d;&#x52a1;&#x5668;&#x72b6;&#x6001;&#x538b;&#x6210;&#x4e00;&#x773c;&#x80fd;&#x770b;&#x61c2;&#x7684;&#x6458;&#x8981;&#x3002;&#x4f4e;&#x4ef7;&#x503c;&#x4fe1;&#x606f;&#x8fdb;&#x770b;&#x677f;&#xff0c;&#x9ad8;&#x4ef7;&#x503c;&#x5f02;&#x5e38;&#x518d;&#x6253;&#x6270;&#x4f60;&#x3002;</p>
       <div class="actions">
-        <a class="btn" href="/lof">&#x6253;&#x5f00; LOF &#x770b;&#x677f;</a>
+        <a class="btn" href="/workbench">内容工作台</a>
+        <a class="btn secondary" href="/lof">&#x6253;&#x5f00; LOF &#x770b;&#x677f;</a>
         <a class="btn secondary" href="/rss/">RSS &#x8ba2;&#x9605;</a>
         <a class="btn secondary" href="/evolution">&#x8fdb;&#x5316;&#x65e5;&#x5fd7;</a>
         <a class="btn secondary" href="/sidecars">&#x670d;&#x52a1;&#x603b;&#x63a7;</a>
@@ -1054,7 +1087,7 @@ async fn dashboard() -> Html<String> {
 
     <article class="panel card full fade" style="animation-delay:.215s"><h2>Nanobot 能力矩阵</h2><div class="quick">
       <a href="/inbox">知识收件箱<span>QQ：收一下 + 链接 / 这个值得看吗 + 链接；按需抓取 Markdown，不常驻</span></a>
-      <a href="#" onclick="return false">决策助手<span>QQ：今天先看什么 / 今天怎么安排；聚合系统、文章、LOF、任务数据</span></a>
+      <a href="/workbench">内容工作台<span>RSS、知识收件箱、热点雷达合并阅读；本地标记已读/收藏</span></a>
       <a href="/rss/">RSS 文章能力<span>微信、鸭哥、Markdown 预览、广告过滤，仍走 RSS sidecar</span></a>
       <a href="/trends/">热点雷达能力<span>全网热榜、搜索、话题趋势、MCP 风格工具接口，走 Trend sidecar</span></a>
       <a href="/sidecars">服务运维能力<span>内存怎么样 / 服务状态 / cron 任务怎么样；真实数据查询</span></a>
@@ -1062,6 +1095,7 @@ async fn dashboard() -> Html<String> {
     <article class="panel card full fade" style="animation-delay:.22s"><h2>&#x670d;&#x52a1;&#x77e9;&#x9635;</h2><div style="overflow:auto"><table class="table" id="services"></table></div></article>
   </section>
 </div>
+<script src="/assets/nb-shell.js" data-prefix="/" data-label="今日驾驶舱" defer></script>
 <script>
 const root=document.documentElement;if(localStorage.dashboardTheme==='dark')root.setAttribute('data-theme','dark');
 const state={system:null,sidecars:null,lof:null,notify:null,rss:null,rssSubs:null,history:null};
@@ -1226,8 +1260,123 @@ loadAll();
     )
 }
 
+
+async fn shell_js() -> Response {
+    const SHELL_JS: &str = r####"
+(() => {
+  if (window.__NB_SHELL_READY__) return;
+  window.__NB_SHELL_READY__ = true;
+  const script = document.currentScript;
+  const label = script?.dataset?.label || document.title || 'Sidecar';
+  const current = script?.dataset?.prefix || location.pathname.split('/')[1] || '/';
+  const links = [
+    ['驾驶舱','/'],['工作台','/workbench'],['RSS','/rss/'],['LOF','/lof'],['OBP','/obp/'],['任务','/sidecars'],['热点','/trends/'],['收件箱','/inbox']
+  ];
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  function applyTheme(mode){
+    const dark = mode === 'dark';
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    document.documentElement.classList.toggle('dark', dark);
+    localStorage.sidecarShellTheme = dark ? 'dark' : 'light';
+    localStorage.dashboardTheme = dark ? 'dark' : 'light';
+    localStorage.obp_theme = dark ? 'dark' : 'light';
+  }
+  function toggleTheme(){
+    const cur = document.documentElement.classList.contains('dark') || document.documentElement.getAttribute('data-theme') === 'dark';
+    applyTheme(cur ? 'light' : 'dark');
+  }
+  function build(){
+    if (document.getElementById('nb-sidecar-shell')) return;
+    if (localStorage.sidecarShellTheme === 'dark' || localStorage.dashboardTheme === 'dark' || localStorage.obp_theme === 'dark') applyTheme('dark');
+    const style = document.createElement('style');
+    style.textContent = `
+      #nb-sidecar-shell{position:fixed;right:14px;top:14px;z-index:2147483000;font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif;color:#17211c}
+      .nb-shell-pill{display:flex;align-items:center;gap:8px;border:1px solid rgba(85,100,84,.28);border-radius:999px;background:rgba(255,253,246,.88);box-shadow:0 14px 38px rgba(23,33,28,.16);backdrop-filter:blur(16px);padding:7px 9px;max-width:min(92vw,720px)}
+      .nb-shell-brand{border:0;background:#17211c;color:#fff;border-radius:999px;padding:7px 11px;font-weight:950;cursor:pointer;white-space:nowrap}.nb-shell-sub{font-size:12px;color:#60705f;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .nb-shell-menu{display:none;gap:6px;flex-wrap:wrap;align-items:center}.nb-shell-open .nb-shell-menu{display:flex}.nb-shell-link,.nb-shell-btn{border:1px solid rgba(85,100,84,.20);background:rgba(255,255,255,.62);color:#17211c;text-decoration:none;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:900;cursor:pointer}.nb-shell-link:hover,.nb-shell-btn:hover{transform:translateY(-1px)}
+      .nb-shell-current{background:#2f7f72;color:#fff;border-color:#2f7f72}.nb-shell-dot{width:8px;height:8px;border-radius:50%;background:#68d391;box-shadow:0 0 0 4px rgba(104,211,145,.16)}
+      .dark #nb-sidecar-shell,[data-theme="dark"] #nb-sidecar-shell{color:#e8f4ed}.dark .nb-shell-pill,[data-theme="dark"] .nb-shell-pill{background:rgba(16,24,22,.88);border-color:rgba(148,163,184,.24);box-shadow:0 16px 44px rgba(0,0,0,.36)}.dark .nb-shell-brand,[data-theme="dark"] .nb-shell-brand{background:#e8f4ed;color:#101816}.dark .nb-shell-sub,[data-theme="dark"] .nb-shell-sub{color:#9fb4a7}.dark .nb-shell-link,.dark .nb-shell-btn,[data-theme="dark"] .nb-shell-link,[data-theme="dark"] .nb-shell-btn{background:rgba(31,41,37,.72);border-color:rgba(148,163,184,.20);color:#e8f4ed}.dark .nb-shell-current,[data-theme="dark"] .nb-shell-current{background:#f0a35c;color:#101816;border-color:#f0a35c}
+      @media(max-width:760px){#nb-sidecar-shell{left:10px;right:10px;top:auto;bottom:12px}.nb-shell-pill{justify-content:space-between}.nb-shell-sub{display:none}.nb-shell-menu{position:absolute;left:0;right:0;bottom:52px;background:inherit;border:1px solid rgba(85,100,84,.22);border-radius:18px;padding:10px;box-shadow:inherit}.nb-shell-link,.nb-shell-btn{flex:1;text-align:center}}
+    `;
+    document.head.appendChild(style);
+    const root = document.createElement('div');
+    root.id = 'nb-sidecar-shell';
+    root.innerHTML = `<div class="nb-shell-pill"><button class="nb-shell-brand" type="button">中枢</button><span class="nb-shell-dot"></span><span class="nb-shell-sub">${esc(label)}</span><div class="nb-shell-menu">${links.map(([name,href])=>{const base=href.replace(/\/$/,'');const active=href==='/'?location.pathname==='/' : location.pathname.startsWith(base);return `<a class="nb-shell-link ${active?'nb-shell-current':''}" href="${href}">${name}</a>`}).join('')}<button class="nb-shell-btn" type="button" data-theme>明暗</button></div></div>`;
+    document.body.appendChild(root);
+    root.querySelector('.nb-shell-brand').addEventListener('click', () => root.classList.toggle('nb-shell-open'));
+    root.querySelector('[data-theme]').addEventListener('click', toggleTheme);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build); else build();
+})();
+"####;
+    ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], SHELL_JS).into_response()
+}
+
+async fn workbench_page() -> impl IntoResponse {
+    Html(r####"<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Nanobot 内容工作台</title>
+<style>
+:root{--bg:#f5efe3;--panel:#fffdf7;--text:#202019;--muted:#6d6658;--line:#e2d7c4;--soft:#f1e8d8;--accent:#b96631;--accent2:#287f72;--ok:#16844d;--warn:#b7791f;--bad:#c43d32;--shadow:0 22px 68px rgba(66,45,22,.13)}[data-theme="dark"]{--bg:#101816;--panel:#1b2621;--text:#edf5ea;--muted:#a9b6a5;--line:#304038;--soft:#24322b;--accent:#f0a35c;--accent2:#78c8b8;--ok:#76d39a;--warn:#f3c468;--bad:#ff8278;--shadow:0 24px 76px rgba(0,0,0,.36)}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(960px 560px at -10% -12%,rgba(185,106,51,.24),transparent 58%),radial-gradient(760px 520px at 110% 0,rgba(40,127,115,.20),transparent 55%),var(--bg);color:var(--text);font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:1280px;margin:0 auto;padding:28px 16px 48px}.hero{display:grid;grid-template-columns:1.35fr .65fr;gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:26px;box-shadow:var(--shadow);padding:22px}.eyebrow{color:var(--accent2);font-size:12px;font-weight:950;letter-spacing:.18em}.title{font-family:Georgia,"Noto Serif SC",serif;font-size:48px;line-height:1.02;margin:8px 0 12px;letter-spacing:-.04em}.sub{color:var(--muted);line-height:1.75;margin:0}.toolbar{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}.btn{border:1px solid var(--line);background:var(--text);color:var(--bg);border-radius:999px;padding:10px 14px;font-weight:950;text-decoration:none;cursor:pointer}.btn.secondary{background:transparent;color:var(--text)}.btn.small{padding:7px 10px;font-size:12px}.search{display:flex;gap:8px;margin-top:16px}.input{flex:1;min-width:0;border:1px solid var(--line);border-radius:16px;padding:12px 14px;background:var(--soft);color:var(--text);font-weight:800}.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.stat{background:var(--soft);border:1px solid var(--line);border-radius:18px;padding:14px}.k{color:var(--muted);font-size:12px;font-weight:900}.v{font-size:30px;font-weight:950;letter-spacing:-.04em}.layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;margin-top:14px}.rail{display:grid;gap:10px;align-content:start}.filter{width:100%;border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--text);padding:13px 14px;text-align:left;cursor:pointer;font-weight:950}.filter.active{background:var(--text);color:var(--bg)}.hint{color:var(--muted);font-size:13px;line-height:1.65}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px}.item{background:rgba(255,255,255,.18);border:1px solid var(--line);border-radius:22px;padding:16px;display:flex;flex-direction:column;gap:10px;min-height:210px}.item.read{opacity:.62}.tag{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:4px 8px;font-size:12px;font-weight:900;color:var(--accent2);background:var(--soft)}.name{font-size:18px;font-weight:950;line-height:1.35}.name a{color:var(--text);text-decoration:none}.name a:hover{color:var(--accent2);text-decoration:underline}.meta{font-size:12px;color:var(--muted);line-height:1.55}.summary{line-height:1.7;color:var(--text);display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto}.empty{padding:34px;text-align:center;color:var(--muted)}.good{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}@media(max-width:880px){.hero,.layout{grid-template-columns:1fr}.title{font-size:38px}.rail{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.wrap{padding:18px 10px 34px}.title{font-size:32px}.rail{grid-template-columns:1fr}.stats{grid-template-columns:1fr}.toolbar{display:grid}.btn{text-align:center}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="hero">
+    <div class="panel">
+      <div class="eyebrow">CONTENT WORKBENCH</div>
+      <h1 class="title">内容工作台</h1>
+      <p class="sub">把 RSS、知识收件箱和热点雷达放到一个阅读流里。先看摘要和来源，再决定打开原文、进入 Markdown 预览、标记已读或留到稍后。</p>
+      <div class="toolbar"><a class="btn" href="/">回到驾驶舱</a><a class="btn secondary" href="/rss/">RSS 订阅</a><a class="btn secondary" href="/inbox">知识收件箱</a><a class="btn secondary" href="/trends/">热点雷达</a><button class="btn secondary" onclick="loadAll(true)">刷新</button><button class="btn secondary" onclick="toggleTheme()">明暗</button></div>
+      <div class="search"><input id="q" class="input" placeholder="搜索标题、摘要、来源..." oninput="render()"><button class="btn secondary" onclick="clearSearch()">清空</button></div>
+    </div>
+    <div class="panel"><div class="stats" id="stats"><div class="empty">加载中...</div></div><p class="hint" id="freshness">正在读取 sidecar 数据。</p></div>
+  </section>
+  <section class="layout">
+    <aside class="rail" id="filters"></aside>
+    <main class="panel"><div class="grid" id="items"><div class="empty">加载中...</div></div></main>
+  </section>
+</div>
+<script src="/assets/nb-shell.js" data-prefix="/workbench" data-label="内容工作台" defer></script>
+<script>
+const root=document.documentElement;if(localStorage.dashboardTheme==='dark'||localStorage.sidecarShellTheme==='dark')root.setAttribute('data-theme','dark');
+const state={rss:[],inbox:[],trends:[],sidecars:null,active:'all',marks:JSON.parse(localStorage.nbWorkbenchMarks||'{}')};
+const filters=[['all','全部'],['rss','RSS 文章'],['inbox','知识收件箱'],['trend','热点雷达'],['saved','已收藏'],['unread','未读']];
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function toggleTheme(){const dark=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',dark?'light':'dark');localStorage.dashboardTheme=dark?'light':'dark';localStorage.sidecarShellTheme=dark?'light':'dark'}
+function saveMarks(){localStorage.nbWorkbenchMarks=JSON.stringify(state.marks)}
+async function getJson(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(url+' '+r.status);return r.json()}
+function strip(s,n=220){return String(s??'').replace(/\s+/g,' ').trim().slice(0,n)}
+function host(u){try{return new URL(u).host}catch{return ''}}
+function time(s){if(!s)return '';try{return new Date(s).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}catch{return s}}
+function markOf(id){return state.marks[id]||{}}
+function toggleMark(id,key){const m=markOf(id);m[key]=!m[key];state.marks[id]=m;saveMarks();render()}
+function markFromButton(btn,key){toggleMark(btn.dataset.id,key)}
+function normalize(){
+  const rss=(state.rss||[]).map(x=>({kind:'rss',id:'rss:'+x.id,title:x.title,summary:x.summary||x.content_markdown,source:x.subscription_name||'RSS',url:x.link,time:x.published_at||x.inserted_at,action:`/rss/`,raw:x}));
+  const inbox=(state.inbox||[]).map(x=>({kind:'inbox',id:'inbox:'+(x.id||x.ref_id||x.title),title:x.title,summary:x.summary||x.decision||x.preview,source:x.host||'Inbox',url:x.final_url||x.url,time:x.captured_at,action:'/inbox',raw:x}));
+  const trends=(state.trends||[]).map((x,i)=>({kind:'trend',id:'trend:'+(x.url||x.title||i),title:x.title,summary:x.summary||x.desc||x.source_name,source:x.source_name||x.source_id||'Trend',url:x.url||x.mobile_url,time:x.updated_at||x.ts,action:'/trends/',raw:x}));
+  return [...rss,...inbox,...trends].sort((a,b)=>Date.parse(b.time||0)-Date.parse(a.time||0));
+}
+function passFilter(x){const m=markOf(x.id);if(state.active==='saved')return !!m.saved;if(state.active==='unread')return !m.read;if(state.active!=='all'&&x.kind!==state.active)return false;const q=document.getElementById('q')?.value.trim().toLowerCase();if(!q)return true;return [x.title,x.summary,x.source,host(x.url)].join(' ').toLowerCase().includes(q)}
+function renderFilters(){document.getElementById('filters').innerHTML=filters.map(([k,n])=>`<button class="filter ${state.active===k?'active':''}" onclick="state.active='${k}';render()">${esc(n)}<div class="hint">${filterNote(k)}</div></button>`).join('')+`<div class="panel" style="padding:14px"><div class="k">建议流程</div><p class="hint">先看“未读”，遇到长文进 RSS/Inbox 看 Markdown；热点只做线索，不直接打扰 QQ。</p></div>`}
+function filterNote(k){const all=normalize();const c=k==='all'?all.length:k==='saved'?all.filter(x=>markOf(x.id).saved).length:k==='unread'?all.filter(x=>!markOf(x.id).read).length:all.filter(x=>x.kind===k).length;return c+' 条'}
+function renderStats(){const side=state.sidecars?.summary||{};document.getElementById('stats').innerHTML=[['RSS',state.rss.length],['收件箱',state.inbox.length],['热点',state.trends.length],['服务',`${side.healthy??'-'}/${side.total??'-'}`]].map(([k,v])=>`<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join('')}
+function render(){renderStats();renderFilters();const items=normalize().filter(passFilter);document.getElementById('items').innerHTML=items.length?items.map(renderItem).join(''):'<div class="empty">这里暂时没有匹配内容。</div>'}
+function renderItem(x){const m=markOf(x.id);const cls=m.read?'item read':'item';const kind={rss:'RSS',inbox:'收件箱',trend:'热点'}[x.kind]||x.kind;return `<article class="${cls}"><div><span class="tag">${kind}</span></div><div class="name"><a href="${esc(x.url||x.action)}" target="_blank" rel="noopener">${esc(x.title||'(无标题)')}</a></div><div class="meta">${esc(x.source)} · ${esc(time(x.time))} · ${esc(host(x.url))}</div><div class="summary">${esc(strip(x.summary,260)||'暂无摘要，建议打开详情查看。')}</div><div class="actions"><a class="btn small" href="${esc(x.url||x.action)}" target="_blank" rel="noopener">原文</a><a class="btn secondary small" href="${esc(x.action)}">详情</a><button class="btn secondary small" data-id="${esc(x.id)}" onclick="markFromButton(this,'read')">${m.read?'取消已读':'标记已读'}</button><button class="btn secondary small" data-id="${esc(x.id)}" onclick="markFromButton(this,'saved')">${m.saved?'取消收藏':'收藏'}</button></div></article>`}
+function clearSearch(){document.getElementById('q').value='';render()}
+async function loadAll(manual=false){const jobs=[['rss','/rss/api/entries?days=7&limit=40'],['inbox','/api/inbox'],['trends','/trends/api/trends/latest?limit=24'],['sidecars','/api/sidecars']];await Promise.all(jobs.map(async ([k,u])=>{try{const d=await getJson(u);state[k]=d.items||d.entries||d.data||d}catch(e){state[k]=[];console.warn(k,e)}}));document.getElementById('freshness').textContent=(manual?'已刷新 · ':'')+'更新时间：'+new Date().toLocaleTimeString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'});render()}
+loadAll();
+</script>
+</body>
+</html>"####)
+}
+
 async fn common_js() -> Response {
-    const COMMON_JS: &str = r##"window.NB=window.NB||(()=>{const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));function bindTheme(key,opt={}){const root=document.documentElement;const also=opt.also||[];if(localStorage[key]==='dark'||also.some(k=>localStorage[k]==='dark'))root.setAttribute('data-theme','dark');return function(){const dark=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',dark?'light':'dark');localStorage[key]=dark?'light':'dark'}}function stat(k,v,n=''){return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="mini">${esc(n)}</div></div>`}function fallbackCopy(text,done){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done&&done()}function copyText(text,btn){if(!text)return;const done=()=>{if(!btn)return;const old=btn.textContent;btn.textContent='已复制';setTimeout(()=>btn.textContent=old,1200)};if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,done));else fallbackCopy(text,done)}return{esc,bindTheme,stat,copyText,fallbackCopy}})();"##;
+    const COMMON_JS: &str = r##"window.NB=window.NB||(()=>{const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));function bindTheme(key,opt={}){const root=document.documentElement;const also=opt.also||[];if(localStorage[key]==='dark'||also.some(k=>localStorage[k]==='dark'))root.setAttribute('data-theme','dark');return function(){const dark=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',dark?'light':'dark');localStorage[key]=dark?'light':'dark'}}function stat(k,v,n=''){return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="mini">${esc(n)}</div></div>`}function fallbackCopy(text,done){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done&&done()}function copyText(text,btn){if(!text)return;const done=()=>{if(!btn)return;const old=btn.textContent;btn.textContent='已复制';setTimeout(()=>btn.textContent=old,1200)};if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,done));else fallbackCopy(text,done)}function loadShell(){if(document.querySelector('script[src=\"/assets/nb-shell.js\"]'))return;const sc=document.createElement('script');sc.src='/assets/nb-shell.js';sc.defer=true;sc.dataset.label=document.title||'Nanobot';document.head.appendChild(sc)}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',loadShell);else loadShell();return{esc,bindTheme,stat,copyText,fallbackCopy}})();"##;
     ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], COMMON_JS).into_response()
 }
 
@@ -2721,6 +2870,7 @@ async fn index() -> Html<String> {
   </style>
 </head>
 <body>
+  <script src="/assets/nb-shell.js" data-prefix="/lof" data-label="LOF 雷达" defer></script>
 <div class="wrap">
   <div class="top">
     <h2>LOF Sidecar · Rust</h2>
