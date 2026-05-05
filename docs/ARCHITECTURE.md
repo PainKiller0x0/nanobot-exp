@@ -34,8 +34,9 @@
   127.0.0.1    127.0.0.1  127.0.0.1   Radar     same process
   :8091        :8081      :8000       :8095
 
-  /inbox、/evolution、/assets/nb-common.js 由 LOF dashboard
-  同进程提供，不再额外增加常驻服务。
+  /workbench、/inbox、/evolution、/assets/nb-shell.js、
+  /assets/nb-common.js 由 LOF dashboard 同进程提供，
+  不再额外增加常驻服务。
 
   Nanobot core 和内部桥接不直接暴露公网：
 
@@ -53,11 +54,13 @@
 只有 `lof-sidecar-rs` 作为公网入口。它负责：
 
 - `/` 和 `/lof`：LOF/QDII 看板。
-- `/sidecars` 和 `/api/sidecars`：服务矩阵。
+- `/sidecars`、`/api/sidecars`、`/api/capabilities`：能力总控台和服务矩阵。
+- `/workbench`：内容工作台，聚合 RSS、知识收件箱和热点雷达，本地标记已读/收藏。
 - `/inbox` 和 `/api/inbox`：知识收件箱预览、删除和 JSON。
 - `/evolution` 和 `/api/evolution`：进化日志。
+- `/assets/nb-shell.js`：sidecar 统一导航壳、主题同步和跨页面入口。
 - `/assets/nb-common.js`：sidecar 页面共享 JS helper。
-- `/rss/`、`/reflexio/`、`/obp/`、`/trends/`：反代到内部 sidecar。
+- `/rss/`、`/reflexio/`、`/obp/`、`/trends/`：反代到内部 sidecar，并注入统一导航壳。
 
 `podman-port-forward-allow.service` 是公网端口守卫。预期端口策略是：
 
@@ -235,14 +238,18 @@ ops/sources/_shared/ops_common.py
 - LOF/QDII 看板、报告、历史溢价视图。
 - `/api/run` 是同步刷新接口；`/api/status` 是状态和缓存读取接口。
 - 内部 sidecar 反代。
-- 服务矩阵和健康聚合。
+- 能力总控台、服务矩阵和健康聚合。
+- 内容工作台 `/workbench`：聚合 RSS、知识收件箱、热点雷达；已读/收藏只存在浏览器 `localStorage`，不写服务器状态。
 - 知识收件箱 `/inbox`、进化日志 `/evolution` 和对应 JSON API。
-- `/assets/nb-common.js` 承载 sidecar 页面共享前端 helper，目前只放稳定机制：HTML escape、明暗主题绑定、统计卡片、复制到剪贴板。
+- `/assets/nb-shell.js` 承载统一侧边/浮动导航壳、明暗主题同步和反代页面注入。
+- `/assets/nb-common.js` 承载 sidecar 页面共享前端 helper：HTML escape、东八区时间、host 解析、主题绑定、统计卡片、短列表、复制按钮和命令块。
 
 前端公共 helper 边界：
 
-- 可以放跨页面稳定工具函数。
-- 不放业务 HTML 结构、具体文案、数据字段解释和 prompt。
+- `nb-shell.js` 负责“壳”：导航、全局主题同步、反代 HTML 注入和统一视觉变量。
+- `nb-common.js` 负责“机制”：`esc`、`fmtTime`、`host`、`bindTheme`、`stat`、`shortList`、`copyText`、`copyFromButton`、`cmdHtml`。
+- 业务页面只组合数据、布局和文案，不再复制基础 escape、复制按钮、短列表、命令块和常规时间/host helper。
+- 不把业务 HTML 结构、具体文案、数据字段解释、prompt 或付费模型判断塞进公共 JS。
 - 如果页面继续增长，优先拆静态 HTML/CSS/JS 文件或 Rust module，而不是继续把所有页面字符串塞进 `main.rs`。
 
 LOF 定时报告不是直接读缓存发送。Notify 任务调用 `qdii-monitor/send_qq.py`，脚本会：
@@ -338,7 +345,8 @@ HERMES 任务调用 `hermes-check/hermes_check.py`。脚本应读取 `8093/api/s
 | RSS LLM settings | `wechat-rss-rs::LlmSettings` | LLM 设置 merge、密钥遮蔽、保存/公开 JSON、免费策略状态、测试 URL | crawler 业务判断、文章格式化 |
 | Reflexio cost policy | `nanobot-reflexio-rs/src/cost_policy.rs` | 免费 LLM/embedding 默认值、环境开关、白名单、启用判断 | 具体 prompt、事实抽取、SQLite 检索 |
 | OBP route metadata | `obp-rs::{config,proxy,stats}` | 模型组、渠道配置、fallback、成本统计、响应头路由信息 | Nanobot agent 语义判断、sidecar 主动消费模型 |
-| Sidecar page JS | `/assets/nb-common.js` | HTML escape、主题绑定、统计卡片、复制按钮 | 页面布局、业务字段、具体文案 |
+| Sidecar shell JS | `/assets/nb-shell.js` | 统一导航壳、明暗主题同步、反代页面注入、跨页面入口 | 业务页面渲染、数据解释、prompt |
+| Sidecar common JS | `/assets/nb-common.js` | HTML escape、东八区时间、host 解析、主题绑定、统计卡片、短列表、复制按钮、命令块 | 页面布局、业务字段、具体文案 |
 
 抽取原则：
 
@@ -379,7 +387,9 @@ QQ 回复 / dashboard 摘要
 - `_shared/ops_common.py` 已经减少 skill 客户端重复代码，HERMES、LOF wrapper、Trend、RSS skill 和个人 ops summary 都复用同一套 HTTP/时间 helper。
 - RSS 的 LLM settings 重复逻辑已经收口到 `LlmSettings`，避免 handler、settings API、test endpoint 各自处理密钥遮蔽和 `free_only`。
 - Reflexio 的免费模型策略已经收口到 `cost_policy.rs`，`main.rs` 和 `embedding.rs` 不再各自复制 env bool 与免费白名单判断。
-- sidecar 页面已开始复用 `/assets/nb-common.js`，`inbox`、`evolution`、`sidecars` 不再各自复制 escape、主题切换和复制按钮逻辑。
+- sidecar 页面已开始复用 `/assets/nb-shell.js` 和 `/assets/nb-common.js`；`inbox`、`evolution`、`sidecars` 不再各自复制 escape、主题切换、时间/host、短列表、命令块和复制按钮逻辑。
+- 能力总控台已经明确分成“能力层：我能做什么”和“支撑服务层：谁在跑”，两个区块默认展开、可折叠；能力卡只展示触发语/入口/运行形态，服务卡承载端口、日志、重启和健康细节，避免同一服务重复铺成两套重卡片。
+- 内容工作台已经成为信息阅读入口，聚合 RSS、知识收件箱和热点雷达；卡片已做 Inbox Markdown 决策摘要结构化，避免把原始 Markdown 或噪音关键词直接铺出来。
 - 知识收件箱已经具备微信链接解析、免费 LongCat 摘要、删除、预览整理和噪音关键词过滤，适合作为按需 skill，而不是常驻服务。
 - OBP 已避免 heartbeat 的 `review` 文本误升 Pro；路由日志仍通过响应头进入 Nanobot provider 日志，便于追踪钱包行为。
 
@@ -395,7 +405,7 @@ QQ 回复 / dashboard 摘要
 
 建议下一步重构：
 
-1. Rust sidecar 的大块 HTML/CSS 如果继续增长，拆到 `static` 或 `include_str!` 文件；公共 JS 已有 `/assets/nb-common.js`，不要再复制基础工具函数。
+1. Rust sidecar 的大块 HTML/CSS 如果继续增长，拆到 `static` 或 `include_str!` 文件；公共 JS 已有 `/assets/nb-shell.js` 和 `/assets/nb-common.js`，不要再复制基础导航、主题、复制、时间、host、短列表和命令块工具函数。
 2. `lof-sidecar-rs` 如果继续加功能，把 reverse proxy、service manager、LOF domain 分 module。
 3. `wechat-rss-rs` 下一步优先拆 crawler、article formatter、settings routes；`LlmSettings` 继续保留为 settings/cost policy 入口。
 4. `weather-expert/weather_check.py` 如果出现第二个天气/通勤脚本，再把节假日和未来时段选择抽进 `_shared`。
