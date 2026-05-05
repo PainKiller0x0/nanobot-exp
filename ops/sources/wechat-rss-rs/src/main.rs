@@ -1077,7 +1077,7 @@ async fn root() -> Html<&'static str> {
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
 async function j(url,opt){const r=await fetch(url,{headers:{'content-type':'application/json'},...(opt||{})});return await r.json();}
-function esc(s){return (s||'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[m]));}
+function esc(s){return String(s??'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[m]));}
 function mdToHtml(md){try{return (window.marked&&window.marked.parse)?window.marked.parse(md||''):esc(md||'').replace(/\n/g,'<br/>');}catch(_){return esc(md||'').replace(/\n/g,'<br/>');}}
 function closePreview(){const m=document.getElementById('mdModal');if(!m)return;m.classList.remove('show');m.setAttribute('aria-hidden','true');}
 const MD_THEME_KEY='wechat_rss_md_preview_theme';
@@ -1160,27 +1160,19 @@ async function loadStats(subs,entries){const ok=subs.filter(x=>(x.last_status||'
 async function toggleSub(id){const d=await j('/api/subscriptions/'+id+'/toggle',{method:'POST',body:'{}'});if(d.error){alert('toggle failed: '+d.error);return;}await loadAll();}
 async function loadSubs(){const d=await j('/api/subscriptions');const items=d.items||[];document.getElementById('subs').innerHTML=items.map(x=>`<div class="row"><div class="name"><b>${esc(x.name)}</b></div><div class="status"><button class="state-btn ${x.enabled===1?'running':'paused'}" title="${x.enabled===1?'点击暂停':'点击启动'}" onclick="toggleSub(${x.id})">${x.enabled===1?'运行中':'已暂停'}</button></div><div class="meta muted">id=${x.id} · ${statusChip(x.last_status)} · ${esc(toCN(x.last_refresh_at)||'未刷新')}</div><div class="action"><button onclick="refreshOne(${x.id})">刷新</button></div></div>`).join('');return items;}
 async function refreshAll(silent){const d=await j('/api/refresh-all',{method:'POST',body:'{}'});if(!silent)alert(d.message||'done');await loadAll();}
+function entryTime(x){return ts(x.published_at||x.inserted_at);}
+function sortEntries(items){return (items||[]).slice().sort((a,b)=>entryTime(b)-entryTime(a));}
+function groupEntries(items){const group={};for(const it of items){const k=it.subscription_name||'未命名';(group[k]||(group[k]=[])).push(it);}return group;}
+function renderEntryArticle(x){
+  const when=x.published_at_local||toCN(x.published_at)||'';
+  return `<article><div class="entry-actions"><a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}</a><button data-id="${esc(x.id)}" data-title="${esc(x.title)}" onclick="openPreviewFromButton(this)">MD 预览</button></div><div class="muted">${esc(when)}</div></article>`;
+}
+function openPreviewFromButton(btn){openPreview(btn.dataset.id,btn.dataset.title||'Markdown Preview');}
 async function loadEntries(){
   const d=await j('/api/entries?days=7&limit=40');
-  const items=(d.items||[]).slice().sort((a,b)=>ts(b.published_at||b.inserted_at)-ts(a.published_at||a.inserted_at));
-  const group={};
-  for(const it of items){
-    const k=it.subscription_name||'未命名';
-    if(!group[k])group[k]=[];
-    group[k].push(it);
-  }
-  const html=Object.keys(group).map(k=>{
-    const arr=group[k].slice().sort((a,b)=>ts(b.published_at||b.inserted_at)-ts(a.published_at||a.inserted_at));
-    return `<div class="group"><div class="g-title">${esc(k)}</div>${
-      arr.map(x=>`<article>
-        <div class="entry-actions">
-          <a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}</a>
-          <button onclick="openPreview(${x.id}, '${esc(x.title).replace(/'/g, '&#39;')}')">MD 预览</button>
-        </div>
-        <div class="muted">${esc(x.published_at_local||toCN(x.published_at)||'')}</div>
-      </article>`).join('')
-    }</div>`;
-  }).join('');
+  const items=sortEntries(d.items||[]);
+  const group=groupEntries(items);
+  const html=Object.keys(group).map(k=>`<div class="group"><div class="g-title">${esc(k)}</div>${sortEntries(group[k]).map(renderEntryArticle).join('')}</div>`).join('');
   document.getElementById('entries').innerHTML=html||'<div class="muted">暂无文章</div>';
   return items;
 }
