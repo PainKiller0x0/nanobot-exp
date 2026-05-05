@@ -1063,7 +1063,7 @@ async fn root() -> Html<&'static str> {
 .entries .group{margin:12px 0 16px}.entries .g-title{font-weight:700;font-size:14px;margin:0 0 8px;color:var(--heading)}
 .entries article{padding:9px 0;border-bottom:1px dashed var(--dash)}.entries article:last-child{border-bottom:none}.entries a{color:var(--link);text-decoration:none;font-weight:600}.entries a:hover{text-decoration:underline}
 .entry-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.entry-actions button{padding:6px 10px;border-radius:8px;font-size:12px}
-.modal{position:fixed;inset:0;display:none;z-index:90}.modal.show{display:block}.modal-mask{position:absolute;inset:0;background:rgba(0,0,0,.42)}.modal-panel{position:relative;max-width:900px;max-height:85vh;overflow:auto;margin:5vh auto;background:var(--card);border:1px solid var(--card-border);border-radius:14px;box-shadow:var(--shadow);padding:14px 16px}.modal-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}.modal-head h3{margin:0;font-size:18px}.md-body{line-height:1.65;color:var(--text)}.md-body img{max-width:100%;height:auto}.md-body pre{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px}
+#mdModal[data-md-theme="light"]{--md-card:#fffdf8;--md-panel:#faf6ec;--md-text:#25231d;--md-muted:#726a58;--md-line:#d6ccb7;--md-link:#2f4f7b;--md-mask:rgba(35,28,18,.36);--md-shadow:0 22px 64px rgba(48,36,14,.18)}#mdModal[data-md-theme="dark"]{--md-card:#1f2429;--md-panel:#161b20;--md-text:#edf2f7;--md-muted:#aeb8c4;--md-line:#404955;--md-link:#9bc4ff;--md-mask:rgba(0,0,0,.62);--md-shadow:0 22px 70px rgba(0,0,0,.45)}.modal{position:fixed;inset:0;display:none;z-index:90}.modal.show{display:block}.modal-mask{position:absolute;inset:0;background:var(--md-mask,rgba(0,0,0,.42))}.modal-panel{position:relative;max-width:900px;max-height:85vh;overflow:auto;margin:5vh auto;background:var(--md-card,var(--card));border:1px solid var(--md-line,var(--card-border));border-radius:14px;box-shadow:var(--md-shadow,var(--shadow));padding:14px 16px}.modal-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}.modal-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.modal-head h3{margin:0;font-size:18px;color:var(--md-text,var(--text))}.md-theme-btn{min-width:112px;padding:8px 10px}.md-body{line-height:1.75;color:var(--md-text,var(--text));font-size:15px}.md-body.muted{color:var(--md-muted,var(--muted))}.md-body a{color:var(--md-link,var(--link));font-weight:650}.md-body p{margin:0 0 .9em}.md-body blockquote{margin:12px 0;padding:9px 12px;border-left:4px solid var(--md-link,var(--link));background:var(--md-panel,var(--panel));color:var(--md-muted,var(--muted));border-radius:8px}.md-body code{background:var(--md-panel,var(--panel));border:1px solid var(--md-line,var(--line));border-radius:6px;padding:1px 5px}.md-body img{max-width:100%;height:auto}.md-body pre{overflow:auto;background:var(--md-panel,var(--panel));border:1px solid var(--md-line,var(--line));border-radius:8px;padding:10px}
 .llm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;align-items:end}.llm-field{min-width:0}.llm-field .muted{display:block;margin-bottom:6px}.llm-grid input{width:100%;min-width:0;padding:10px 11px;border:1px solid var(--line);border-radius:10px;background:var(--input-bg);color:var(--text)}
 .llm-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;align-items:center;margin-top:10px}.llm-actions button{width:100%;min-width:0}.llm-result{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:10px;max-height:220px;overflow:auto}
 @media (min-width:980px){.stats-card{grid-column:span 4}.subs-card{grid-column:span 8}.entries-card{grid-column:span 8}.llm-card{grid-column:span 4}}
@@ -1073,16 +1073,23 @@ async fn root() -> Html<&'static str> {
 <section class="grid"><div class="card stats-card"><h2 class="h">运行概览</h2><div class="stats" id="stats"></div></div><div class="card subs-card"><h2 class="h">订阅列表</h2><div class="add-sub"><input id="new_biz" placeholder="biz (可选)"/><input id="new_name" placeholder="name"/><input id="new_feed_url" placeholder="feed url (https://...)"/><button onclick="createSub()">Add</button></div><div class="subs" id="subs"></div></div><div class="card entries-card"><h2 class="h">最近文章（东八区）</h2><div class="entries" id="entries"></div></div>
 <div class="card llm-card"><h2 class="h">LLM 设置</h2><p class="muted">费用策略：仅允许 LongCat-Flash-Lite 自动参与广告判定；其他模型不会被 sidecar 自动调用。</p><label class="llm-switch"><input id="llm_enabled" type="checkbox"/> 启用免费 LLM 广告判定</label><div class="llm-grid"><div class="llm-field"><div class="muted">API Base</div><input id="llm_api_base" placeholder="https://api.longcat.chat/openai/v1"/></div><div class="llm-field"><div class="muted">API Key</div><input id="llm_api_key" type="password" placeholder="ak-..."/></div><div class="llm-field"><div class="muted">Model</div><input id="llm_model" placeholder="LongCat-Flash-Lite"/></div></div><div class="llm-actions"><button onclick="saveLlm()">保存设置</button><button onclick="testLlm()">测试连接</button></div><div id="llm_result" class="llm-result">这里显示模型连通测试结果。</div></div>
 </section></div>
-<div id="mdModal" class="modal" aria-hidden="true"><div class="modal-mask" onclick="closePreview()"></div><div class="modal-panel"><div class="modal-head"><h3 id="mdTitle">Markdown Preview</h3><button onclick="closePreview()">关闭</button></div><div id="mdBody" class="md-body muted">加载中...</div></div></div>
+<div id="mdModal" class="modal" aria-hidden="true"><div class="modal-mask" onclick="closePreview()"></div><div class="modal-panel"><div class="modal-head"><h3 id="mdTitle">Markdown Preview</h3><div class="modal-tools"><button id="mdThemeToggle" class="md-theme-btn" onclick="toggleMdPreviewTheme()">预览: 跟随</button><button onclick="closePreview()">关闭</button></div></div><div id="mdBody" class="md-body muted">加载中...</div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
 async function j(url,opt){const r=await fetch(url,{headers:{'content-type':'application/json'},...(opt||{})});return await r.json();}
 function esc(s){return (s||'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[m]));}
 function mdToHtml(md){try{return (window.marked&&window.marked.parse)?window.marked.parse(md||''):esc(md||'').replace(/\n/g,'<br/>');}catch(_){return esc(md||'').replace(/\n/g,'<br/>');}}
 function closePreview(){const m=document.getElementById('mdModal');if(!m)return;m.classList.remove('show');m.setAttribute('aria-hidden','true');}
+const MD_THEME_KEY='wechat_rss_md_preview_theme';
+function currentPageTheme(){return document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';}
+function setMdPreviewBtn(mode){const el=document.getElementById('mdThemeToggle');if(!el)return;el.textContent=mode==='dark'?'预览: 暗色':'预览: 明亮';}
+function applyMdPreviewTheme(mode){const m=document.getElementById('mdModal');if(!m)return;const next=(mode==='dark'||mode==='light')?mode:currentPageTheme();m.setAttribute('data-md-theme',next);setMdPreviewBtn(next);}
+function initMdPreviewTheme(){const saved=localStorage.getItem(MD_THEME_KEY);applyMdPreviewTheme((saved==='dark'||saved==='light')?saved:currentPageTheme());}
+function toggleMdPreviewTheme(){const m=document.getElementById('mdModal');const cur=(m&&m.getAttribute('data-md-theme'))||currentPageTheme();const next=cur==='dark'?'light':'dark';localStorage.setItem(MD_THEME_KEY,next);applyMdPreviewTheme(next);}
 async function openPreview(id,title){
   const m=document.getElementById('mdModal');const t=document.getElementById('mdTitle');const b=document.getElementById('mdBody');
   if(!m||!t||!b)return;
+  initMdPreviewTheme();
   t.textContent=title||'Markdown Preview'; b.textContent='加载中...'; m.classList.add('show'); m.setAttribute('aria-hidden','false');
   try{
     let md='';
@@ -1108,7 +1115,7 @@ function toCN(v){if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()
 function ts(v){const d=new Date(v||'');return Number.isNaN(d.getTime())?0:d.getTime();}
 const THEME_KEY='wechat_rss_theme';
 function setThemeBtn(mode){const el=document.getElementById('themeToggle');if(!el)return;el.textContent=mode==='dark'?'Theme: Dark':'Theme: Light';}
-function applyTheme(mode){document.documentElement.setAttribute('data-theme',mode);setThemeBtn(mode);}
+function applyTheme(mode){document.documentElement.setAttribute('data-theme',mode);setThemeBtn(mode);if(!localStorage.getItem(MD_THEME_KEY))applyMdPreviewTheme(mode);}
 function initTheme(){const saved=localStorage.getItem(THEME_KEY);if(saved==='dark'||saved==='light'){applyTheme(saved);return;}const prefers=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;applyTheme(prefers?'dark':'light');}
 function toggleTheme(){const cur=document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';const next=cur==='dark'?'light':'dark';localStorage.setItem(THEME_KEY,next);applyTheme(next);}
 function renderAutoHint(status){
@@ -1180,6 +1187,7 @@ async function loadEntries(){
 async function refreshOne(id){const d=await j('/api/subscriptions/'+id+'/refresh',{method:'POST',body:'{}'});alert(d.message||'done');await loadAll();}
 async function loadAll(){try{const [subs,entries]=await Promise.all([loadSubs(),loadEntries()]);await loadStats(subs,entries);}catch(e){document.getElementById('stats').innerHTML=`<div class="muted">加载失败: ${esc((e&&e.message)||String(e))}</div>`;}try{await loadLlm();}catch(e){setLlmResult('加载失败: '+((e&&e.message)||String(e)));}}
 initTheme();
+initMdPreviewTheme();
 loadAutoRefresh();
 setInterval(loadAutoRefresh,15000);
 loadAll();
