@@ -34,7 +34,6 @@
         <div class="flex flex-wrap items-start gap-2">
           <button @click="refresh()" class="px-3 py-2 rounded-xl bg-slate-900 text-white dark:bg-white dark:text-slate-900 text-sm font-bold">刷新</button>
           <button @click="dark=!dark;localStorage.obp_theme=dark?'dark':'light'" class="btn" x-text="dark?'浅色':'深色'"></button>
-          <button @click="openAdd()" class="px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-bold">新增渠道</button>
         </div>
       </div>
       <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
@@ -85,60 +84,6 @@
         </section>
 
         <section class="panel p-4">
-          <div class="flex flex-wrap justify-between gap-3 mb-3">
-            <div>
-              <h2 class="font-black text-lg">外部调用</h2>
-              <p class="text-xs text-slate-500 mt-1">外部系统可以走 OpenAI Chat Completions 或 Anthropic Messages 两种格式；认证继续使用 8093 代理层的 Basic 或 Bearer，面板里不直接展示密钥。</p>
-            </div>
-            <button @click="saveRouter()" class="px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-bold">保存外部设置</button>
-          </div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-            <div class="subcard md:col-span-2">
-              <div class="k mb-1">API 入口</div>
-              <div class="flex flex-wrap items-center gap-2">
-                <code class="mono wrap" x-text="apiUrl"></code>
-                <button @click="copy(apiUrl)" class="btn">复制入口</button>
-                <button @click="copy(chatUrl)" class="btn">复制 OpenAI 接口</button>
-                <button @click="copy(anthropicUrl)" class="btn">复制 Anthropic 接口</button>
-              </div>
-            </div>
-            <label class="flex items-center gap-2"><input type="checkbox" x-model="router.external_enabled">允许外部调用</label>
-            <label class="field md:col-span-2"><span class="field-label">外部允许模型 <button class="q" @click.prevent="help('只有这里列出的模型名可以被外部请求；每行或逗号分隔。支持 * 通配，但不建议公网开放 *。')">?</button></span><textarea x-model="externalModelText" rows="5" class="input mono" placeholder="deepseek-v4-flash&#10;deepseek-v4-pro"></textarea></label>
-            <div class="subcard md:col-span-2">
-              <div class="flex flex-wrap justify-between gap-2 mb-2"><span class="k">OpenAI 调用示例</span><button @click="copy(openaiCurl)" class="btn">复制 curl</button></div>
-              <pre class="mono text-xs whitespace-pre-wrap wrap" x-text="openaiCurl"></pre>
-              <div class="flex flex-wrap justify-between gap-2 mt-4 mb-2"><span class="k">Anthropic 调用示例</span><button @click="copy(anthropicCurl)" class="btn">复制 curl</button></div>
-              <pre class="mono text-xs whitespace-pre-wrap wrap" x-text="anthropicCurl"></pre>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel overflow-hidden">
-          <div class="p-4 border-b border-stone-200 dark:border-slate-800 flex justify-between gap-3">
-            <div><h2 class="font-black text-lg">渠道池</h2><p class="text-xs text-slate-500 mt-1">同一个组里的多个渠道会自动轮询；如果一个渠道失败，会按路由顺序 fallback。</p></div>
-            <div class="text-xs text-slate-500" x-text="'当前组：' + groupNames.join(' / ')"></div>
-          </div>
-          <div class="overflow-x-auto md:overflow-visible">
-            <table class="w-full table-fixed text-sm table-compact">
-              <thead class="bg-stone-50 dark:bg-slate-950 text-slate-500">
-                <tr><th class="th w-[30%]">渠道</th><th class="th w-[17%]">角色/组</th><th class="th w-[22%]">模型</th><th class="th w-[18%]">状态</th><th class="th w-[13%] text-right">操作</th></tr>
-              </thead>
-              <tbody class="divide-y divide-stone-100 dark:divide-slate-800">
-                <template x-for="ch in channels" :key="ch.id">
-                  <tr class="hover:bg-stone-50 dark:hover:bg-slate-950/60 align-top">
-                    <td class="td wrap"><div class="font-bold truncate" x-text="ch.name"></div><div class="text-xs text-slate-500 wrap" x-text="ch.base"></div><div class="text-xs text-slate-400 mt-1" x-text="typeLabel(ch.type)"></div></td>
-                    <td class="td"><div class="flex flex-wrap gap-1"><span class="badge" x-text="ch.role||'default'"></span><span class="badge" x-text="ch.group||'未分组'"></span></div><div class="text-xs text-slate-500 mt-1" x-text="'优先级 ' + (ch.priority||100)"></div></td>
-                    <td class="td mono text-xs wrap"><div x-text="ch.models||'*'"></div><button x-show="ch.model_mapping" @click="help('模型映射：' + ch.model_mapping)" class="mt-1 text-teal-700 dark:text-teal-300 font-bold">查看映射</button></td>
-                    <td class="td"><span :class="(ch.status==='active'||!ch.status)?'ok':'bad'" class="badge" x-text="ch.status||'active'"></span><div class="text-xs text-slate-500 mt-1" x-text="'请求 ' + (ch.requests||0) + ' / 失败 ' + (ch.fail_count||0)"></div><div class="text-xs text-slate-400 mt-1 wrap" x-text="ch.last_test?'测试 '+ch.last_test:''"></div></td>
-                    <td class="td"><div class="actions"><button @click="testChannel(ch)" class="btn">测试</button><button @click="openEdit(ch)" class="btn">编辑</button><button @click="deleteChannel(ch.id)" class="btn danger">删除</button></div></td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="panel p-4">
           <h2 class="font-black text-lg mb-3">最近调用</h2>
           <div class="space-y-2 max-h-96 overflow-auto">
             <template x-for="log in logs.slice().reverse()" :key="log.ts + log.channel + log.model + log.latency_ms">
@@ -166,13 +111,103 @@
           <div class="mt-4 h-3 rounded-full bg-stone-200 dark:bg-slate-800 overflow-hidden"><div class="h-full bg-gradient-to-r from-emerald-500 to-amber-500" :style="'width:'+budgetPct+'%'"></div></div>
           <div class="text-xs text-slate-500 mt-2" x-text="'预算进度：' + budgetPct + '% / 熔断 ' + money(router.monthly_hard_limit_rmb)"></div>
         </section>
+        <section class="panel p-4">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h2 class="font-black text-lg">外部调用</h2>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">OpenAI / Anthropic 入口、允许模型和 curl 示例。</p>
+            </div>
+            <button @click="showExternal=true" class="btn">打开</button>
+          </div>
+          <div class="mt-3 rounded-xl border border-stone-200 dark:border-slate-800 p-3 bg-stone-50 dark:bg-slate-950">
+            <div class="k mb-1">API 入口</div>
+            <div class="flex items-center gap-2"><code class="mono text-xs wrap flex-1" x-text="apiUrl"></code><button @click="copy(apiUrl)" class="btn">复制</button></div>
+          </div>
+        </section>
+        <section class="panel p-4">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h2 class="font-black text-lg">渠道详情</h2>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="channels.length + ' 个渠道 / ' + groupNames.length + ' 个组'"></p>
+            </div>
+            <button @click="showChannels=true" class="btn">打开</button>
+          </div>
+          <div class="mt-3 flex flex-wrap gap-1"><template x-for="g in groupNames" :key="g"><span class="badge" x-text="g"></span></template><span x-show="groupNames.length===0" class="text-xs text-slate-500">暂无分组</span></div>
+        </section>
         <section class="panel p-4"><h2 class="font-black text-lg mb-3">按模型</h2><template x-for="item in bucketList(stats.by_model)" :key="item.name"><div class="line"><span class="truncate" x-text="item.name"></span><span class="mono" x-text="money(item.cost_cny) + ' / ' + fmt(item.requests) + '次'"></span></div></template></section>
         <section class="panel p-4"><h2 class="font-black text-lg mb-3">按路由</h2><template x-for="item in bucketList(stats.by_route)" :key="item.name"><div class="line"><span x-text="item.name"></span><span class="mono" x-text="fmt(item.requests) + '次 / ' + money(item.cost_cny)"></span></div></template></section>
         <section class="panel p-4"><h2 class="font-black text-lg mb-2">价格表</h2><template x-for="[name,p] in Object.entries(pricing)" :key="name"><div class="text-xs border-b border-stone-100 dark:border-slate-800 py-2"><div class="font-bold mono" x-text="name"></div><div class="text-slate-500" x-text="'缓存 ' + p.cached_input + ' / 输入 ' + p.input + ' / 输出 ' + p.output + ' 元/百万 tokens'"></div></div></template></section>
       </aside>
     </main>
 
-    <div x-show="showForm" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" @keydown.escape.window="showForm=false">
+
+    <div x-show="showExternal" x-transition class="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4" @keydown.escape.window="showExternal=false" @click.self="showExternal=false">
+      <div class="w-full max-w-4xl">
+        <section class="panel p-5 max-h-[88vh] overflow-auto">
+          <div class="flex flex-wrap justify-between gap-3 mb-3">
+            <div>
+              <h2 class="font-black text-lg">外部调用</h2>
+              <p class="text-xs text-slate-500 mt-1">外部系统可以走 OpenAI Chat Completions 或 Anthropic Messages 两种格式；认证继续使用 8093 代理层的 Basic 或 Bearer，面板里不直接展示密钥。</p>
+            </div>
+            <div class="flex gap-2"><button @click="saveRouter()" class="px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-bold">保存外部设置</button><button @click="showExternal=false" class="btn">关闭</button></div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+            <div class="subcard md:col-span-2">
+              <div class="k mb-1">API 入口</div>
+              <div class="flex flex-wrap items-center gap-2">
+                <code class="mono wrap" x-text="apiUrl"></code>
+                <button @click="copy(apiUrl)" class="btn">复制入口</button>
+                <button @click="copy(chatUrl)" class="btn">复制 OpenAI 接口</button>
+                <button @click="copy(anthropicUrl)" class="btn">复制 Anthropic 接口</button>
+              </div>
+            </div>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="router.external_enabled">允许外部调用</label>
+            <label class="field md:col-span-2"><span class="field-label">外部允许模型 <button class="q" @click.prevent="help('只有这里列出的模型名可以被外部请求；每行或逗号分隔。支持 * 通配，但不建议公网开放 *。')">?</button></span><textarea x-model="externalModelText" rows="5" class="input mono" placeholder="deepseek-v4-flash&#10;deepseek-v4-pro"></textarea></label>
+            <div class="subcard md:col-span-2">
+              <div class="flex flex-wrap justify-between gap-2 mb-2"><span class="k">OpenAI 调用示例</span><button @click="copy(openaiCurl)" class="btn">复制 curl</button></div>
+              <pre class="mono text-xs whitespace-pre-wrap wrap" x-text="openaiCurl"></pre>
+              <div class="flex flex-wrap justify-between gap-2 mt-4 mb-2"><span class="k">Anthropic 调用示例</span><button @click="copy(anthropicCurl)" class="btn">复制 curl</button></div>
+              <pre class="mono text-xs whitespace-pre-wrap wrap" x-text="anthropicCurl"></pre>
+            </div>
+          </div>
+        </section>
+
+
+      </div>
+    </div>
+
+    <div x-show="showChannels" x-transition class="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4" @keydown.escape.window="showChannels=false" @click.self="showChannels=false">
+      <div class="w-full max-w-6xl">
+        <section class="panel overflow-hidden max-h-[88vh] flex flex-col">
+          <div class="p-4 border-b border-stone-200 dark:border-slate-800 flex flex-wrap justify-between gap-3">
+            <div><h2 class="font-black text-lg">渠道池</h2><p class="text-xs text-slate-500 mt-1">同一个组里的多个渠道会自动轮询；如果一个渠道失败，会按路由顺序 fallback。</p></div>
+            <div class="flex gap-2 flex-wrap"><button @click="openAdd();showChannels=false" class="px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-bold">新增渠道</button><button @click="showChannels=false" class="btn">关闭</button><span class="text-xs text-slate-500 self-center" x-text="'当前组：' + groupNames.join(' / ')"></span></div>
+          </div>
+          <div class="overflow-auto flex-1">
+            <table class="w-full table-fixed text-sm table-compact">
+              <thead class="bg-stone-50 dark:bg-slate-950 text-slate-500">
+                <tr><th class="th w-[30%]">渠道</th><th class="th w-[17%]">角色/组</th><th class="th w-[22%]">模型</th><th class="th w-[18%]">状态</th><th class="th w-[13%] text-right">操作</th></tr>
+              </thead>
+              <tbody class="divide-y divide-stone-100 dark:divide-slate-800">
+                <template x-for="ch in channels" :key="ch.id">
+                  <tr class="hover:bg-stone-50 dark:hover:bg-slate-950/60 align-top">
+                    <td class="td wrap"><div class="font-bold truncate" x-text="ch.name"></div><div class="text-xs text-slate-500 wrap" x-text="ch.base"></div><div class="text-xs text-slate-400 mt-1" x-text="typeLabel(ch.type)"></div></td>
+                    <td class="td"><div class="flex flex-wrap gap-1"><span class="badge" x-text="ch.role||'default'"></span><span class="badge" x-text="ch.group||'未分组'"></span></div><div class="text-xs text-slate-500 mt-1" x-text="'优先级 ' + (ch.priority||100)"></div></td>
+                    <td class="td mono text-xs wrap"><div x-text="ch.models||'*'"></div><button x-show="ch.model_mapping" @click="help('模型映射：' + ch.model_mapping)" class="mt-1 text-teal-700 dark:text-teal-300 font-bold">查看映射</button></td>
+                    <td class="td"><span :class="(ch.status==='active'||!ch.status)?'ok':'bad'" class="badge" x-text="ch.status||'active'"></span><div class="text-xs text-slate-500 mt-1" x-text="'请求 ' + (ch.requests||0) + ' / 失败 ' + (ch.fail_count||0)"></div><div class="text-xs text-slate-400 mt-1 wrap" x-text="ch.last_test?'测试 '+ch.last_test:''"></div></td>
+                    <td class="td"><div class="actions"><button @click="testChannel(ch)" class="btn">测试</button><button @click="openEdit(ch);showChannels=false" class="btn">编辑</button><button @click="deleteChannel(ch.id)" class="btn danger">删除</button></div></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+
+      </div>
+    </div>
+
+    <div x-show="showForm" class="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" @keydown.escape.window="showForm=false">
       <div class="w-full max-w-3xl panel p-5 max-h-[92vh] overflow-auto">
         <div class="flex justify-between mb-4"><h3 class="font-black" x-text="isEdit?'编辑渠道':'新增渠道'"></h3><button @click="showForm=false" class="btn">关闭</button></div>
         <div class="mb-4 flex flex-wrap gap-2 text-xs"><span class="text-slate-500 self-center">预填模板</span><button class="btn" @click="applyPreset('longcat')">LongCat</button><button class="btn" @click="applyPreset('deepseek_flash')">DeepSeek Flash</button><button class="btn" @click="applyPreset('deepseek_pro')">DeepSeek Pro</button><button class="btn" @click="applyPreset('anthropic')">Anthropic</button><button class="btn" @click="applyPreset('openai')">OpenAI 兼容</button></div>
@@ -197,7 +232,7 @@
   <script>
     function detectBase(){const path=location.pathname.replace(/\/+/g,'/');const hit=path.match(/^(.*?\/obp)(?:\/|$)/);return hit?hit[1].replace(/(\/obp)+$/,'/obp'):''}
     function joinPath(base,path){const joined=(String(base||'').replace(/\/+$/,'')+'/'+String(path||'').replace(/^\/+/,'')).replace(/\/+/g,'/');return joined.replace(/(\/obp)(?:\/obp)+/g,'$1')}
-    function app(){return{dark:localStorage.obp_theme==='dark',notice:'',loadError:'',copied:false,lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
+    function app(){return{dark:localStorage.obp_theme==='dark',notice:'',loadError:'',copied:false,lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
       get apiUrl(){return location.origin + joinPath(this.base,'/v1')},
       get chatUrl(){return location.origin + joinPath(this.base,'/v1/chat/completions')},
       get anthropicUrl(){return location.origin + joinPath(this.base,'/anthropic/v1/messages')},
