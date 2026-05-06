@@ -37,6 +37,8 @@ python3 /root/.nanobot/workspace/skills/trend-radar/trend_client.py latest --lim
 python3 /root/.nanobot/workspace/skills/trend-radar/trend_client.py daily --limit 8 --refresh
 ```
 
+说明：日报会过滤低信息量娱乐/综艺热搜，并优先调用本地 OBP 的 LongCat 免费模型生成一句话摘要；模型不可用时自动退回规则摘要。
+
 用户问“AI 热点”“某关键词有什么新闻”：
 
 ```bash

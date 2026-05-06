@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
 _SHARED_DIR = Path(__file__).resolve().parents[1] / "_shared"
 if _SHARED_DIR.exists():
@@ -30,6 +32,14 @@ HTTP = JsonHttpClient(
 )
 fetch_json = HTTP.get_json
 post_json = HTTP.post_json
+
+
+OBP_CHAT_URL = os.environ.get("TREND_LLM_URL", "http://127.0.0.1:8000/v1/chat/completions").strip()
+OBP_MODEL = os.environ.get("TREND_LLM_MODEL", "LongCat-Flash-Chat").strip()
+NOISE_KEYWORDS = (
+    "恋综", "花少", "综艺", "明星", "粉丝", "塌房", "官宣", "路透", "红毯", "演唱会",
+    "哥哥", "姐姐", "姐弟恋", "cp", "CP", "代言", "私生", "站姐", "饭圈",
+)
 
 
 def fmt_time(value):
@@ -93,9 +103,139 @@ def cmd_brief(_args: argparse.Namespace) -> str:
 def cmd_daily(args: argparse.Namespace) -> str:
     if args.refresh:
         post_json("/api/trends/refresh", default={"ok": False})
-    data = fetch_json("/api/trends/daily-report?" + urlencode({"limit": args.limit}))
+    data = fetch_json("/api/trends/daily-report?" + urlencode({"limit": max(args.limit * 2, args.limit)}))
     ensure_ok(data)
-    return data.get("markdown") or "热点简报暂无内容"
+    items = select_daily_items(data.get("items") or [], args.limit)
+    if not items:
+        return "热点简报暂无内容"
+    summaries = [] if args.no_llm else summarize_with_free_model(items)
+    if len(summaries) != len(items):
+        summaries = [fallback_summary(item) for item in items]
+    updated = fmt_time(data.get("updated_at"))
+    lines = [f"📰 Trend Radar 每日新闻简报（{updated}）", f"数据：{len(items)} 条重点，{len(data.get('last_errors') or [])} 个源异常", ""]
+    for idx, (item, summary) in enumerate(zip(items, summaries), 1):
+        title = short(item.get("title"), 68)
+        url = item.get("url") or item.get("mobile_url") or ""
+        title_text = f"[{escape_markdown_link_text(title)}]({url})" if url else title
+        lines.append(f"{idx}. {title_text}")
+        lines.append(f"   {short(summary, 86)}")
+    lines.append("")
+    lines.append("看板：http://150.158.121.88:8093/trends/")
+    return "\n".join(lines)
+
+
+def select_daily_items(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    source_counts: dict[str, int] = {}
+    for item in items:
+        if is_noise_item(item):
+            continue
+        source = str(item.get("source_id") or item.get("source_name") or "")
+        if source_counts.get(source, 0) >= 2:
+            continue
+        selected.append(item)
+        source_counts[source] = source_counts.get(source, 0) + 1
+        if len(selected) >= limit:
+            return selected
+    for item in items:
+        if item in selected or is_noise_item(item):
+            continue
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    return selected[:limit]
+
+
+def is_noise_item(item: dict[str, Any]) -> bool:
+    title = str(item.get("title") or "").strip()
+    source = str(item.get("source_name") or item.get("source_id") or "")
+    tags = {str(tag) for tag in item.get("tags") or []}
+    if not title or len(re.sub(r"\s+", "", title)) < 8:
+        return True
+    if "娱乐" in tags:
+        return True
+    if source in {"微博", "抖音"} and any(word in title for word in NOISE_KEYWORDS):
+        return True
+    return False
+
+
+def summarize_with_free_model(items: list[dict[str, Any]]) -> list[str]:
+    if not OBP_CHAT_URL or not OBP_MODEL:
+        return []
+    rows = []
+    for item in items:
+        rows.append({
+            "title": item.get("title") or "",
+            "source": item.get("source_name") or item.get("source_id") or "",
+            "rank": item.get("rank") or item.get("best_rank") or "",
+            "raw_summary": normalize_summary(item.get("summary") or ""),
+            "tags": item.get("tags") or [],
+        })
+    prompt = (
+        "你是新闻简报编辑。请为每条新闻写一句中文简要内容，客观、克制、少废话。"
+        "要求：每条 18-45 个汉字；不要重复标题；不要写'来自某热榜'；不要营销腔；"
+        "只输出 JSON 数组，长度必须和输入一致，格式如 [{\"summary\":\"...\"}]。\n\n"
+        + json.dumps(rows, ensure_ascii=False)
+    )
+    payload = {
+        "model": OBP_MODEL,
+        "messages": [
+            {"role": "system", "content": "你只输出可解析 JSON，不输出解释。"},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": min(900, max(240, len(items) * 90)),
+        "stream": False,
+    }
+    try:
+        req = Request(
+            OBP_CHAT_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=float(os.environ.get("TREND_LLM_TIMEOUT", "24"))) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        parsed = parse_json_array(content)
+        summaries = [normalize_summary(x.get("summary") if isinstance(x, dict) else x) for x in parsed]
+        summaries = [s for s in summaries if s]
+        return summaries if len(summaries) == len(items) else []
+    except Exception:
+        return []
+
+
+def parse_json_array(text: str) -> list[Any]:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start >= 0 and end > start:
+        cleaned = cleaned[start : end + 1]
+    value = json.loads(cleaned)
+    return value if isinstance(value, list) else []
+
+
+def normalize_summary(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or re.fullmatch(r"\d{10,}", text):
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text.rstrip("。；;，,") + "。" if text and text[-1] not in "。！？!?" else text
+
+
+def fallback_summary(item: dict[str, Any]) -> str:
+    raw = normalize_summary(item.get("summary") or "")
+    if raw and not raw.endswith("热度。"):
+        return short(raw, 86)
+    title = str(item.get("title") or "").strip()
+    source = item.get("source_name") or item.get("source_id") or "热榜"
+    return short(f"{source}高位话题，核心关注点是：{title}", 86)
+
+
+def escape_markdown_link_text(text: str) -> str:
+    return str(text).replace("[", "【").replace("]", "】").replace("\n", " ")
 
 def cmd_latest(args: argparse.Namespace) -> str:
     params = {"limit": args.limit}
@@ -169,6 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
     daily = sub.add_parser("daily")
     daily.add_argument("--limit", type=int, default=8)
     daily.add_argument("--refresh", action="store_true")
+    daily.add_argument("--no-llm", action="store_true", help="disable LongCat summary polishing")
 
     latest = sub.add_parser("latest")
     latest.add_argument("--limit", type=int, default=12)
