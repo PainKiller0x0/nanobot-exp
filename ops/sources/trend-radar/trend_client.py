@@ -118,7 +118,7 @@ def cmd_daily(args: argparse.Namespace) -> str:
         url = item.get("url") or item.get("mobile_url") or ""
         title_text = f"[{escape_markdown_link_text(title)}]({url})" if url else title
         lines.append(f"{idx}. {title_text}")
-        lines.append(f"   {short(summary, 86)}")
+        lines.append(f"   {short(summary, 128)}")
     lines.append("")
     lines.append("看板：http://150.158.121.88:8093/trends/")
     return "\n".join(lines)
@@ -172,8 +172,10 @@ def summarize_with_free_model(items: list[dict[str, Any]]) -> list[str]:
             "tags": item.get("tags") or [],
         })
     prompt = (
-        "你是新闻简报编辑。请为每条新闻写一句中文简要内容，客观、克制、少废话。"
-        "要求：每条 18-45 个汉字；不要重复标题；不要写'来自某热榜'；不要营销腔；"
+        "你是新闻简报编辑。请为每条新闻写两句中文摘要，客观、克制、信息密度高。"
+        "第一句交代发生了什么，第二句补充背景、影响、争议或为什么值得关注。"
+        "要求：每条 45-90 个汉字；不要重复标题；不要写'来自某热榜'；不要营销腔；"
+        "如果原始信息不足，可以明确说目前公开信息有限，但仍要给出可读背景。"
         "只输出 JSON 数组，长度必须和输入一致，格式如 [{\"summary\":\"...\"}]。\n\n"
         + json.dumps(rows, ensure_ascii=False)
     )
@@ -184,7 +186,7 @@ def summarize_with_free_model(items: list[dict[str, Any]]) -> list[str]:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
-        "max_tokens": min(900, max(240, len(items) * 90)),
+        "max_tokens": min(1400, max(360, len(items) * 150)),
         "stream": False,
     }
     try:
@@ -228,10 +230,10 @@ def normalize_summary(value: Any) -> str:
 def fallback_summary(item: dict[str, Any]) -> str:
     raw = normalize_summary(item.get("summary") or "")
     if raw and not raw.endswith("热度。"):
-        return short(raw, 86)
+        return short(raw, 128)
     title = str(item.get("title") or "").strip()
     source = item.get("source_name") or item.get("source_id") or "热榜"
-    return short(f"{source}高位话题，核心关注点是：{title}", 86)
+    return short(f"{source}高位话题，核心关注点是：{title}。目前缺少更多背景信息，建议先作为待观察线索。", 128)
 
 
 def escape_markdown_link_text(text: str) -> str:
