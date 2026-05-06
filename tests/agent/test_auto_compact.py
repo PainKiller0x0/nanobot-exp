@@ -1,6 +1,7 @@
 """Tests for auto compact (idle TTL) feature."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -924,6 +925,67 @@ class TestProactiveAutoCompact:
         # Second tick: should NOT re-schedule because updated_at is fresh
         await self._run_check_expired(loop)
         assert archive_count == 0
+        await loop.close_mcp()
+
+    @pytest.mark.asyncio
+    async def test_low_volume_auto_compact_is_deferred(self, tmp_path):
+        """Small idle sessions should wait for more messages before spending LLM tokens."""
+        loop = _make_loop(tmp_path, session_ttl_minutes=30)
+        session = loop.sessions.get_or_create("cli:test")
+        _add_turns(session, 2, prefix="tiny")
+        session.updated_at = datetime.now() - timedelta(minutes=31)
+        loop.sessions.save(session)
+
+        archive_count = 0
+
+        async def _fake_archive(messages):
+            nonlocal archive_count
+            archive_count += 1
+            return "Summary."
+
+        loop.consolidator.archive = _fake_archive
+
+        await loop.auto_compact._archive("cli:test")
+
+        assert archive_count == 0
+        session_after = loop.sessions.get_or_create("cli:test")
+        assert len(session_after.messages) == 4
+        defer = session_after.metadata["_auto_compact_defer"]
+        assert defer["pending_messages"] == 4
+        assert defer["threshold_messages"] == 5
+        events = [json.loads(line) for line in (tmp_path / "auto_compact_events.jsonl").read_text().splitlines()]
+        assert events[-1]["action"] == "deferred"
+        await loop.close_mcp()
+
+    @pytest.mark.asyncio
+    async def test_auto_compact_forces_after_twelve_hours(self, tmp_path):
+        """After the hard cap, compact even if the accumulated messages are below 60."""
+        loop = _make_loop(tmp_path, session_ttl_minutes=30)
+        session = loop.sessions.get_or_create("cli:test")
+        _add_turns(session, 5, prefix="slow")
+        started = datetime.now() - timedelta(hours=12, minutes=1)
+        session.metadata["_auto_compact_defer"] = {"started_at": started.isoformat()}
+        session.updated_at = datetime.now() - timedelta(minutes=31)
+        loop.sessions.save(session)
+
+        archive_count = 0
+
+        async def _fake_archive(messages):
+            nonlocal archive_count
+            archive_count += 1
+            return "Forced summary."
+
+        loop.consolidator.archive = _fake_archive
+
+        await loop.auto_compact._archive("cli:test")
+
+        assert archive_count == 1
+        session_after = loop.sessions.get_or_create("cli:test")
+        assert "_auto_compact_defer" not in session_after.metadata
+        events = [json.loads(line) for line in (tmp_path / "auto_compact_events.jsonl").read_text().splitlines()]
+        assert events[-1]["action"] == "archived"
+        assert events[-1]["forced"] is True
+        assert events[-1]["summary"] == "Forced summary."
         await loop.close_mcp()
 
     @pytest.mark.asyncio

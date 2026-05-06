@@ -77,6 +77,7 @@ struct AppState {
     script_dir: PathBuf,
     state_file: PathBuf,
     dashboard_history_file: PathBuf,
+    auto_compact_events_file: PathBuf,
     inbox_dir: PathBuf,
     timeout_secs: u64,
     run_lock: Arc<Mutex<()>>,
@@ -297,6 +298,12 @@ async fn main() {
     if let Some(parent) = dashboard_history_file.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
+    let auto_compact_events_file = std::env::var("AUTO_COMPACT_EVENTS_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/root/.nanobot/workspace/auto_compact_events.jsonl"));
+    if let Some(parent) = auto_compact_events_file.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
     let inbox_dir = std::env::var("NANOBOT_INBOX_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/root/.nanobot/data/knowledge-inbox"));
@@ -312,6 +319,7 @@ async fn main() {
         script_dir,
         state_file,
         dashboard_history_file,
+        auto_compact_events_file,
         inbox_dir,
         timeout_secs,
         run_lock: Arc::new(Mutex::new(())),
@@ -335,6 +343,7 @@ async fn main() {
         .route("/api/status", get(api_status))
         .route("/api/system", get(api_system))
         .route("/api/dashboard-history", get(api_dashboard_history))
+        .route("/api/auto-compact", get(api_auto_compact))
         .route("/sidecars", get(sidecars_page))
         .route("/evolution", get(evolution_page))
         .route("/inbox", get(inbox_page))
@@ -400,6 +409,32 @@ async fn api_system() -> impl IntoResponse {
 
 async fn api_dashboard_history(State(state): State<AppState>) -> impl IntoResponse {
     Json(refresh_dashboard_history(&state).await)
+}
+
+async fn api_auto_compact(State(state): State<AppState>) -> impl IntoResponse {
+    Json(read_auto_compact_events(&state.auto_compact_events_file).await)
+}
+
+async fn read_auto_compact_events(path: &Path) -> serde_json::Value {
+    let Ok(text) = tokio::fs::read_to_string(path).await else {
+        return serde_json::json!({
+            "ok": true,
+            "path": path.display().to_string(),
+            "items": [],
+            "note": "暂无压缩事件。AutoCompact 只有在开启 idleCompactAfterMinutes 后才会写入。"
+        });
+    };
+    let mut items: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect();
+    items.reverse();
+    items.truncate(30);
+    serde_json::json!({
+        "ok": true,
+        "path": path.display().to_string(),
+        "items": items,
+    })
 }
 
 async fn api_inbox(State(state): State<AppState>) -> impl IntoResponse {
@@ -983,7 +1018,6 @@ fn rewrite_proxy_text(mut text: String, prefix: &str) -> String {
     text
 }
 
-
 fn inject_sidecar_shell(mut text: String, prefix: &str) -> String {
     if text.contains("/assets/nb-shell.js") || text.contains("nb-sidecar-shell") {
         return text;
@@ -1084,6 +1118,7 @@ async fn dashboard() -> Html<String> {
     <article class="panel card wide fade" style="animation-delay:.18s"><h2>&#x6295;&#x8d44;&#x96f7;&#x8fbe;</h2><div id="lofRadar"></div></article>
     <article class="panel card fade" style="animation-delay:.20s"><h2>&#x4fe1;&#x606f;&#x96f7;&#x8fbe;</h2><div class="list" id="infoRadar"></div></article>
     <article class="panel card full fade" style="animation-delay:.21s"><h2>7 &#x5929;&#x5386;&#x53f2;</h2><div id="historyPanel"></div></article>
+    <article class="panel card full fade" style="animation-delay:.212s"><h2>记忆压缩</h2><div id="compactPanel"></div></article>
 
     <article class="panel card full fade" style="animation-delay:.215s"><h2>Nanobot 能力矩阵</h2><div class="quick">
       <a href="/inbox">知识收件箱<span>QQ：收一下 + 链接 / 这个值得看吗 + 链接；按需抓取 Markdown，不常驻</span></a>
@@ -1098,7 +1133,7 @@ async fn dashboard() -> Html<String> {
 <script src="/assets/nb-shell.js" data-prefix="/" data-label="今日驾驶舱" defer></script>
 <script>
 const root=document.documentElement;if(localStorage.dashboardTheme==='dark')root.setAttribute('data-theme','dark');
-const state={system:null,sidecars:null,lof:null,notify:null,rss:null,rssSubs:null,history:null};
+const state={system:null,sidecars:null,lof:null,notify:null,rss:null,rssSubs:null,history:null,compact:null};
 function toggleTheme(){const dark=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',dark?'light':'dark');localStorage.dashboardTheme=dark?'light':'dark'}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function pill(cls,text){return `<span class="pill ${cls}">${esc(text)}</span>`}
@@ -1113,8 +1148,8 @@ function jobName(j){const m={'yage-ai':'\u9e2d\u54e5 \u0041\u0049 \u8981\u95fb',
 function statusText(s){const m={silent:'\u9759\u9ed8',sent:'\u5df2\u53d1\u9001',error:'\u9519\u8bef',running:'\u8fd0\u884c\u4e2d',timeout:'\u8d85\u65f6',ok:'\u6b63\u5e38'};return m[s]||s||'-'}
 function updateClock(){const now=new Date();document.getElementById('clock').textContent=now.toLocaleTimeString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'});document.getElementById('date').textContent=now.toLocaleDateString('zh-CN',{weekday:'long',year:'numeric',month:'2-digit',day:'2-digit',timeZone:'Asia/Shanghai'})}
 async function getJson(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(url+' '+r.status);return r.json()}
-async function loadAll(manual=false){const jobs=[['system','/api/system'],['sidecars','/api/sidecars'],['lof','/api/status'],['notify','/api/notify-jobs'],['rss','/rss/api/entries?days=1&limit=8'],['rssSubs','/rss/api/subscriptions'],['history','/api/dashboard-history']];await Promise.all(jobs.map(async ([key,url])=>{try{state[key]=await getJson(url)}catch(e){state[key]={ok:false,error:e.message}}}));renderAll(manual)}
-function renderAll(manual){renderStatusline(manual);renderSystem();renderSidecars();renderNotify();renderToday();renderAttention();renderLof();renderInfo();renderHistory();renderServices()}
+async function loadAll(manual=false){const jobs=[['system','/api/system'],['sidecars','/api/sidecars'],['lof','/api/status'],['notify','/api/notify-jobs'],['rss','/rss/api/entries?days=1&limit=8'],['rssSubs','/rss/api/subscriptions'],['history','/api/dashboard-history'],['compact','/api/auto-compact']];await Promise.all(jobs.map(async ([key,url])=>{try{state[key]=await getJson(url)}catch(e){state[key]={ok:false,error:e.message}}}));renderAll(manual)}
+function renderAll(manual){renderStatusline(manual);renderSystem();renderSidecars();renderNotify();renderToday();renderAttention();renderLof();renderInfo();renderHistory();renderCompact();renderServices()}
 function renderStatusline(manual){const s=state.sidecars?.summary||{};const bad=s.unhealthy||0;const jobs=state.notify?.job_details||[];const jobErr=jobs.filter(j=>j.status?.last_status==='error').length;const lof=state.lof?.last_run?.status;document.getElementById('statusline').innerHTML=[bad?pill('bad',`\u670d\u52a1\u5f02\u5e38 ${bad}`):pill('ok',`\u670d\u52a1 ${s.healthy||0}/${s.total||0}`),jobErr?pill('bad',`\u4efb\u52a1\u9519\u8bef ${jobErr}`):pill('ok','\u4efb\u52a1\u6b63\u5e38'),lof==='ok'?pill('ok','\u004c\u004f\u0046 \u5df2\u5237\u65b0'):pill('warn','\u004c\u004f\u0046 '+(statusText(lof)||'\u672a\u77e5')),manual?pill('warn','\u5df2\u5237\u65b0'):'' ].join('')}
 function renderSystem(){const m=state.system?.memory||{};const pressure=loadFeeling(state.system?.loadavg||{},state.system?.cpu||{});const pct=clamp(num(m.used_pct)||0,0,100);const memCls=pct>75?'warnText':'good';const feel=pct>75?'偏紧':pressure.label;const feelCls=pct>75?'warnText':pressure.cls;document.getElementById('systemMetrics').innerHTML=metricNote('当前体感',feel,'内存 + CPU 综合估算',feelCls)+metricTile('内存',`${m.used_mb??'-'} MB`,memCls,`${m.used_pct??'-'}% · 可用 ${m.available_mb??'-'} MB`,`<div class="gauge"><i style="width:${pct}%"></i></div>`)+metricNote('CPU 压力',pressure.label,pressure.note,pressure.cls)}
 function renderSidecars(){const s=state.sidecars?.summary||{};document.getElementById('sidecarMetrics').innerHTML=metric('\u603b\u6570',s.total??'-')+metric('\u6b63\u5e38',s.healthy??'-','good')+metric('\u5f02\u5e38',s.unhealthy??'-',(s.unhealthy||0)?'danger':'good')}
@@ -1162,6 +1197,9 @@ function renderAttention(){const box=document.getElementById('attention');const 
 function renderLof(){const lr=state.lof?.last_run||{};const rows=[...(state.lof?.last_board?.rows||[])].sort((a,b)=>(b.rt_premium_pct??-999)-(a.rt_premium_pct??-999)).slice(0,6);const table=`<table class="table"><thead><tr><th>\u4ee3\u7801</th><th>\u540d\u79f0</th><th>\u5b9e\u65f6\u6ea2\u4ef7</th><th>\u6700\u65b0\u6ea2\u4ef7</th><th>\u9650\u989d</th></tr></thead><tbody>${rows.map(r=>`<tr><td><a href="https://fund.eastmoney.com/${esc(r.code)}.html" target="_blank">${esc(r.code)}</a></td><td>${esc(r.name)}</td><td class="${(r.rt_premium_pct||0)>=5?'warnText':'good'}">${fmtPct(r.rt_premium_pct)}</td><td>${fmtPct(r.latest_premium_pct)}</td><td>${esc(r.limit_text||'-')}</td></tr>`).join('')}</tbody></table>`;const report=(lr.report||'').split('\n').slice(0,8).join('\n');document.getElementById('lofRadar').innerHTML=`<div class="row"><div><div class="name">${esc(lr.tag||'LOF')}</div><div class="muted mini">\u5b8c\u6210\uff1a${fmtTime(lr.finished_at)} \u00b7 ${lr.duration_ms??'-'}ms \u00b7 ${statusText(lr.status)}</div></div><a class="btn secondary" href="/lof">\u8be6\u60c5</a></div><div style="margin-top:12px;overflow:auto">${table}</div><details style="margin-top:10px"><summary class="muted">\u62a5\u544a\u6458\u8981</summary><code>${esc(report||lr.error||'\u6682\u65e0')}</code></details>`}
 function renderInfo(){const jobs=state.notify?.job_details||[];const ids=['yage-ai','wechat-sub-1','wechat-sub-2','hermes-heartbeat'];document.getElementById('infoRadar').innerHTML=ids.map(id=>jobs.find(j=>j.id===id)).filter(Boolean).map(j=>`<div class="item"><div class="row"><div><div class="name">${esc(jobName(j))}</div><div class="muted mini">\u4e0b\u6b21\uff1a${esc((j.next_runs||[])[0]||'-')} \u00b7 \u6700\u8fd1\uff1a${esc(j.status?.last_finished_at||'-')}</div></div>${pill(j.status?.last_status==='error'?'bad':(j.status?.last_sent?'ok':'warn'),statusText(j.status?.last_status))}</div></div>`).join('')||'<div class="muted">\u6682\u65e0\u4efb\u52a1\u6570\u636e</div>'}
 function renderHistory(){const box=document.getElementById('historyPanel');if(!box)return;const items=state.history?.items||[];if(!items.length){box.innerHTML='<div class="muted">\u5386\u53f2\u4ece\u73b0\u5728\u5f00\u59cb\u8bb0\u5f55\uff0c\u6682\u65e0\u6837\u672c\u3002</div>';return}const rows=[...items].reverse();box.innerHTML=`<div style="overflow:auto"><table class="table"><thead><tr><th>\u65e5\u671f</th><th>\u5185\u5b58\u5cf0\u503c</th><th>\u670d\u52a1</th><th>\u4efb\u52a1</th><th>\u6587\u7ae0</th><th>LOF</th><th>\u66f4\u65b0</th></tr></thead><tbody>${rows.map(x=>`<tr><td><b>${esc(x.day)}</b></td><td>${esc(x.memory_used_max_mb??x.memory_used_mb??'-')} MB<br><span class="muted mini">\u5f53\u524d ${esc(x.memory_used_mb??'-')} MB / ${esc(x.memory_used_pct??'-')}%</span></td><td>${pill((x.service_unhealthy||0)>0?'bad':'ok',`${x.service_healthy||0}/${x.service_total||0}`)}<br><span class="muted mini">\u5f02\u5e38\u5cf0\u503c ${esc(x.service_unhealthy_max??0)}</span></td><td>${esc(x.task_runs??0)} \u6b21 / \u53d1\u9001 ${esc(x.task_sent??0)}<br><span class="${(x.task_errors_max||0)>0?'danger':'good'} mini">\u9519\u8bef\u5cf0\u503c ${esc(x.task_errors_max??0)}</span></td><td>${esc(x.articles??0)} \u7bc7</td><td>${esc(x.lof_high_premium??0)} \u53ea<br><span class="muted mini">\u5cf0\u503c ${esc(x.lof_high_premium_max??0)}</span></td><td class="mini">${esc(x.updated_at||'-')}</td></tr>`).join('')}</tbody></table></div><div class="muted mini" style="margin-top:8px">${esc(state.history?.note||'\u6bcf\u6b21\u6253\u5f00\u6216\u5237\u65b0\u9a7e\u9a76\u8231\u65f6\u8bb0\u5f55\u4e00\u4efd\u5f53\u65e5\u5feb\u7167\uff0c\u4fdd\u7559\u6700\u8fd1 7 \u5929\u3002')}</div>`}
+function compactAction(a){const m={archived:'已压缩',deferred:'已延后',empty:'空会话',failed:'失败'};return m[a]||a||'-'}
+function compactTime(s){if(!s)return '-';try{return new Date(s).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}catch{return String(s)}}
+function renderCompact(){const box=document.getElementById('compactPanel');if(!box)return;const items=state.compact?.items||[];if(!items.length){box.innerHTML=`<div class="muted">暂无压缩事件。当前线上更像是 Heartbeat 每 30 分钟消耗 token；AutoCompact 只有开启 idleCompactAfterMinutes 后才会记录。</div><div class="muted mini" style="margin-top:8px">日志路径：${esc(state.compact?.path||'/root/.nanobot/workspace/auto_compact_events.jsonl')}</div>`;return}const latest=items[0]||{};const archived=items.filter(x=>x.action==='archived').length;const deferred=items.filter(x=>x.action==='deferred').length;const forced=items.filter(x=>x.forced).length;const rows=items.slice(0,8).map(x=>`<tr><td>${esc(compactTime(x.ts))}</td><td>${pill(x.action==='failed'?'bad':x.action==='deferred'?'warn':'ok',compactAction(x.action))}</td><td>${esc(x.key||'-')}</td><td>${esc(x.pending_messages??'-')} / ${esc(x.threshold_messages??'-')}</td><td>${esc(x.archived_messages??'-')} / ${esc(x.kept_messages??'-')}</td><td>${x.summary?`<details><summary>摘要</summary><code>${esc(x.summary)}</code></details>`:(x.next_check_at?`下次：${esc(compactTime(x.next_check_at))}`:'-')}</td></tr>`).join('');box.innerHTML=`<div class="briefGrid">${briefBox('最近状态',compactAction(latest.action),latest.ts?compactTime(latest.ts):'还没有记录')}${briefBox('已压缩',`${archived}次`,'最近 30 条压缩事件')}${briefBox('已延后',`${deferred}次`,'低消息量不花 token')}${briefBox('强制压缩',`${forced}次`,'达到 12 小时上限')}</div><div style="overflow:auto;margin-top:12px"><table class="table"><thead><tr><th>时间</th><th>动作</th><th>会话</th><th>累计/门槛</th><th>压缩/保留</th><th>内容</th></tr></thead><tbody>${rows}</tbody></table></div><div class="muted mini" style="margin-top:8px">日志路径：${esc(state.compact?.path||'-')}</div>`}
 function accessUrl(x){if(!x.homepage_url)return '\u5185\u90e8';try{return new URL(x.homepage_url,location.origin).pathname}catch{return x.homepage_url}}
 function renderServices(){const rows=state.sidecars?.items||[];document.getElementById('services').innerHTML=`<thead><tr><th>\u670d\u52a1</th><th>\u72b6\u6001</th><th>\u5165\u53e3</th><th>\u76d1\u542c</th><th>\u5ef6\u8fdf</th><th>\u6700\u8fd1\u544a\u8b66</th></tr></thead><tbody>${rows.map(x=>`<tr><td><b>${esc(serviceName(x))}</b><br><span class="muted mini">${esc(x.id)}</span></td><td>${pill(x.ok?'ok':'bad',x.ok?'\u6b63\u5e38':(x.check_status||'-'))}</td><td>${x.homepage_url?`<a href="${esc(x.homepage_url)}">${esc(accessUrl(x))}</a>`:'\u5185\u90e8'}</td><td>${x.port?(x.public?'0.0.0.0':'127.0.0.1')+':'+x.port:'-'}</td><td>${x.latency_ms??'-'} ms</td><td class="mini">${esc((x.recent_errors||[])[0]||'-')}</td></tr>`).join('')}</tbody>`}
 updateClock();setInterval(updateClock,1000);loadAll();setInterval(()=>loadAll(false),60000);
@@ -1257,7 +1295,6 @@ loadAll();
     )
 }
 
-
 async fn shell_js() -> Response {
     const SHELL_JS: &str = r####"
 (() => {
@@ -1311,11 +1348,19 @@ async fn shell_js() -> Response {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build); else build();
 })();
 "####;
-    ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], SHELL_JS).into_response()
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        SHELL_JS,
+    )
+        .into_response()
 }
 
 async fn workbench_page() -> impl IntoResponse {
-    Html(r####"<!doctype html>
+    Html(
+        r####"<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
@@ -1378,12 +1423,20 @@ async function loadAll(manual=false){const jobs=[['rss','/rss/api/entries?days=7
 loadAll();
 </script>
 </body>
-</html>"####)
+</html>"####,
+    )
 }
 
 async fn common_js() -> Response {
     const COMMON_JS: &str = r##"window.NB=window.NB||(()=>{const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));function fmtTime(s,f='-'){if(!s)return f;try{return new Date(s).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}catch{return s||f}}function host(u,f='-'){try{return new URL(u).host}catch{return f}}function bindTheme(key,opt={}){const root=document.documentElement;const also=opt.also||[];if(localStorage[key]==='dark'||also.some(k=>localStorage[k]==='dark'))root.setAttribute('data-theme','dark');return function(){const dark=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',dark?'light':'dark');localStorage[key]=dark?'light':'dark'}}function stat(k,v,n=''){return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="mini">${esc(n)}</div></div>`}function shortList(items,empty='-',cls='pill warn'){return (items||[]).length?(items||[]).map(v=>`<span class="${esc(cls)}">${esc(v)}</span>`).join(' '):`<span class="muted">${esc(empty)}</span>`}function fallbackCopy(text,done){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done&&done()}function copyText(text,btn){if(!text)return;const done=()=>{if(!btn)return;const old=btn.textContent;btn.textContent='已复制';setTimeout(()=>btn.textContent=old,1200)};if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,done));else fallbackCopy(text,done)}function copyFromButton(btn){return copyText(btn?.dataset?.copy||'',btn)}function cmdHtml(label,text){return `<div class="cmdtop"><span>${esc(label)}</span><button class="copybtn" data-copy="${esc(text||'')}" onclick="NB.copyFromButton(this)">复制</button></div><code>${esc(text||'-')}</code>`}function loadShell(){if(document.querySelector('script[src="/assets/nb-shell.js"]'))return;const sc=document.createElement('script');sc.src='/assets/nb-shell.js';sc.defer=true;sc.dataset.label=document.title||'Nanobot';document.head.appendChild(sc)}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',loadShell);else loadShell();return{esc,fmtTime,host,bindTheme,stat,shortList,copyText,copyFromButton,cmdHtml,fallbackCopy}})();"##;
-    ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], COMMON_JS).into_response()
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        COMMON_JS,
+    )
+        .into_response()
 }
 
 async fn evolution_page() -> impl IntoResponse {
