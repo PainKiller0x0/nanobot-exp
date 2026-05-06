@@ -8,7 +8,12 @@
     "service_id": "nanobot",
     "entry_url": "/sidecars",
     "enabled": true,
-    "trigger_phrases": ["内存怎么样", "服务状态", "cron 任务怎么样", "LOF 有机会吗"],
+    "trigger_phrases": [
+      "内存怎么样",
+      "服务状态",
+      "cron 任务怎么样",
+      "LOF 有机会吗"
+    ],
     "commands": [
       {
         "label": "内存报告",
@@ -19,8 +24,14 @@
         "command": "sidecarctl status"
       }
     ],
-    "data_paths": ["/root/.nanobot/data/ops"],
-    "tags": ["ops", "direct-reply", "read-only"],
+    "data_paths": [
+      "/root/.nanobot/data/ops"
+    ],
+    "tags": [
+      "ops",
+      "direct-reply",
+      "read-only"
+    ],
     "mcp_tools": [],
     "notes": "适合做 nanobot 的快捷回复和健康自检底座。"
   },
@@ -33,7 +44,11 @@
     "service_id": null,
     "entry_url": "/inbox",
     "enabled": true,
-    "trigger_phrases": ["收一下 + 链接", "这个值得看吗 + 链接", "收件箱"],
+    "trigger_phrases": [
+      "收一下 + 链接",
+      "这个值得看吗 + 链接",
+      "收件箱"
+    ],
     "commands": [
       {
         "label": "查看收件箱",
@@ -44,8 +59,14 @@
         "command": "python /root/.nanobot/workspace/skills/knowledge-inbox/inbox.py delete <条目ID>"
       }
     ],
-    "data_paths": ["/root/.nanobot/data/knowledge-inbox"],
-    "tags": ["knowledge", "on-demand", "markdown"],
+    "data_paths": [
+      "/root/.nanobot/data/knowledge-inbox"
+    ],
+    "tags": [
+      "knowledge",
+      "on-demand",
+      "markdown"
+    ],
     "mcp_tools": [],
     "notes": "Hermes 风格的轻量个人知识入口，先按需运行。"
   },
@@ -58,15 +79,25 @@
     "service_id": "lof",
     "entry_url": "/",
     "enabled": true,
-    "trigger_phrases": ["今天先看什么", "今天怎么安排", "有什么建议"],
+    "trigger_phrases": [
+      "今天先看什么",
+      "今天怎么安排",
+      "有什么建议"
+    ],
     "commands": [
       {
         "label": "生成决策摘要",
         "command": "python /root/.nanobot/workspace/skills/personal-ops-assistant/ops_summary.py decision"
       }
     ],
-    "data_paths": ["/root/.nanobot/data/personal-ops-assistant"],
-    "tags": ["decision", "dashboard", "summary"],
+    "data_paths": [
+      "/root/.nanobot/data/personal-ops-assistant"
+    ],
+    "tags": [
+      "decision",
+      "dashboard",
+      "summary"
+    ],
     "mcp_tools": [],
     "notes": "更像 Hermes 的 user-facing routine，不应该散落在多个脚本里。"
   },
@@ -79,16 +110,30 @@
     "service_id": "rss",
     "entry_url": "/rss/",
     "enabled": true,
-    "trigger_phrases": ["今天文章有哪些", "鸭哥更新了吗", "微信文章有没有"],
+    "trigger_phrases": [
+      "今天文章有哪些",
+      "鸭哥更新了吗",
+      "微信文章有没有"
+    ],
     "commands": [
       {
         "label": "RSS 日志",
         "command": "podman logs --tail 200 -f wechat-rss-sidecar"
       }
     ],
-    "data_paths": ["/root/.nanobot/data/wechat-rss-rs"],
-    "tags": ["rss", "wechat", "markdown", "article"],
-    "mcp_tools": ["rss.list_entries", "rss.preview_markdown"],
+    "data_paths": [
+      "/root/.nanobot/data/wechat-rss-rs"
+    ],
+    "tags": [
+      "rss",
+      "wechat",
+      "markdown",
+      "article"
+    ],
+    "mcp_tools": [
+      "rss.list_entries",
+      "rss.preview_markdown"
+    ],
     "notes": "后续可以把文章筛选、补拉、广告跳过都显式挂成工具。"
   },
   {
@@ -100,7 +145,11 @@
     "service_id": "lof",
     "entry_url": "/lof",
     "enabled": true,
-    "trigger_phrases": ["LOF 有机会吗", "LOF 看板", "估值刷新"],
+    "trigger_phrases": [
+      "LOF 有机会吗",
+      "LOF 看板",
+      "估值刷新"
+    ],
     "commands": [
       {
         "label": "手动刷新",
@@ -111,9 +160,19 @@
         "command": "journalctl -u lof-sidecar.service -f"
       }
     ],
-    "data_paths": ["/root/.nanobot/workspace/skills/qdii-monitor"],
-    "tags": ["finance", "sidecar", "report"],
-    "mcp_tools": ["lof.refresh", "lof.board", "lof.report"],
+    "data_paths": [
+      "/root/.nanobot/workspace/skills/qdii-monitor"
+    ],
+    "tags": [
+      "finance",
+      "sidecar",
+      "report"
+    ],
+    "mcp_tools": [
+      "lof.refresh",
+      "lof.board",
+      "lof.report"
+    ],
     "notes": "已实现交易时段高频刷新，定时任务发送前可触发刷新再读缓存。"
   },
   {
@@ -125,7 +184,11 @@
     "service_id": "notify",
     "entry_url": "/sidecars",
     "enabled": true,
-    "trigger_phrases": ["cron 任务怎么样", "定时任务列表", "提醒任务状态"],
+    "trigger_phrases": [
+      "cron 任务怎么样",
+      "定时任务列表",
+      "提醒任务状态"
+    ],
     "commands": [
       {
         "label": "任务状态",
@@ -136,9 +199,18 @@
         "command": "journalctl -u notify-sidecar-rs.service -f"
       }
     ],
-    "data_paths": ["/root/.nanobot/notify-sidecar-rs"],
-    "tags": ["cron", "automation", "sidecar"],
-    "mcp_tools": ["notify.list_jobs", "notify.run_job"],
+    "data_paths": [
+      "/root/.nanobot/notify-sidecar-rs"
+    ],
+    "tags": [
+      "cron",
+      "automation",
+      "sidecar"
+    ],
+    "mcp_tools": [
+      "notify.list_jobs",
+      "notify.run_job"
+    ],
     "notes": "这是我们自己的 Hermes cron 精髓承载层。"
   },
   {
@@ -150,16 +222,30 @@
     "service_id": "trend",
     "entry_url": "/trends/",
     "enabled": true,
-    "trigger_phrases": ["今天热点", "AI 热点", "某话题有什么新闻"],
+    "trigger_phrases": [
+      "今天热点",
+      "AI 热点",
+      "某话题有什么新闻"
+    ],
     "commands": [
       {
         "label": "Trend 日志",
         "command": "journalctl -u trend-sidecar-rs.service -f"
       }
     ],
-    "data_paths": ["/root/.nanobot/data/trend-sidecar-rs"],
-    "tags": ["news", "trend", "mcp"],
-    "mcp_tools": ["trends.status", "trends.search", "trends.topic"],
+    "data_paths": [
+      "/root/.nanobot/data/trend-sidecar-rs"
+    ],
+    "tags": [
+      "news",
+      "trend",
+      "mcp"
+    ],
+    "mcp_tools": [
+      "trends.status",
+      "trends.search",
+      "trends.topic"
+    ],
     "notes": "把 TrendRadar 的核心吸收成 sidecar + MCP-like 能力，不直接绑死到 nanobot 本体。"
   },
   {
@@ -171,16 +257,29 @@
     "service_id": "obp",
     "entry_url": "/obp/",
     "enabled": true,
-    "trigger_phrases": ["模型状态", "OBP 状态", "LLM 慢不慢"],
+    "trigger_phrases": [
+      "模型状态",
+      "OBP 状态",
+      "LLM 慢不慢"
+    ],
     "commands": [
       {
         "label": "OBP 日志",
         "command": "journalctl -u obp-rs.service -f"
       }
     ],
-    "data_paths": ["/root/.nanobot/data/obp-rs"],
-    "tags": ["llm", "fallback", "gateway"],
-    "mcp_tools": ["obp.stats", "obp.providers"],
+    "data_paths": [
+      "/root/.nanobot/data/obp-rs"
+    ],
+    "tags": [
+      "llm",
+      "fallback",
+      "gateway"
+    ],
+    "mcp_tools": [
+      "obp.stats",
+      "obp.providers"
+    ],
     "notes": "这是解决超时体验的保险丝，不能再散在 provider 代码里没人知道。"
   },
   {
@@ -192,16 +291,28 @@
     "service_id": "qq",
     "entry_url": null,
     "enabled": true,
-    "trigger_phrases": ["QQ 通道状态", "消息发不出去"],
+    "trigger_phrases": [
+      "QQ 通道状态",
+      "消息发不出去"
+    ],
     "commands": [
       {
         "label": "QQ 日志",
         "command": "journalctl -u qq-sidecar-rs.service -f"
       }
     ],
-    "data_paths": ["/root/.nanobot/data/qq-sidecar-rs"],
-    "tags": ["qq", "delivery", "gateway"],
-    "mcp_tools": ["qq.health", "qq.send_test"],
+    "data_paths": [
+      "/root/.nanobot/data/qq-sidecar-rs"
+    ],
+    "tags": [
+      "qq",
+      "delivery",
+      "gateway"
+    ],
+    "mcp_tools": [
+      "qq.health",
+      "qq.send_test"
+    ],
     "notes": "与 nanobot QQ channel 配合，生产消息出口要有独立观测。"
   },
   {
@@ -213,16 +324,31 @@
     "service_id": "reflexio",
     "entry_url": "/reflexio/",
     "enabled": true,
-    "trigger_phrases": ["记忆状态", "记住 我喜欢...", "查记忆 Rust", "你记得什么"],
+    "trigger_phrases": [
+      "记忆状态",
+      "记住 我喜欢...",
+      "查记忆 Rust",
+      "你记得什么"
+    ],
     "commands": [
       {
         "label": "Reflexio 日志",
         "command": "journalctl -u nanobot-reflexio-rs.service -f"
       }
     ],
-    "data_paths": ["/root/.nanobot/data/reflexio"],
-    "tags": ["memory", "reflection", "dashboard"],
-    "mcp_tools": ["memory.local_save", "memory.local_search", "memory.summary"],
+    "data_paths": [
+      "/root/.nanobot/data/reflexio"
+    ],
+    "tags": [
+      "memory",
+      "reflection",
+      "dashboard"
+    ],
+    "mcp_tools": [
+      "memory.local_save",
+      "memory.local_search",
+      "memory.summary"
+    ],
     "notes": "先做本地优先的显式记忆：只有用户说“记住”才写入，默认不自动外传聊天内容。"
   },
   {
@@ -234,16 +360,28 @@
     "service_id": "notify",
     "entry_url": "/sidecars",
     "enabled": true,
-    "trigger_phrases": ["天气怎么样", "广州天气", "深圳天气"],
+    "trigger_phrases": [
+      "天气怎么样",
+      "广州天气",
+      "深圳天气"
+    ],
     "commands": [
       {
         "label": "天气脚本",
         "command": "python /root/.nanobot/workspace/skills/weather-expert/weather_check.py"
       }
     ],
-    "data_paths": ["/root/.nanobot/data/weather-expert"],
-    "tags": ["weather", "cron", "life"],
-    "mcp_tools": ["weather.forecast"],
+    "data_paths": [
+      "/root/.nanobot/data/weather-expert"
+    ],
+    "tags": [
+      "weather",
+      "cron",
+      "life"
+    ],
+    "mcp_tools": [
+      "weather.forecast"
+    ],
     "notes": "天气类能力应该由 Notify 调度，nanobot 只负责触发和投递。"
   },
   {
@@ -255,16 +393,71 @@
     "service_id": "lof",
     "entry_url": "/evolution",
     "enabled": true,
-    "trigger_phrases": ["你最近进化了吗", "进化日志", "你变强了吗"],
+    "trigger_phrases": [
+      "你最近进化了吗",
+      "进化日志",
+      "你变强了吗"
+    ],
     "commands": [
       {
         "label": "查看进化 API",
         "command": "curl -fsS http://127.0.0.1:8093/api/evolution"
       }
     ],
-    "data_paths": ["/root/.nanobot/evolution.json"],
-    "tags": ["evolution", "observability", "memory"],
-    "mcp_tools": ["evolution.list"],
+    "data_paths": [
+      "/root/.nanobot/evolution.json"
+    ],
+    "tags": [
+      "evolution",
+      "observability",
+      "memory"
+    ],
+    "mcp_tools": [
+      "evolution.list"
+    ],
     "notes": "把“变强了”落实为可检查的时间线、指标和证据。"
+  },
+  {
+    "id": "browser-operator",
+    "name": "按需浏览器",
+    "description": "基于 bb-browser 的真实浏览器访问、渲染正文提取、截图和轻量交互。默认不常驻，调用时启动，结束后释放专用 Chrome。",
+    "category": "工具",
+    "kind": "skill",
+    "service_id": null,
+    "entry_url": null,
+    "enabled": true,
+    "trigger_phrases": [
+      "用浏览器打开",
+      "帮我截图",
+      "登录后页面",
+      "网页渲染后内容",
+      "点击这个网页"
+    ],
+    "commands": [
+      {
+        "label": "依赖检查",
+        "command": "python3 /root/.nanobot/workspace/skills/browser-operator/browser_once.py check"
+      },
+      {
+        "label": "渲染正文提取",
+        "command": "python3 /root/.nanobot/workspace/skills/browser-operator/browser_once.py quick-text <URL>"
+      },
+      {
+        "label": "浏览器清理",
+        "command": "python3 /root/.nanobot/workspace/skills/browser-operator/browser_once.py cleanup"
+      }
+    ],
+    "data_paths": [
+      "/root/.bb-browser",
+      "/root/.nanobot/workspace/skills/browser-operator"
+    ],
+    "tags": [
+      "browser",
+      "on-demand",
+      "bb-browser",
+      "screenshot"
+    ],
+    "mcp_tools": [],
+    "notes": "先作为受控 skill 接入，不启用常驻 MCP。需要 Node/npm/Chromium/bb-browser，缺失时运行 setup_bb_browser.sh。"
   }
 ]
