@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -133,3 +134,61 @@ class JsonHttpClient:
 
     def get_text(self, path: str, default: Any = MISSING) -> str:
         return self.request(path, expect_json=False, default=default)
+
+
+def extract_json_array(text: Any) -> list[Any]:
+    """Parse a JSON array from plain text or a fenced LLM response."""
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start >= 0 and end > start:
+        cleaned = cleaned[start : end + 1]
+    value = json.loads(cleaned)
+    return value if isinstance(value, list) else []
+
+
+def normalize_sentence(value: Any) -> str:
+    """Normalize one human-facing sentence while dropping timestamp-like noise."""
+    text = str(value or "").strip()
+    if not text or re.fullmatch(r"\d{10,}", text):
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text.rstrip("。；;，,") + "。" if text and text[-1] not in "。！？!?" else text
+
+
+def markdown_link_text(text: Any) -> str:
+    return str(text or "").replace("[", "【").replace("]", "】").replace("\n", " ")
+
+
+def post_chat_completion_content(
+    url: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    temperature: float = 0.2,
+    max_tokens: int = 512,
+    timeout: float = 24,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    """Call an OpenAI-compatible chat endpoint and return the first message content."""
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    if extra:
+        payload.update(extra)
+    req = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    return (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+

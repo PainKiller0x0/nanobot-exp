@@ -11,13 +11,22 @@ import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
 
 _SHARED_DIR = Path(__file__).resolve().parents[1] / "_shared"
 if _SHARED_DIR.exists():
     sys.path.insert(0, str(_SHARED_DIR))
 
-from ops_common import JsonHttpClient, fmt_time as common_fmt_time, now_shanghai, parse_dt, short
+from ops_common import (
+    JsonHttpClient,
+    extract_json_array,
+    fmt_time as common_fmt_time,
+    markdown_link_text,
+    normalize_sentence,
+    now_shanghai,
+    parse_dt,
+    post_chat_completion_content,
+    short,
+)
 
 
 HTTP = JsonHttpClient(
@@ -116,7 +125,7 @@ def cmd_daily(args: argparse.Namespace) -> str:
     for idx, (item, summary) in enumerate(zip(items, summaries), 1):
         title = short(item.get("title"), 68)
         url = item.get("url") or item.get("mobile_url") or ""
-        title_text = f"[{escape_markdown_link_text(title)}]({url})" if url else title
+        title_text = f"[{markdown_link_text(title)}]({url})" if url else title
         lines.append(f"{idx}. {title_text}")
         lines.append(f"   {short(summary, 128)}")
     lines.append("")
@@ -168,7 +177,7 @@ def summarize_with_free_model(items: list[dict[str, Any]]) -> list[str]:
             "title": item.get("title") or "",
             "source": item.get("source_name") or item.get("source_id") or "",
             "rank": item.get("rank") or item.get("best_rank") or "",
-            "raw_summary": normalize_summary(item.get("summary") or ""),
+            "raw_summary": normalize_sentence(item.get("summary") or ""),
             "tags": item.get("tags") or [],
         })
     prompt = (
@@ -190,54 +199,30 @@ def summarize_with_free_model(items: list[dict[str, Any]]) -> list[str]:
         "stream": False,
     }
     try:
-        req = Request(
+        content = post_chat_completion_content(
             OBP_CHAT_URL,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
+            OBP_MODEL,
+            payload["messages"],
+            temperature=payload["temperature"],
+            max_tokens=payload["max_tokens"],
+            timeout=float(os.environ.get("TREND_LLM_TIMEOUT", "24")),
         )
-        with urlopen(req, timeout=float(os.environ.get("TREND_LLM_TIMEOUT", "24"))) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-        parsed = parse_json_array(content)
-        summaries = [normalize_summary(x.get("summary") if isinstance(x, dict) else x) for x in parsed]
+        parsed = extract_json_array(content)
+        summaries = [normalize_sentence(x.get("summary") if isinstance(x, dict) else x) for x in parsed]
         summaries = [s for s in summaries if s]
         return summaries if len(summaries) == len(items) else []
     except Exception:
         return []
 
 
-def parse_json_array(text: str) -> list[Any]:
-    cleaned = text.strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
-    start = cleaned.find("[")
-    end = cleaned.rfind("]")
-    if start >= 0 and end > start:
-        cleaned = cleaned[start : end + 1]
-    value = json.loads(cleaned)
-    return value if isinstance(value, list) else []
-
-
-def normalize_summary(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text or re.fullmatch(r"\d{10,}", text):
-        return ""
-    text = re.sub(r"\s+", " ", text)
-    return text.rstrip("。；;，,") + "。" if text and text[-1] not in "。！？!?" else text
-
-
 def fallback_summary(item: dict[str, Any]) -> str:
-    raw = normalize_summary(item.get("summary") or "")
+    raw = normalize_sentence(item.get("summary") or "")
     if raw and not raw.endswith("热度。"):
         return short(raw, 128)
     title = str(item.get("title") or "").strip()
     source = item.get("source_name") or item.get("source_id") or "热榜"
     return short(f"{source}高位话题，核心关注点是：{title}。目前缺少更多背景信息，建议先作为待观察线索。", 128)
 
-
-def escape_markdown_link_text(text: str) -> str:
-    return str(text).replace("[", "【").replace("]", "】").replace("\n", " ")
 
 def cmd_latest(args: argparse.Namespace) -> str:
     params = {"limit": args.limit}
