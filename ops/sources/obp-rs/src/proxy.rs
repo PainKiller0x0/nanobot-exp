@@ -168,6 +168,14 @@ const LIGHTWEIGHT_HINTS: &[&str] = &[
     "fast_chat",
 ];
 
+const FREE_LONGCAT_TEXT_PATTERNS: &[&str] = &[
+    "heartbeat.md",
+    "heartbeat agent",
+    "heartbeat tool",
+    "\"name\":\"heartbeat\"",
+    "\"name\": \"heartbeat\"",
+];
+
 const LIGHTWEIGHT_TEXT_PATTERNS: &[&str] = &[
     "heartbeat.md",
     "heartbeat agent",
@@ -510,6 +518,33 @@ fn route_decision(
             group: String::new(),
             reason: "router disabled".to_string(),
         };
+    }
+
+    let free_routing_text = request_json
+        .map(extract_all_routing_text)
+        .unwrap_or_default()
+        .to_lowercase();
+    if let Some(pattern) = FREE_LONGCAT_TEXT_PATTERNS
+        .iter()
+        .find(|pattern| free_routing_text.contains(**pattern))
+    {
+        let mut decision = RouteDecision {
+            requested_model: requested_model.to_string(),
+            desired_model: router.emergency_model.clone(),
+            role: "emergency".to_string(),
+            group: group_for_role(router, "emergency"),
+            reason: format!("free longcat task pattern matched: {}", pattern),
+        };
+        if router.dry_run {
+            decision.reason = format!(
+                "dry-run: would use {}/{} because {}",
+                decision.role, decision.desired_model, decision.reason
+            );
+            decision.desired_model = requested_model.to_string();
+            decision.role = "any".to_string();
+            decision.group.clear();
+        }
+        return decision;
     }
 
     let monthly_cost = stats.current_month_cost();
@@ -1427,6 +1462,32 @@ fn json_direct_hint(value: &Value, keys: &[&str]) -> Option<String> {
     None
 }
 
+fn extract_all_routing_text(value: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(messages) = value.get("messages").and_then(Value::as_array) {
+        for message in messages {
+            let text = message_content_text(message);
+            if !text.trim().is_empty() {
+                parts.push(text);
+            }
+        }
+    }
+    if let Some(input) = value.get("input") {
+        let text = extract_text(input);
+        if !text.trim().is_empty() {
+            parts.push(text);
+        }
+    }
+    if parts.is_empty() {
+        extract_text(value)
+    } else {
+        parts.join(
+            "
+",
+        )
+    }
+}
+
 fn extract_routing_text(value: &Value) -> String {
     if let Some(messages) = value.get("messages").and_then(Value::as_array) {
         if let Some(message) = messages
@@ -1476,5 +1537,59 @@ fn extract_text(value: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::RouterConfig;
+    use crate::stats::UsageStats;
+
+    #[test]
+    fn heartbeat_routes_to_longcat_before_paid_default() {
+        let router = RouterConfig::default();
+        let body = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {"role": "system", "content": "Read heartbeat.md and report if there is anything to do."},
+                {"role": "user", "content": "Heartbeat: checking for tasks."}
+            ]
+        });
+        let decision = route_decision(
+            &router,
+            &UsageStats::default(),
+            Some(&body),
+            "deepseek-v4-flash",
+            &RouteHints::default(),
+        );
+
+        assert_eq!(decision.role, "emergency");
+        assert_eq!(decision.group, "longcat");
+        assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
+        assert!(decision.reason.contains("free longcat"));
+    }
+
+    #[test]
+    fn heartbeat_routes_to_longcat_even_after_hard_limit() {
+        let mut router = RouterConfig::default();
+        router.monthly_hard_limit_rmb = 0.1;
+        let mut stats = UsageStats::default();
+        stats.total.cost_cny = 99.0;
+        let body = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [{"role": "user", "content": "heartbeat.md"}]
+        });
+        let decision = route_decision(
+            &router,
+            &stats,
+            Some(&body),
+            "deepseek-v4-flash",
+            &RouteHints::default(),
+        );
+
+        assert_eq!(decision.role, "emergency");
+        assert_eq!(decision.group, "longcat");
+        assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
     }
 }
