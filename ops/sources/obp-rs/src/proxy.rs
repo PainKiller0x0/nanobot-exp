@@ -176,6 +176,33 @@ const FREE_LONGCAT_TEXT_PATTERNS: &[&str] = &[
     "\"name\": \"heartbeat\"",
 ];
 
+const CHANNEL_COOLDOWN_SECS: u64 = 120;
+
+fn free_longcat_trigger(hints: &RouteHints, routing_text: &str) -> Option<String> {
+    for (label, value) in [
+        ("purpose", hints.purpose.as_str()),
+        ("intent", hints.intent.as_str()),
+    ] {
+        if hint_matches(
+            value,
+            &["heartbeat", "healthcheck", "self_check", "self-check"],
+        ) {
+            return Some(format!("{} hint matched: {}", label, value));
+        }
+    }
+    FREE_LONGCAT_TEXT_PATTERNS
+        .iter()
+        .find(|pattern| routing_text.contains(**pattern))
+        .map(|pattern| (*pattern).to_string())
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs()
+}
+
 const LIGHTWEIGHT_TEXT_PATTERNS: &[&str] = &[
     "heartbeat.md",
     "heartbeat agent",
@@ -521,13 +548,10 @@ fn route_decision(
     }
 
     let free_routing_text = request_json
-        .map(extract_all_routing_text)
+        .map(extract_routing_text)
         .unwrap_or_default()
         .to_lowercase();
-    if let Some(pattern) = FREE_LONGCAT_TEXT_PATTERNS
-        .iter()
-        .find(|pattern| free_routing_text.contains(**pattern))
-    {
+    if let Some(pattern) = free_longcat_trigger(hints, &free_routing_text) {
         let mut decision = RouteDecision {
             requested_model: requested_model.to_string(),
             desired_model: router.emergency_model.clone(),
@@ -1342,10 +1366,13 @@ async fn record_result(
             if (200..400).contains(&status) {
                 current.fail_count = 0;
                 current.status = "active".to_string();
+                current.disabled_until = None;
             } else {
                 current.fail_count = current.fail_count.saturating_add(1);
                 if current.fail_count >= 3 {
-                    current.status = "error".to_string();
+                    current.status = "cooldown".to_string();
+                    current.disabled_until =
+                        Some(unix_now_secs().saturating_add(CHANNEL_COOLDOWN_SECS));
                 }
             }
         }
@@ -1462,32 +1489,6 @@ fn json_direct_hint(value: &Value, keys: &[&str]) -> Option<String> {
     None
 }
 
-fn extract_all_routing_text(value: &Value) -> String {
-    let mut parts = Vec::new();
-    if let Some(messages) = value.get("messages").and_then(Value::as_array) {
-        for message in messages {
-            let text = message_content_text(message);
-            if !text.trim().is_empty() {
-                parts.push(text);
-            }
-        }
-    }
-    if let Some(input) = value.get("input") {
-        let text = extract_text(input);
-        if !text.trim().is_empty() {
-            parts.push(text);
-        }
-    }
-    if parts.is_empty() {
-        extract_text(value)
-    } else {
-        parts.join(
-            "
-",
-        )
-    }
-}
-
 fn extract_routing_text(value: &Value) -> String {
     if let Some(messages) = value.get("messages").and_then(Value::as_array) {
         if let Some(message) = messages
@@ -1553,7 +1554,7 @@ mod tests {
             "model": "deepseek-v4-flash",
             "messages": [
                 {"role": "system", "content": "Read heartbeat.md and report if there is anything to do."},
-                {"role": "user", "content": "Heartbeat: checking for tasks."}
+                {"role": "user", "content": "Review the following HEARTBEAT.md and decide whether there are active tasks."}
             ]
         });
         let decision = route_decision(
@@ -1568,6 +1569,30 @@ mod tests {
         assert_eq!(decision.group, "longcat");
         assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
         assert!(decision.reason.contains("free longcat"));
+    }
+
+    #[test]
+    fn stale_heartbeat_context_does_not_pin_emergency() {
+        let router = RouterConfig::default();
+        let body = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {"role": "system", "content": "Earlier we reviewed HEARTBEAT.md."},
+                {"role": "assistant", "content": "The heartbeat check is done."},
+                {"role": "user", "content": "Plain chat probe: reply OK."}
+            ]
+        });
+        let decision = route_decision(
+            &router,
+            &UsageStats::default(),
+            Some(&body),
+            "deepseek-v4-flash",
+            &RouteHints::default(),
+        );
+
+        assert_eq!(decision.role, "default");
+        assert_eq!(decision.group, "deepseek");
+        assert_eq!(decision.desired_model, "deepseek-v4-flash");
     }
 
     #[test]

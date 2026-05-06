@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -18,6 +19,7 @@ pub struct Channel {
     pub requests: u64,
     pub last_test: Option<String>,
     pub fail_count: u32,
+    pub disabled_until: Option<u64>,
     pub role: String,
     pub group: String,
     pub priority: u32,
@@ -38,6 +40,7 @@ impl Default for Channel {
             requests: 0,
             last_test: None,
             fail_count: 0,
+            disabled_until: None,
             role: "default".to_string(),
             group: String::new(),
             priority: 100,
@@ -48,7 +51,14 @@ impl Default for Channel {
 
 impl Channel {
     pub fn is_active(&self) -> bool {
-        self.status.trim().is_empty() || self.status.eq_ignore_ascii_case("active")
+        let status = self.status.trim();
+        if status.is_empty() || status.eq_ignore_ascii_case("active") {
+            return true;
+        }
+        if status.eq_ignore_ascii_case("cooldown") || status.eq_ignore_ascii_case("error") {
+            return self.disabled_until.unwrap_or(0) <= unix_now_secs();
+        }
+        false
     }
 
     pub fn role_key(&self) -> String {
@@ -113,6 +123,13 @@ impl Channel {
         }
         serde_json::from_str::<Value>(&self.model_mapping).ok()
     }
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn lookup_mapping(mapping: Option<&Value>, model: &str) -> Option<String> {
