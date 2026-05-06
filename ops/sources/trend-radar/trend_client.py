@@ -55,7 +55,9 @@ def item_line(item: dict[str, Any], idx: int | None = None) -> str:
     source = item.get("source_name") or item.get("source_id") or "-"
     url = item.get("url") or item.get("mobile_url") or ""
     link = f"\n   {url}" if url else ""
-    return f"{prefix}{title}｜{source} #{rank}{link}"
+    summary = item.get("summary") or ""
+    summary_line = f"\n   简要：{short(summary, 90)}" if summary else ""
+    return f"{prefix}{title}｜{source} #{rank}{summary_line}{link}"
 
 
 def ensure_ok(data: dict[str, Any]) -> None:
@@ -86,6 +88,14 @@ def cmd_brief(_args: argparse.Namespace) -> str:
     lines.append("看板：http://150.158.121.88:8093/trends/")
     return "\n".join(lines)
 
+
+
+def cmd_daily(args: argparse.Namespace) -> str:
+    if args.refresh:
+        post_json("/api/trends/refresh", default={"ok": False})
+    data = fetch_json("/api/trends/daily-report?" + urlencode({"limit": args.limit}))
+    ensure_ok(data)
+    return data.get("markdown") or "热点简报暂无内容"
 
 def cmd_latest(args: argparse.Namespace) -> str:
     params = {"limit": args.limit}
@@ -156,6 +166,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("brief")
 
+    daily = sub.add_parser("daily")
+    daily.add_argument("--limit", type=int, default=8)
+    daily.add_argument("--refresh", action="store_true")
+
     latest = sub.add_parser("latest")
     latest.add_argument("--limit", type=int, default=12)
     latest.add_argument("--source", default="")
@@ -183,6 +197,7 @@ def main() -> int:
     try:
         handler = {
             "brief": cmd_brief,
+            "daily": cmd_daily,
             "latest": cmd_latest,
             "search": cmd_search,
             "topic": cmd_topic,

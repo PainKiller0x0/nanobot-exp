@@ -31,6 +31,12 @@ python3 /root/.nanobot/workspace/skills/trend-radar/trend_client.py brief
 python3 /root/.nanobot/workspace/skills/trend-radar/trend_client.py latest --limit 12
 ```
 
+用户问“新闻简报”“今日新闻摘要”，或定时任务生成每日简报：
+
+```bash
+python3 /root/.nanobot/workspace/skills/trend-radar/trend_client.py daily --limit 8 --refresh
+```
+
 用户问“AI 热点”“某关键词有什么新闻”：
 
 ```bash
