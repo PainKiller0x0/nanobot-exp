@@ -141,6 +141,16 @@ def parse_args() -> argparse.Namespace:
         help='skip output on the first China workday after a rest day',
     )
     parser.add_argument(
+        '--only-rest-day',
+        action='store_true',
+        help='only print a report on China rest days and holidays',
+    )
+    parser.add_argument(
+        '--only-last-workday-before-rest',
+        action='store_true',
+        help='only print a report on the last China workday before a rest day',
+    )
+    parser.add_argument(
         '--date',
         help='override date for scheduler tests, format YYYY-MM-DD',
     )
@@ -227,6 +237,14 @@ def is_cn_workday(target_date: date) -> bool:
 
 def is_first_workday_after_rest(target_date: date) -> bool:
     return is_cn_workday(target_date) and not is_cn_workday(target_date - timedelta(days=1))
+
+
+def is_rest_day(target_date: date) -> bool:
+    return not is_cn_workday(target_date)
+
+
+def is_last_workday_before_rest(target_date: date) -> bool:
+    return is_cn_workday(target_date) and is_rest_day(target_date + timedelta(days=1))
 
 
 def is_shenzhen_day(target_date: date) -> bool:
@@ -443,6 +461,10 @@ def should_emit_for_args(args: argparse.Namespace, target_date: date) -> bool:
     if args.only_first_workday and not first_workday:
         return False
     if args.skip_first_workday and first_workday:
+        return False
+    if args.only_rest_day and not is_rest_day(target_date):
+        return False
+    if args.only_last_workday_before_rest and not is_last_workday_before_rest(target_date):
         return False
     return True
 

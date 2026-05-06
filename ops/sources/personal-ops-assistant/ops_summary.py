@@ -70,8 +70,8 @@ def job_name(job: dict[str, Any]) -> str:
         "lof-close": "LOF 收盘报告",
         "hermes-heartbeat": "HERMES 心跳自检",
         "weather-sz-workday": "深圳普通工作日天气",
-        "weather-gz-friday-noon": "广州周五天气",
-        "weather-gz-weekend": "广州周末天气",
+        "weather-gz-friday-noon": "广州休息日前天气",
+        "weather-gz-weekend": "广州休息日天气",
         "weather-sz-monday": "深圳首个工作日天气",
     }
     return names.get(str(job.get("id")), job.get("name") or job.get("id") or "-")
