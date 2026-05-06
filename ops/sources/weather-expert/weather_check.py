@@ -130,11 +130,33 @@ def parse_args() -> argparse.Namespace:
         action='store_true',
         help='legacy auto mode only: force both locations even if commute rules would skip one',
     )
+    parser.add_argument(
+        '--only-first-workday',
+        action='store_true',
+        help='only print a report on the first China workday after a rest day',
+    )
+    parser.add_argument(
+        '--skip-first-workday',
+        action='store_true',
+        help='skip output on the first China workday after a rest day',
+    )
+    parser.add_argument(
+        '--date',
+        help='override date for scheduler tests, format YYYY-MM-DD',
+    )
     return parser.parse_args()
 
 
 def holiday_cache_path(year: int) -> str:
     return os.path.join(SCRIPT_DIR, f'holidays_{year}.json')
+
+
+def holiday_cache_candidates(year: int) -> list[str]:
+    candidates = [holiday_cache_path(year)]
+    live_cache = f'/root/.nanobot/workspace/skills/weather-expert/holidays_{year}.json'
+    if live_cache not in candidates:
+        candidates.append(live_cache)
+    return candidates
 
 
 def load_json(path: str, default: Any) -> Any:
@@ -152,10 +174,11 @@ def save_json(path: str, data: Any) -> None:
 
 def get_holidays(year: int) -> dict[str, Any]:
     cache_path = holiday_cache_path(year)
-    if os.path.exists(cache_path):
-        cached = load_json(cache_path, {})
-        if isinstance(cached, dict):
-            return cached
+    for candidate in holiday_cache_candidates(year):
+        if os.path.exists(candidate):
+            cached = load_json(candidate, {})
+            if isinstance(cached, dict):
+                return cached
 
     try:
         response = requests.get(HOLIDAY_API.format(year=year), headers=REQUEST_HEADERS, timeout=5)
@@ -171,23 +194,50 @@ def get_holidays(year: int) -> dict[str, Any]:
 
 
 def get_holiday_info(target_date: date) -> dict[str, Any]:
-    holidays = get_holidays(target_date.year)
-    info = holidays.get(target_date.isoformat(), {})
-    return info if isinstance(info, dict) else {}
+    data = get_holidays(target_date.year)
+    candidates = [target_date.isoformat(), target_date.strftime('%m-%d')]
+    containers = [data]
+    if isinstance(data, dict):
+        days = data.get('holiday') or data.get('holidays')
+        if isinstance(days, dict):
+            containers.insert(0, days)
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in candidates:
+            info = container.get(key, {})
+            if isinstance(info, dict) and info:
+                return info
+    return {}
+
+
+def is_cn_workday(target_date: date) -> bool:
+    holiday_info = get_holiday_info(target_date)
+    if holiday_info.get('holiday') is True:
+        return False
+    if holiday_info.get('holiday') is False and (
+        holiday_info.get('wage') == 1
+        or holiday_info.get('after') is not None
+        or holiday_info.get('before') is not None
+        or '补班' in str(holiday_info.get('name', ''))
+    ):
+        return True
+    return target_date.weekday() < 5
+
+
+def is_first_workday_after_rest(target_date: date) -> bool:
+    return is_cn_workday(target_date) and not is_cn_workday(target_date - timedelta(days=1))
 
 
 def is_shenzhen_day(target_date: date) -> bool:
-    holiday_info = get_holiday_info(target_date)
-    if holiday_info.get('holiday'):
-        return False
-    return target_date.weekday() < 5
+    return is_cn_workday(target_date)
 
 
 def is_guangzhou_day(target_date: date) -> bool:
     holiday_info = get_holiday_info(target_date)
-    if holiday_info.get('holiday'):
+    if not is_cn_workday(target_date):
         return True
-    if '\u8865\u73ed' in str(holiday_info.get('name', '')):
+    if '补班' in str(holiday_info.get('name', '')):
         return False
     return target_date.weekday() >= 4
 
@@ -382,6 +432,21 @@ def build_advice(weather: dict[str, Any]) -> list[str]:
     return advice
 
 
+def parse_target_date(raw: str | None) -> date:
+    if not raw:
+        return datetime.now(LOCAL_TZ).date()
+    return datetime.strptime(raw, '%Y-%m-%d').date()
+
+
+def should_emit_for_args(args: argparse.Namespace, target_date: date) -> bool:
+    first_workday = is_first_workday_after_rest(target_date)
+    if args.only_first_workday and not first_workday:
+        return False
+    if args.skip_first_workday and first_workday:
+        return False
+    return True
+
+
 def build_report(location_key: str, target_date: date | None = None) -> str:
     now = datetime.now(LOCAL_TZ)
     target_date = target_date or now.date()
@@ -437,8 +502,13 @@ def main() -> int:
             print(f"Unknown location: {args.location}. Valid values: {valid}")
             return 2
 
+        target_date = parse_target_date(args.date)
+        if not should_emit_for_args(args, target_date):
+            print('(NO_OUTPUT_KEEP_SILENT)')
+            return 0
+
         if location_key:
-            print(build_report(location_key))
+            print(build_report(location_key, target_date))
         else:
             print(build_legacy_auto_report(force=args.force))
         return 0
