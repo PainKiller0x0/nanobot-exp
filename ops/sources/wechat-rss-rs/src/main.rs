@@ -55,6 +55,7 @@ struct CleanMarkdownPayload {
     content: Option<String>,
     input_format: Option<String>,
     smart_merge: Option<bool>,
+    merge_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1225,6 +1226,44 @@ fn join_inline(left: &str, right: &str) -> String {
     }
 }
 
+fn visible_char_count(line: &str) -> usize {
+    line.chars().filter(|c| !c.is_whitespace()).count()
+}
+
+fn ends_soft_connector(line: &str) -> bool {
+    line.trim_end()
+        .chars()
+        .last()
+        .map(|c| "，,、：:；;（(《“‘「『".contains(c))
+        .unwrap_or(false)
+}
+
+fn ends_mid_clause(line: &str) -> bool {
+    line.trim_end()
+        .chars()
+        .last()
+        .map(|c| "，,、；;：:".contains(c))
+        .unwrap_or(false)
+}
+
+fn should_merge_paid_lines(current: &str, next: &str) -> bool {
+    let cur = current.trim();
+    let nxt = next.trim();
+    if cur.is_empty() || nxt.is_empty() {
+        return false;
+    }
+    if starts_with_punctuation(nxt) || ends_soft_connector(cur) || ends_mid_clause(nxt) {
+        return true;
+    }
+    if is_markdown_structural_line(cur) || is_markdown_structural_line(nxt) {
+        return false;
+    }
+
+    // Only treat a long non-terminal line as a visual wrap. Short metadata-like
+    // lines such as author/date/location should stay as separate paragraphs.
+    visible_char_count(cur) >= 30 && !ends_sentence(cur)
+}
+
 fn normalize_paid_article_markdown(markdown: &str, smart_merge: bool) -> String {
     let cleaned = clean_control_text(markdown);
     let mut paragraphs: Vec<String> = Vec::new();
@@ -1254,7 +1293,7 @@ fn normalize_paid_article_markdown(markdown: &str, smart_merge: bool) -> String 
         }
         if current.is_empty() {
             current = line.to_string();
-        } else if !ends_sentence(&current) || starts_with_punctuation(line) {
+        } else if should_merge_paid_lines(&current, line) {
             current = join_inline(&current, line);
         } else {
             flush(&mut current, &mut paragraphs);
@@ -1323,7 +1362,17 @@ fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
         .unwrap_or("auto")
         .trim()
         .to_ascii_lowercase();
-    let smart_merge = payload.smart_merge.unwrap_or(true);
+    let merge_mode = payload
+        .merge_mode
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let smart_merge = if merge_mode.is_empty() {
+        payload.smart_merge.unwrap_or(false)
+    } else {
+        matches!(merge_mode.as_str(), "smart" | "compact" | "merge")
+    };
     let as_html = input_format == "html" || (input_format == "auto" && looks_like_html(raw));
 
     let markdown_raw = if as_html {
@@ -1354,6 +1403,7 @@ fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
         "filename": filename,
         "input_format": if as_html { "html" } else { "text" },
         "smart_merge": smart_merge,
+        "merge_mode": if smart_merge { "smart" } else { "preserve" },
         "line_count": line_count,
         "char_count": char_count,
     })
@@ -1364,10 +1414,10 @@ async fn root() -> Html<&'static str> {
         r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>RSS Sidecar · Rust</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
-:root{--bg:#f3efe5;--bg2:#e6dfcf;--card:#fffdf8;--line:#d6ccb7;--text:#25231d;--muted:#726a58;--ok:#1f7a4a;--err:#b44531;--accent:#a96f2e;--shadow:0 16px 34px rgba(42,31,12,.10);--hero-bg:rgba(255,252,245,.86);--hero-border:rgba(132,110,70,.26);--btn-bg:#fffef9;--btn-shadow:0 4px 12px rgba(45,32,8,.07);--btn-shadow-hover:0 8px 18px rgba(45,32,8,.12);--btn-main-from:#f7d79f;--btn-main-to:#efc57f;--btn-main-border:#dca252;--card-border:rgba(120,100,66,.22);--panel:#faf6ec;--dash:#d9cfbc;--heading:#4d4639;--link:#2f4f7b;--input-bg:#fff;--ok-border:#95cfaf;--ok-bg:#eaf8ef;--err-border:#e3a599;--err-bg:#fff1ed;--state-running-text:#145c38;--state-running-border:#8dcaab;--state-running-bg:#e7f6ee;--state-paused-text:#5a5344;--state-paused-border:#c7bca6;--state-paused-bg:#f2ecdf}
-[data-theme="dark"]{--bg:#181a1c;--bg2:#22262b;--card:#272c31;--line:#3b434c;--text:#e8edf3;--muted:#aeb8c4;--ok:#57c486;--err:#ef8f7c;--accent:#d7a15f;--shadow:0 16px 34px rgba(0,0,0,.32);--hero-bg:rgba(41,46,52,.88);--hero-border:#4a5561;--btn-bg:#30363d;--btn-shadow:0 4px 12px rgba(0,0,0,.35);--btn-shadow-hover:0 8px 18px rgba(0,0,0,.45);--btn-main-from:#5c4a2f;--btn-main-to:#6d5535;--btn-main-border:#8c6f45;--card-border:#46515d;--panel:#20262c;--dash:#3a434f;--heading:#c6d0da;--link:#8eb8ff;--input-bg:#1f252b;--ok-border:#2d7a56;--ok-bg:#1f3a2e;--err-border:#8f4b43;--err-bg:#3a2725;--state-running-text:#9de7bf;--state-running-border:#2d7a56;--state-running-bg:#1f3a2e;--state-paused-text:#d5dce4;--state-paused-border:#596678;--state-paused-bg:#2d3440}
+html,body,html[data-theme="light"],body[data-theme="light"]{color-scheme:light;--bg:#f3efe5;--bg2:#e6dfcf;--card:#fffdf8;--line:#d6ccb7;--text:#25231d;--muted:#726a58;--ok:#1f7a4a;--err:#b44531;--accent:#a96f2e;--shadow:0 16px 34px rgba(42,31,12,.10);--hero-bg:rgba(255,252,245,.86);--hero-border:rgba(132,110,70,.26);--btn-bg:#fffef9;--btn-shadow:0 4px 12px rgba(45,32,8,.07);--btn-shadow-hover:0 8px 18px rgba(45,32,8,.12);--btn-main-from:#f7d79f;--btn-main-to:#efc57f;--btn-main-border:#dca252;--card-border:rgba(120,100,66,.22);--panel:#faf6ec;--dash:#d9cfbc;--heading:#4d4639;--link:#2f4f7b;--input-bg:#fff;--ok-border:#95cfaf;--ok-bg:#eaf8ef;--err-border:#e3a599;--err-bg:#fff1ed;--state-running-text:#145c38;--state-running-border:#8dcaab;--state-running-bg:#e7f6ee;--state-paused-text:#5a5344;--state-paused-border:#c7bca6;--state-paused-bg:#f2ecdf}
+html[data-theme="dark"],body[data-theme="dark"]{color-scheme:dark;--bg:#181a1c;--bg2:#22262b;--card:#272c31;--line:#3b434c;--text:#e8edf3;--muted:#aeb8c4;--ok:#57c486;--err:#ef8f7c;--accent:#d7a15f;--shadow:0 16px 34px rgba(0,0,0,.32);--hero-bg:rgba(41,46,52,.88);--hero-border:#4a5561;--btn-bg:#30363d;--btn-shadow:0 4px 12px rgba(0,0,0,.35);--btn-shadow-hover:0 8px 18px rgba(0,0,0,.45);--btn-main-from:#5c4a2f;--btn-main-to:#6d5535;--btn-main-border:#8c6f45;--card-border:#46515d;--panel:#20262c;--dash:#3a434f;--heading:#c6d0da;--link:#8eb8ff;--input-bg:#1f252b;--ok-border:#2d7a56;--ok-bg:#1f3a2e;--err-border:#8f4b43;--err-bg:#3a2725;--state-running-text:#9de7bf;--state-running-border:#2d7a56;--state-running-bg:#1f3a2e;--state-paused-text:#d5dce4;--state-paused-border:#596678;--state-paused-bg:#2d3440}
 *{box-sizing:border-box}body{margin:0;color:var(--text);font-family:'IBM Plex Sans','Noto Sans SC','PingFang SC','Microsoft Yahei',sans-serif;background:radial-gradient(1000px 480px at 10% -10%, #d3e4cf 0%, transparent 58%),radial-gradient(760px 380px at 100% 0%, #f3dfba 0%, transparent 52%),linear-gradient(160deg,var(--bg),var(--bg2));min-height:100vh}
-[data-theme="dark"] body{background:radial-gradient(1000px 480px at 10% -10%, #20322b 0%, transparent 58%),radial-gradient(760px 380px at 100% 0%, #433225 0%, transparent 52%),linear-gradient(160deg,var(--bg),var(--bg2))}
+html[data-theme="dark"] body,body[data-theme="dark"]{background:radial-gradient(1000px 480px at 10% -10%, #20322b 0%, transparent 58%),radial-gradient(760px 380px at 100% 0%, #433225 0%, transparent 52%),linear-gradient(160deg,var(--bg),var(--bg2))}
 .wrap{max-width:1200px;margin:20px auto;padding:0 16px 26px}
 .hero{background:var(--hero-bg);border:1px solid var(--hero-border);border-radius:18px;box-shadow:var(--shadow);padding:16px 18px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
 .title{font-size:24px;font-weight:700;margin:0}.sub{margin:5px 0 0;color:var(--muted);font-size:13px}
@@ -1440,7 +1490,7 @@ function toCN(v){if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()
 function ts(v){const d=new Date(v||'');return Number.isNaN(d.getTime())?0:d.getTime();}
 const THEME_KEY='wechat_rss_theme';
 function setThemeBtn(mode){const el=document.getElementById('themeToggle');if(!el)return;el.textContent=mode==='dark'?'Theme: Dark':'Theme: Light';}
-function applyTheme(mode){document.documentElement.setAttribute('data-theme',mode);setThemeBtn(mode);if(!localStorage.getItem(MD_THEME_KEY))applyMdPreviewTheme(mode);}
+function applyTheme(mode){document.documentElement.setAttribute('data-theme',mode);document.body&&document.body.setAttribute('data-theme',mode);setThemeBtn(mode);if(!localStorage.getItem(MD_THEME_KEY))applyMdPreviewTheme(mode);}
 function initTheme(){const saved=localStorage.getItem(THEME_KEY);if(saved==='dark'||saved==='light'){applyTheme(saved);return;}const prefers=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;applyTheme(prefers?'dark':'light');}
 function toggleTheme(){const cur=document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';const next=cur==='dark'?'light':'dark';localStorage.setItem(THEME_KEY,next);applyTheme(next);}
 function renderAutoHint(status){
@@ -1516,20 +1566,20 @@ async fn cleaner_page() -> Html<&'static str> {
     Html(
         r##"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>付费文章 Markdown 清洗器</title>
 <style>
-:root{--bg:#f4efe4;--card:#fffdf8;--text:#242019;--muted:#746b5a;--line:#d8cdb8;--accent:#9d6a2d;--panel:#faf6ec;--link:#2f4f7b;--shadow:0 18px 48px rgba(42,31,12,.12);--input:#fff}
-[data-theme="dark"]{--bg:#14181a;--card:#242a2f;--text:#edf2f7;--muted:#aeb8c4;--line:#404955;--accent:#d4a260;--panel:#1b2126;--link:#92bdff;--shadow:0 18px 52px rgba(0,0,0,.36);--input:#171d22}
+html,body,html[data-theme="light"],body[data-theme="light"]{color-scheme:light;--bg:#f4efe4;--card:#fffdf8;--text:#242019;--muted:#746b5a;--line:#d8cdb8;--accent:#9d6a2d;--panel:#faf6ec;--link:#2f4f7b;--shadow:0 18px 48px rgba(42,31,12,.12);--input:#fff;--hero-tint:rgba(255,255,255,.42);--button-shadow:0 5px 14px rgba(0,0,0,.06)}
+html[data-theme="dark"],body[data-theme="dark"]{color-scheme:dark;--bg:#14181a;--card:#242a2f;--text:#edf2f7;--muted:#aeb8c4;--line:#404955;--accent:#d4a260;--panel:#1b2126;--link:#92bdff;--shadow:0 18px 52px rgba(0,0,0,.36);--input:#171d22;--hero-tint:rgba(255,255,255,.06);--button-shadow:0 5px 14px rgba(0,0,0,.28)}
 *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(900px 460px at 8% -12%,rgba(118,165,122,.35),transparent 58%),radial-gradient(760px 420px at 100% 0%,rgba(220,169,91,.28),transparent 55%),var(--bg);color:var(--text);font-family:"Noto Sans SC","Microsoft Yahei",sans-serif}
-.wrap{max-width:1280px;margin:22px auto;padding:0 16px 28px}.hero{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;background:rgba(255,255,255,.22);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:22px;padding:18px}.eyebrow{letter-spacing:.18em;color:var(--accent);font-weight:800;font-size:12px}.hero h1{margin:6px 0 8px;font-size:32px}.hero p{margin:0;color:var(--muted);line-height:1.7}.tools{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--card);color:var(--text);font-weight:700;text-decoration:none;cursor:pointer;box-shadow:0 5px 14px rgba(0,0,0,.06)}button.primary{background:linear-gradient(135deg,#f2c979,#dfa45a);border-color:#bd813b;color:#23190e}.grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}@media(min-width:980px){.grid{grid-template-columns:1fr 1fr}}.card{background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:16px}.row{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px}@media(min-width:760px){.row{grid-template-columns:1fr 1fr}}label{display:block;font-size:13px;color:var(--muted);font-weight:700;margin-bottom:6px}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:13px;background:var(--input);color:var(--text);padding:11px 12px;font:inherit}textarea{min-height:560px;resize:vertical;line-height:1.72}.out{white-space:pre-wrap;font-family:"Noto Serif SC","Songti SC",serif}.hint{color:var(--muted);font-size:13px;line-height:1.7}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 10px;color:var(--muted);font-size:12px}.check{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.check input{width:auto}.status{min-height:22px;color:var(--muted);font-size:13px}.footer{margin-top:12px;color:var(--muted);font-size:12px;line-height:1.6}
+.wrap{max-width:1280px;margin:22px auto;padding:0 16px 28px}.hero{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;background:var(--hero-tint);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:22px;padding:18px}.eyebrow{letter-spacing:.18em;color:var(--accent);font-weight:800;font-size:12px}.hero h1{margin:6px 0 8px;font-size:32px}.hero p{margin:0;color:var(--muted);line-height:1.7}.tools{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--card);color:var(--text);font-weight:700;text-decoration:none;cursor:pointer;box-shadow:var(--button-shadow)}button.primary{background:linear-gradient(135deg,#f2c979,#dfa45a);border-color:#bd813b;color:#23190e}.grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}@media(min-width:980px){.grid{grid-template-columns:1fr 1fr}}.card{background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:16px}.row{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px}@media(min-width:760px){.row{grid-template-columns:1fr 1fr}}label{display:block;font-size:13px;color:var(--muted);font-weight:700;margin-bottom:6px}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:13px;background:var(--input);color:var(--text);padding:11px 12px;font:inherit}textarea{min-height:560px;resize:vertical;line-height:1.72}.out{white-space:pre-wrap;font-family:"Noto Serif SC","Songti SC",serif}.hint{color:var(--muted);font-size:13px;line-height:1.7}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 10px;color:var(--muted);font-size:12px}.check{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.check input{width:auto}.status{min-height:22px;color:var(--muted);font-size:13px}.footer{margin-top:12px;color:var(--muted);font-size:12px;line-height:1.6}
 </style></head><body><div class="wrap"><section class="hero"><div><div class="eyebrow">BISHU XIFENG MARKDOWN CLEANER</div><h1>付费文章 Markdown 清洗器</h1><p>把你在微信里已购买的文章正文粘贴进来，我会本地规则清洗碎行、去掉常见噪声，并生成可复制 / 可下载的 Markdown。不会调用 LLM，也不会上传到外部服务。</p></div><div class="tools"><a class="btn" href="./">回到 RSS</a><button onclick="toggleTheme()">明暗切换</button></div></section>
-<section class="grid"><div class="card"><div class="row"><div><label>标题</label><input id="title" placeholder="例如：财富大洗牌，我该选择，还是努力？"/></div><div><label>来源</label><input id="source" value="记忆承载" placeholder="记忆承载 / 记忆承载3"/></div></div><div class="bar"><select id="format" style="max-width:180px"><option value="auto">自动识别 HTML / 文本</option><option value="text">按纯文本处理</option><option value="html">按 HTML 转 Markdown</option></select><label class="check"><input id="smart" type="checkbox" checked/> 智能合并碎行</label></div><label>粘贴微信正文 / HTML</label><textarea id="input" placeholder="在微信文章里复制正文，然后粘贴到这里。若复制出来包含 HTML，也可以直接粘贴。"></textarea><div class="bar"><button class="primary" onclick="cleanNow()">生成 Markdown</button><button onclick="clearAll()">清空</button></div><div class="hint">小提示：如果你从微信桌面版复制出来的是 HTML，保持“自动识别”即可；如果只是普通文本，也会按中文文章规则整理换行。</div></div>
+<section class="grid"><div class="card"><div class="row"><div><label>标题</label><input id="title" placeholder="例如：财富大洗牌，我该选择，还是努力？"/></div><div><label>来源</label><input id="source" value="记忆承载" placeholder="记忆承载 / 记忆承载3"/></div></div><div class="bar"><select id="format" style="max-width:180px"><option value="auto">自动识别 HTML / 文本</option><option value="text">按纯文本处理</option><option value="html">按 HTML 转 Markdown</option></select><select id="mergeMode" style="max-width:190px"><option value="preserve" selected>保留原换行（推荐）</option><option value="smart">智能合并碎行</option></select></div><label>粘贴微信正文 / HTML</label><textarea id="input" placeholder="在微信文章里复制正文，然后粘贴到这里。若复制出来包含 HTML，也可以直接粘贴。"></textarea><div class="bar"><button class="primary" onclick="cleanNow()">生成 Markdown</button><button onclick="clearAll()">清空</button></div><div class="hint">小提示：如果你从微信桌面版复制出来的是 HTML，保持“自动识别”即可；如果只是普通文本，默认会保留原始换行；如果明显是微信复制造成的碎行，再切到“智能合并碎行”。</div></div>
 <div class="card"><div class="bar"><span class="pill" id="meta">等待生成</span><button onclick="copyMd()">复制 Markdown</button><button onclick="downloadMd()">下载 .md</button></div><label>Markdown 结果</label><textarea id="output" class="out" readonly placeholder="生成后的 Markdown 会出现在这里。"></textarea><div class="status" id="status"></div><div class="footer">这个工具适合你已购买后个人整理归档。RSS 订阅库仍只保存公开可抓到的内容；付费全文不自动入库，避免误把试读导流当完整文章。</div></div></section></div>
 <script>
 const KEY='paid_cleaner_theme';let lastFilename='wechat-paid-article.md';
-function applyTheme(t){document.documentElement.setAttribute('data-theme',t);localStorage.setItem(KEY,t)}
+function applyTheme(t){document.documentElement.setAttribute('data-theme',t);document.body&&document.body.setAttribute('data-theme',t);localStorage.setItem(KEY,t)}
 function initTheme(){const saved=localStorage.getItem(KEY);applyTheme(saved==='dark'||saved==='light'?saved:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'))}
 function toggleTheme(){applyTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark')}
 function setStatus(t){document.getElementById('status').textContent=t||''}
-async function cleanNow(){const content=document.getElementById('input').value;setStatus('清洗中...');const r=await fetch('/api/clean-markdown',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:document.getElementById('title').value,source:document.getElementById('source').value,content,input_format:document.getElementById('format').value,smart_merge:document.getElementById('smart').checked})});const d=await r.json();if(!d.ok){setStatus('失败：'+(d.error||'unknown'));return;}document.getElementById('output').value=d.markdown||'';lastFilename=d.filename||lastFilename;document.getElementById('meta').textContent=`${d.input_format} · ${d.line_count} 行 · ${d.char_count} 字`;setStatus('已生成，可以复制或下载。')}
+async function cleanNow(){const content=document.getElementById('input').value;setStatus('清洗中...');const r=await fetch('/api/clean-markdown',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:document.getElementById('title').value,source:document.getElementById('source').value,content,input_format:document.getElementById('format').value,merge_mode:document.getElementById('mergeMode').value,smart_merge:document.getElementById('mergeMode').value==='smart'})});const d=await r.json();if(!d.ok){setStatus('失败：'+(d.error||'unknown'));return;}document.getElementById('output').value=d.markdown||'';lastFilename=d.filename||lastFilename;document.getElementById('meta').textContent=`${d.input_format} · ${d.line_count} 行 · ${d.char_count} 字`;setStatus('已生成，可以复制或下载。')}
 async function copyMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}await navigator.clipboard.writeText(v);setStatus('已复制到剪贴板。')}
 function downloadMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}const blob=new Blob([v],{type:'text/markdown;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=lastFilename;document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);a.remove();setStatus('已触发下载。')}
 function clearAll(){document.getElementById('input').value='';document.getElementById('output').value='';document.getElementById('meta').textContent='等待生成';setStatus('')}
@@ -2283,6 +2333,7 @@ mod tests {
             ),
             input_format: Some("text".to_string()),
             smart_merge: Some(true),
+            merge_mode: Some("smart".to_string()),
         };
         let value = clean_paid_article_payload(&payload);
         let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
@@ -2291,6 +2342,22 @@ mod tests {
         assert!(markdown.contains("这是一个被微信拆碎的段落，还没有结束"));
         assert!(markdown.contains("[保留链接](https://example.com)"));
         assert!(!markdown.contains("文章原文"));
+    }
+
+    #[test]
+    fn paid_article_cleaner_keeps_short_metadata_lines_separate() {
+        let payload = CleanMarkdownPayload {
+            title: Some("测试标题".to_string()),
+            source: Some("记忆承载".to_string()),
+            content: Some("测试标题\n\n碧树西风\n2026年05月07日\n广东\n\n正文第一段。".to_string()),
+            input_format: Some("text".to_string()),
+            smart_merge: Some(true),
+            merge_mode: Some("smart".to_string()),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(markdown.contains("碧树西风\n\n2026年05月07日\n\n广东"));
+        assert!(!markdown.contains("碧树西风2026年05月07日广东"));
     }
 
     #[test]
