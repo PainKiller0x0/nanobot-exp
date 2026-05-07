@@ -1353,7 +1353,8 @@ fn split_paid_article_sentences(text: &str) -> Vec<String> {
     let mut current = String::new();
     for c in text.chars() {
         current.push(c);
-        if sentence_end_char(c) {
+        let is_ellipsis_end = c == '\u{2026}' && current.ends_with("\u{2026}\u{2026}");
+        if sentence_end_char(c) || is_ellipsis_end {
             let trimmed = current.trim();
             if !trimmed.is_empty() {
                 out.push(trimmed.to_string());
@@ -1401,30 +1402,59 @@ fn push_sentence_group(groups: &mut Vec<String>, current: &mut String) {
     current.clear();
 }
 
+fn is_short_answer_sentence(sentence: &str) -> bool {
+    let t = sentence.trim();
+    visible_char_count(t) <= 8
+        && (t.starts_with("\u{662F}")
+            || t.starts_with("\u{4E0D}\u{662F}")
+            || t.starts_with("\u{4E0D}")
+            || t.starts_with("\u{80FD}")
+            || t.starts_with("\u{4E0D}\u{80FD}")
+            || t.starts_with("\u{4F1A}")
+            || t.starts_with("\u{4E0D}\u{4F1A}"))
+}
+
+fn should_join_paid_sentences(current: &str, sentence: &str) -> bool {
+    let cur = current.trim();
+    let next = sentence.trim();
+    if cur.is_empty() || next.is_empty() {
+        return false;
+    }
+    if cur == "\u{2026}\u{2026}" || next == "\u{2026}\u{2026}" || starts_discourse_block(next) {
+        return false;
+    }
+
+    let cur_len = visible_char_count(cur);
+    let next_len = visible_char_count(next);
+
+    // Keep tightly-coupled rhetorical Q/A in one paragraph, e.g. "but is he convinced? no.".
+    // Other short rhythm lines are intentionally left standalone because the RSS samples
+    // show Bishu often uses them as paragraph beats instead of inline clauses.
+    (cur.ends_with('\u{FF1F}') || cur.ends_with('?'))
+        && cur_len <= 18
+        && next_len <= 8
+        && is_short_answer_sentence(next)
+        && (cur.starts_with("\u{4F46}")
+            || cur.starts_with("\u{53EF}")
+            || cur.starts_with("\u{90A3}"))
+}
+
 fn group_paid_article_sentences(sentences: &[String]) -> Vec<String> {
     let mut groups = Vec::new();
     let mut current = String::new();
 
-    // Bishu Xifeng's public RSS articles are very paragraph-dense: recent
-    // samples average ~80-95 paragraphs per article, with a median paragraph
-    // around 30-40 Chinese chars.  Prefer one sentence per paragraph, only
-    // joining very short clause fragments.
+    // Bishu Xifeng's RSS articles are paragraph-dense, but not length-chopped:
+    // recent samples are mostly sentence-sized paragraphs with many standalone
+    // rhetorical beats. Split on real sentence/ellipsis boundaries, and only join
+    // a tiny set of inseparable Q/A fragments.
     for sentence in sentences {
-        let sentence_len = visible_char_count(sentence);
-        if !current.is_empty()
-            && (starts_discourse_block(sentence)
-                || visible_char_count(&current) >= 70
-                || (visible_char_count(&current) >= 18 && sentence_len >= 18))
-        {
+        if !current.is_empty() && !should_join_paid_sentences(&current, sentence) {
             push_sentence_group(&mut groups, &mut current);
         }
         if current.is_empty() {
             current = sentence.trim().to_string();
         } else {
             current = join_inline(&current, sentence);
-        }
-        if visible_char_count(&current) >= 130 {
-            push_sentence_group(&mut groups, &mut current);
         }
     }
     push_sentence_group(&mut groups, &mut current);
@@ -1459,9 +1489,6 @@ fn segment_paid_article_paragraph(paragraph: &str) -> Vec<String> {
     }
 
     if sentences.len() <= 1 {
-        return vec![text.to_string()];
-    }
-    if sentences.len() <= 2 && visible_char_count(text) <= 140 {
         return vec![text.to_string()];
     }
     group_paid_article_sentences(&sentences)
@@ -1751,7 +1778,7 @@ html[data-theme="dark"],body[data-theme="dark"]{color-scheme:dark;--bg:#14181a;-
 *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(900px 460px at 8% -12%,rgba(118,165,122,.35),transparent 58%),radial-gradient(760px 420px at 100% 0%,rgba(220,169,91,.28),transparent 55%),var(--bg);color:var(--text);font-family:"Noto Sans SC","Microsoft Yahei",sans-serif}
 .wrap{max-width:1280px;margin:22px auto;padding:0 16px 28px}.hero{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;background:var(--hero-tint);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:22px;padding:18px}.eyebrow{letter-spacing:.18em;color:var(--accent);font-weight:800;font-size:12px}.hero h1{margin:6px 0 8px;font-size:32px}.hero p{margin:0;color:var(--muted);line-height:1.7}.tools{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--card);color:var(--text);font-weight:700;text-decoration:none;cursor:pointer;box-shadow:var(--button-shadow)}button.primary{background:linear-gradient(135deg,#f2c979,#dfa45a);border-color:#bd813b;color:#23190e}.grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}@media(min-width:980px){.grid{grid-template-columns:1fr 1fr}}.card{background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:16px}.row{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px}@media(min-width:760px){.row{grid-template-columns:1fr 1fr}}label{display:block;font-size:13px;color:var(--muted);font-weight:700;margin-bottom:6px}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:13px;background:var(--input);color:var(--text);padding:11px 12px;font:inherit}textarea{min-height:560px;resize:vertical;line-height:1.72}.out{white-space:pre-wrap;font-family:"Noto Serif SC","Songti SC",serif}.hint{color:var(--muted);font-size:13px;line-height:1.7}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 10px;color:var(--muted);font-size:12px}.check{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.check input{width:auto}.status{min-height:22px;color:var(--muted);font-size:13px}.footer{margin-top:12px;color:var(--muted);font-size:12px;line-height:1.6}
 </style></head><body><div class="wrap"><section class="hero"><div><div class="eyebrow">BISHU XIFENG MARKDOWN CLEANER</div><h1>付费文章 Markdown 清洗器</h1><p>把你在微信里已购买的文章正文粘贴进来，我会本地规则清洗碎行、去掉常见噪声，并生成可复制 / 可下载的 Markdown。不会调用 LLM，也不会上传到外部服务。</p></div><div class="tools"><a class="btn" href="./">回到 RSS</a><button onclick="toggleTheme()">明暗切换</button></div></section>
-<section class="grid"><div class="card"><div class="row"><div><label>标题</label><input id="title" placeholder="例如：财富大洗牌，我该选择，还是努力？"/></div><div><label>来源</label><input id="source" value="记忆承载" placeholder="记忆承载 / 记忆承载3"/></div></div><div class="bar"><select id="format" style="max-width:180px"><option value="auto">自动识别 HTML / 文本</option><option value="text">按纯文本处理</option><option value="html">按 HTML 转 Markdown</option></select><select id="mergeMode" style="max-width:210px"><option value="auto" selected>自动断段（推荐）</option><option value="preserve">保留原换行</option><option value="smart">合并碎行</option></select></div><label>粘贴微信正文 / HTML</label><textarea id="input" placeholder="在微信文章里复制正文，然后粘贴到这里。若复制出来包含 HTML，也可以直接粘贴。"></textarea><div class="bar"><button class="primary" onclick="cleanNow()">生成 Markdown</button><button onclick="clearAll()">清空</button></div><div class="hint">小提示：如果你从微信桌面版复制出来的是 HTML，保持“自动识别”即可；如果只是普通文本，默认会给一整坨中文自动断段；如果你已经整理好格式，可切到“保留原换行”；如果复制出来是短碎行，可切到“合并碎行”。</div></div>
+<section class="grid"><div class="card"><div class="row"><div><label>标题</label><input id="title" placeholder="例如：财富大洗牌，我该选择，还是努力？"/></div><div><label>来源</label><input id="source" value="记忆承载" placeholder="记忆承载 / 记忆承载3"/></div></div><div class="bar"><select id="format" style="max-width:180px"><option value="auto">自动识别 HTML / 文本</option><option value="text">按纯文本处理</option><option value="html">按 HTML 转 Markdown</option></select><select id="mergeMode" style="max-width:210px"><option value="auto" selected>作者节奏（推荐）</option><option value="preserve">保留原换行</option><option value="smart">合并碎行</option></select></div><label>粘贴微信正文 / HTML</label><textarea id="input" placeholder="在微信文章里复制正文，然后粘贴到这里。若复制出来包含 HTML，也可以直接粘贴。"></textarea><div class="bar"><button class="primary" onclick="cleanNow()">生成 Markdown</button><button onclick="clearAll()">清空</button></div><div class="hint">小提示：如果你从微信桌面版复制出来的是 HTML，保持“自动识别”即可；如果只是普通文本，默认会按记忆承载常见的句末与语义节奏断段，不按长度乱切；如果你已经整理好格式，可切到“保留原换行”；如果复制出来是短碎行，可切到“合并碎行”。</div></div>
 <div class="card"><div class="bar"><span class="pill" id="meta">等待生成</span><button onclick="copyMd()">复制 Markdown</button><button onclick="downloadMd()">下载 .md</button></div><label>Markdown 结果</label><textarea id="output" class="out" readonly placeholder="生成后的 Markdown 会出现在这里。"></textarea><div class="status" id="status"></div><div class="footer">这个工具适合你已购买后个人整理归档。RSS 订阅库仍只保存公开可抓到的内容；付费全文不自动入库，避免误把试读导流当完整文章。</div></div></section></div>
 <script>
 const KEY='paid_cleaner_theme';let lastFilename='wechat-paid-article.md';
@@ -2546,6 +2573,37 @@ mod tests {
         assert!(
             body_paras.iter().all(|p| p.chars().count() < 150),
             "{markdown}"
+        );
+    }
+
+    #[test]
+    fn paid_article_cleaner_recovers_bishu_rss_paragraph_beats() {
+        let payload = CleanMarkdownPayload {
+            title: Some("rss beat regression".to_string()),
+            source: Some("Bishu".to_string()),
+            content: Some("\u{6211}\u{4EEC}\u{6765}\u{770B}\u{8FD9}\u{4E2A}\u{95EE}\u{9898}\u{3002}\u{4F60}\u{8BB2}\u{7684}\u{8FD9}\u{4E2A}\u{73B0}\u{8C61}\u{FF0C}\u{975E}\u{5E38}\u{666E}\u{904D}\u{FF0C}\u{4F60}\u{7684}\u{7559}\u{8A00}\u{FF0C}\u{8BA9}\u{6211}\u{60F3}\u{8D77}\u{4E00}\u{672C}20\u{5E74}\u{524D}\u{770B}\u{8FC7}\u{7684}\u{7535}\u{89C6}\u{5267}\u{FF0C}\u{58EB}\u{5175}\u{7A81}\u{51FB}\u{3002}\u{8BB8}\u{4E09}\u{591A}\u{FF0C}\u{88AB}\u{53D1}\u{914D}\u{5230}\u{7EA2}\u{4E09}\u{8FDE}\u{4E94}\u{73ED}\u{53BB}\u{770B}\u{5B88}\u{8349}\u{539F}\u{8865}\u{7ED9}\u{7AD9}\u{3002}\u{73ED}\u{957F}\u{8001}\u{9A6C}\u{FF0C}\u{4E09}\u{4E2A}\u{8001}\u{5175}\u{FF0C}\u{6BCF}\u{5929}\u{9664}\u{4E86}\u{505A}\u{68A6}\u{FF0C}\u{5C31}\u{662F}\u{6253}\u{724C}\u{FF0C}\u{575A}\u{6301}\u{51FA}\u{64CD}\u{FF0C}\u{6574}\u{7406}\u{5185}\u{52A1}\u{7684}\u{8BB8}\u{4E09}\u{591A}\u{FF0C}\u{53CD}\u{800C}\u{663E}\u{5F97}\u{50CF}\u{4E2A}\u{5F02}\u{7C7B}\u{3002}\u{8001}\u{9A6C}\u{7ED9}\u{8BB8}\u{4E09}\u{591A}\u{8BB2}\u{8FC7}\u{8FD9}\u{4E48}\u{4E00}\u{4E2A}\u{5BD3}\u{8A00}\u{6545}\u{4E8B}\u{3002}".to_string()),
+            input_format: Some("text".to_string()),
+            smart_merge: None,
+            merge_mode: Some("auto".to_string()),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        let expected = [
+            "\u{6211}\u{4EEC}\u{6765}\u{770B}\u{8FD9}\u{4E2A}\u{95EE}\u{9898}\u{3002}",
+            "\u{4F60}\u{8BB2}\u{7684}\u{8FD9}\u{4E2A}\u{73B0}\u{8C61}\u{FF0C}\u{975E}\u{5E38}\u{666E}\u{904D}\u{FF0C}\u{4F60}\u{7684}\u{7559}\u{8A00}\u{FF0C}\u{8BA9}\u{6211}\u{60F3}\u{8D77}\u{4E00}\u{672C}20\u{5E74}\u{524D}\u{770B}\u{8FC7}\u{7684}\u{7535}\u{89C6}\u{5267}\u{FF0C}\u{58EB}\u{5175}\u{7A81}\u{51FB}\u{3002}",
+            "\u{8BB8}\u{4E09}\u{591A}\u{FF0C}\u{88AB}\u{53D1}\u{914D}\u{5230}\u{7EA2}\u{4E09}\u{8FDE}\u{4E94}\u{73ED}\u{53BB}\u{770B}\u{5B88}\u{8349}\u{539F}\u{8865}\u{7ED9}\u{7AD9}\u{3002}",
+            "\u{73ED}\u{957F}\u{8001}\u{9A6C}\u{FF0C}\u{4E09}\u{4E2A}\u{8001}\u{5175}\u{FF0C}\u{6BCF}\u{5929}\u{9664}\u{4E86}\u{505A}\u{68A6}\u{FF0C}\u{5C31}\u{662F}\u{6253}\u{724C}\u{FF0C}\u{575A}\u{6301}\u{51FA}\u{64CD}\u{FF0C}\u{6574}\u{7406}\u{5185}\u{52A1}\u{7684}\u{8BB8}\u{4E09}\u{591A}\u{FF0C}\u{53CD}\u{800C}\u{663E}\u{5F97}\u{50CF}\u{4E2A}\u{5F02}\u{7C7B}\u{3002}",
+            "\u{8001}\u{9A6C}\u{7ED9}\u{8BB8}\u{4E09}\u{591A}\u{8BB2}\u{8FC7}\u{8FD9}\u{4E48}\u{4E00}\u{4E2A}\u{5BD3}\u{8A00}\u{6545}\u{4E8B}\u{3002}",
+        ];
+        for para in expected {
+            assert!(
+                markdown.contains(para),
+                "missing paragraph: {para}\n{markdown}"
+            );
+        }
+        assert!(
+            !markdown.contains("\u{6211}\u{4EEC}\u{6765}\u{770B}\u{8FD9}\u{4E2A}\u{95EE}\u{9898}\u{3002}\u{4F60}\u{8BB2}\u{7684}\u{8FD9}\u{4E2A}\u{73B0}\u{8C61}\u{FF0C}\u{975E}\u{5E38}\u{666E}\u{904D}\u{FF0C}\u{4F60}\u{7684}\u{7559}\u{8A00}\u{FF0C}\u{8BA9}\u{6211}\u{60F3}\u{8D77}\u{4E00}\u{672C}20\u{5E74}\u{524D}\u{770B}\u{8FC7}\u{7684}\u{7535}\u{89C6}\u{5267}\u{FF0C}\u{58EB}\u{5175}\u{7A81}\u{51FB}\u{3002}"),
+            "short rhythm paragraphs should not be glued together: {markdown}"
         );
     }
 
