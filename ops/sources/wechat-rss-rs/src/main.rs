@@ -52,6 +52,7 @@ struct RefreshPayload {
 struct CleanMarkdownPayload {
     title: Option<String>,
     source: Option<String>,
+    published_at: Option<String>,
     content: Option<String>,
     input_format: Option<String>,
     smart_merge: Option<bool>,
@@ -1430,6 +1431,12 @@ fn should_join_paid_sentences(current: &str, sentence: &str) -> bool {
     // Keep tightly-coupled rhetorical Q/A in one paragraph, e.g. "but is he convinced? no.".
     // Other short rhythm lines are intentionally left standalone because the RSS samples
     // show Bishu often uses them as paragraph beats instead of inline clauses.
+    if (cur.ends_with('\u{FF1F}') || cur.ends_with('?'))
+        && (next.ends_with('\u{FF1F}') || next.ends_with('?'))
+        && cur_len + next_len <= 80
+    {
+        return true;
+    }
     (cur.ends_with('\u{FF1F}') || cur.ends_with('?'))
         && cur_len <= 18
         && next_len <= 8
@@ -1550,9 +1557,18 @@ fn sanitize_markdown_filename(title: &str) -> String {
     s
 }
 
-fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
+struct PreparedPaidArticle {
+    body: String,
+    as_html: bool,
+    smart_merge: bool,
+    effective_merge_mode: String,
+}
+
+fn prepare_paid_article_body(
+    payload: &CleanMarkdownPayload,
+    apply_auto_segment: bool,
+) -> PreparedPaidArticle {
     let title = payload.title.as_deref().unwrap_or("").trim();
-    let source = payload.source.as_deref().unwrap_or("").trim();
     let raw = payload.content.as_deref().unwrap_or("");
     let input_format = payload
         .input_format
@@ -1560,23 +1576,22 @@ fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
         .unwrap_or("auto")
         .trim()
         .to_ascii_lowercase();
-    let merge_mode = payload
-        .merge_mode
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    let effective_merge_mode = if merge_mode.is_empty() {
-        "auto"
+    let merge_mode_raw = payload.merge_mode.as_deref().unwrap_or("").trim();
+    let effective_merge_mode = if merge_mode_raw.is_empty() {
+        "auto".to_string()
     } else {
-        merge_mode.as_str()
+        merge_mode_raw.to_ascii_lowercase()
     };
-    let smart_merge = if merge_mode.is_empty() {
+    let smart_merge = if merge_mode_raw.is_empty() {
         payload.smart_merge.unwrap_or(false)
     } else {
-        matches!(effective_merge_mode, "smart" | "compact" | "merge")
+        matches!(effective_merge_mode.as_str(), "smart" | "compact" | "merge")
     };
-    let auto_segment = matches!(effective_merge_mode, "auto" | "segment" | "paragraph");
+    let auto_segment = apply_auto_segment
+        && matches!(
+            effective_merge_mode.as_str(),
+            "auto" | "segment" | "paragraph"
+        );
     let as_html = input_format == "html" || (input_format == "auto" && looks_like_html(raw));
 
     let markdown_raw = if as_html {
@@ -1589,18 +1604,40 @@ fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
         body = auto_segment_paid_article_markdown(&body);
     }
     let body = remove_duplicate_title_prefix(&body, title);
+    PreparedPaidArticle {
+        body,
+        as_html,
+        smart_merge,
+        effective_merge_mode,
+    }
+}
 
+fn assemble_paid_article_markdown(payload: &CleanMarkdownPayload, body: &str) -> String {
+    let title = payload.title.as_deref().unwrap_or("").trim();
+    let source = payload.source.as_deref().unwrap_or("").trim();
+    let published_at = payload.published_at.as_deref().unwrap_or("").trim();
     let mut parts: Vec<String> = Vec::new();
     if !title.is_empty() {
         parts.push(format!("# {title}"));
     }
     if !source.is_empty() {
-        parts.push(format!("> 来源：{source}"));
+        parts.push(format!("> \u{6765}\u{6E90}\u{FF1A}{source}"));
+    }
+    if !published_at.is_empty() {
+        parts.push(format!(
+            "*\u{53D1}\u{5E03}\u{65F6}\u{95F4}\u{FF1A}{published_at}*"
+        ));
     }
     if !body.trim().is_empty() {
-        parts.push(body);
+        parts.push(body.trim().to_string());
     }
-    let markdown = parts.join("\n\n").trim().to_string();
+    parts.join("\n\n").trim().to_string()
+}
+
+fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
+    let title = payload.title.as_deref().unwrap_or("").trim();
+    let prepared = prepare_paid_article_body(payload, true);
+    let markdown = assemble_paid_article_markdown(payload, &prepared.body);
     let filename = sanitize_markdown_filename(title);
     let line_count = markdown.lines().count();
     let char_count = markdown.chars().count();
@@ -1608,12 +1645,88 @@ fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
         "ok": true,
         "markdown": markdown,
         "filename": filename,
-        "input_format": if as_html { "html" } else { "text" },
-        "smart_merge": smart_merge,
-        "merge_mode": effective_merge_mode,
+        "input_format": if prepared.as_html { "html" } else { "text" },
+        "smart_merge": prepared.smart_merge,
+        "merge_mode": prepared.effective_merge_mode,
         "line_count": line_count,
         "char_count": char_count,
     })
+}
+
+fn whitespace_compact_for_compare(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn markdown_integrity_ok(before: &str, after: &str) -> bool {
+    whitespace_compact_for_compare(before) == whitespace_compact_for_compare(after)
+}
+
+fn set_cleaner_llm_result(result: &mut Value, status: &str, message: Option<String>) {
+    result["llm_cleaner"] = json!("longcat-flash-lite");
+    result["llm_cleaner_status"] = json!(status);
+    if let Some(v) = message {
+        result["llm_cleaner_message"] = json!(v.chars().take(240).collect::<String>());
+    }
+}
+
+async fn llm_refine_cleaner_markdown(
+    client: &Client,
+    llm: &LlmSettings,
+    markdown: &str,
+) -> Result<String, String> {
+    if !llm.configured() || !llm.free_allowed() {
+        return Err("free LongCat cleaner is not configured".to_string());
+    }
+    let max_tokens = ((markdown.chars().count() as i64) + 2048).clamp(4096, 60000);
+    let body = json!({
+        "model": llm.model,
+        "messages": [
+            {"role":"system","content":"You are a Markdown paragraph formatter for long Chinese essays. You may only change blank lines and paragraph breaks. Preserve every original character, punctuation mark, Markdown link, URL, heading, quote, italic metadata line, and ordering exactly. Do not rewrite, summarize, translate, explain, add, or delete content. Output plain Markdown only, no code fence."},
+            {"role":"user","content": format!("Format the following Markdown into natural paragraphs in the writing rhythm of Bishu Xifeng / Jiyi Chengzai. Only adjust blank lines. Keep tightly related explanatory sentences and question pairs in the same paragraph when appropriate. Return the complete Markdown.\n\n{}", markdown)}
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "stream": false
+    });
+    let resp = client
+        .post(llm.chat_completions_url())
+        .bearer_auth(llm.api_key.clone())
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(90))
+        .send()
+        .await
+        .map_err(|e| format!("LongCat request failed: {e}"))?;
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap_or_default();
+    if status >= 400 {
+        return Err(format!(
+            "LongCat HTTP {status}: {}",
+            text.chars().take(300).collect::<String>()
+        ));
+    }
+    let parsed: Value =
+        serde_json::from_str(&text).map_err(|e| format!("LongCat returned invalid JSON: {e}"))?;
+    let content = parsed
+        .get("choices")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|x| x.get("message"))
+        .and_then(|x| x.get("content"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches("```markdown")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim()
+        .to_string();
+    if content.is_empty() {
+        return Err("LongCat returned empty content".to_string());
+    }
+    if !markdown_integrity_ok(markdown, &content) {
+        return Err("LongCat changed text content, local result kept".to_string());
+    }
+    Ok(content)
 }
 
 async fn root() -> Html<&'static str> {
@@ -1651,9 +1764,9 @@ html[data-theme="dark"] body,body[data-theme="dark"]{background:radial-gradient(
 @media (min-width:980px){.stats-card{grid-column:span 4}.subs-card{grid-column:span 8}.entries-card{grid-column:span 8}.llm-card{grid-column:span 4}}
 @media (max-width:760px){.subs .row{grid-template-columns:1fr auto;grid-template-areas:'name status' 'meta action'}.subs .name{grid-area:name}.subs .meta{grid-area:meta}.subs .status{grid-area:status}.subs .action{grid-area:action}.add-sub{grid-template-columns:1fr}.llm-grid{grid-template-columns:1fr}}
 </style></head>
-<body><div class="wrap"><section class="hero"><div><h1 class="title">RSS Sidecar · Rust</h1><p class="sub">统一订阅中台（WeChat / Yage）+ 东八区时间 + 广告文跳过（规则 + 可选LLM）</p></div><div class="btns"><button class="btn-main" onclick="refreshAll()">刷新全部订阅</button><button onclick="loadAll()">刷新页面数据</button><button onclick="location.href=\'cleaner\'">付费文章清洗器</button><button id="themeToggle" class="theme-btn" onclick="toggleTheme()">Theme</button><div class="auto-ctl"><label><input id="auto_enabled" type="checkbox" onchange="saveAutoRefresh()"> 自动刷新</label><input id="auto_interval_seconds" type="number" min="5" step="1" value="3600" onchange="saveAutoRefresh()">秒<button onclick="saveAutoRefresh()">应用</button></div><div id="auto_hint" class="muted auto-hint"></div></div></section>
+<body><div class="wrap"><section class="hero"><div><h1 class="title">RSS Sidecar · Rust</h1><p class="sub">&#32479;&#19968;&#35746;&#38405;&#20013;&#21488;&#65288;WeChat / Yage&#65289;+ &#19996;&#20843;&#21306;&#26102;&#38388; + &#24191;&#21578;&#25991;&#36339;&#36807;&#65288;&#35268;&#21017; + &#20813;&#36153; LongCat&#65289;</p></div><div class="btns"><button class="btn-main" onclick="refreshAll()">刷新全部订阅</button><button onclick="loadAll()">刷新页面数据</button><button onclick="location.href=\'cleaner\'">付费文章清洗器</button><button id="themeToggle" class="theme-btn" onclick="toggleTheme()">Theme</button><div class="auto-ctl"><label><input id="auto_enabled" type="checkbox" onchange="saveAutoRefresh()"> 自动刷新</label><input id="auto_interval_seconds" type="number" min="5" step="1" value="3600" onchange="saveAutoRefresh()">秒<button onclick="saveAutoRefresh()">应用</button></div><div id="auto_hint" class="muted auto-hint"></div></div></section>
 <section class="grid"><div class="card stats-card"><h2 class="h">运行概览</h2><div class="stats" id="stats"></div></div><div class="card subs-card"><h2 class="h">订阅列表</h2><div class="add-sub"><input id="new_biz" placeholder="biz (可选)"/><input id="new_name" placeholder="name"/><input id="new_feed_url" placeholder="feed url (https://...)"/><button onclick="createSub()">Add</button></div><div class="subs" id="subs"></div></div><div class="card entries-card"><h2 class="h">最近文章（东八区）</h2><div class="entries" id="entries"></div></div>
-<div class="card llm-card"><h2 class="h">LLM 设置</h2><p class="muted">费用策略：仅允许 LongCat-Flash-Lite 自动参与广告判定；其他模型不会被 sidecar 自动调用。</p><label class="llm-switch"><input id="llm_enabled" type="checkbox"/> 启用免费 LLM 广告判定</label><div class="llm-grid"><div class="llm-field"><div class="muted">API Base</div><input id="llm_api_base" placeholder="https://api.longcat.chat/openai/v1"/></div><div class="llm-field"><div class="muted">API Key</div><input id="llm_api_key" type="password" placeholder="ak-..."/></div><div class="llm-field"><div class="muted">Model</div><input id="llm_model" placeholder="LongCat-Flash-Lite"/></div></div><div class="llm-actions"><button onclick="saveLlm()">保存设置</button><button onclick="testLlm()">测试连接</button></div><div id="llm_result" class="llm-result">这里显示模型连通测试结果。</div></div>
+<div class="card llm-card"><h2 class="h">LLM 设置</h2><p class="muted">&#36153;&#29992;&#31574;&#30053;&#65306;&#20165;&#20801;&#35768; LongCat-Flash-Lite &#33258;&#21160;&#21442;&#19982;&#24191;&#21578;&#21028;&#23450;&#21644; cleaner &#26029;&#27573;&#31934;&#20462;&#65307;&#20854;&#20182;&#20184;&#36153;&#27169;&#22411;&#19981;&#20250;&#34987; sidecar &#33258;&#21160;&#35843;&#29992;&#12290;</p><label class="llm-switch"><input id="llm_enabled" type="checkbox"/> 启用免费 LLM 广告判定</label><div class="llm-grid"><div class="llm-field"><div class="muted">API Base</div><input id="llm_api_base" placeholder="https://api.longcat.chat/openai/v1"/></div><div class="llm-field"><div class="muted">API Key</div><input id="llm_api_key" type="password" placeholder="ak-..."/></div><div class="llm-field"><div class="muted">Model</div><input id="llm_model" placeholder="LongCat-Flash-Lite"/></div></div><div class="llm-actions"><button onclick="saveLlm()">保存设置</button><button onclick="testLlm()">测试连接</button></div><div id="llm_result" class="llm-result">这里显示模型连通测试结果。</div></div>
 </section></div>
 <div id="mdModal" class="modal" aria-hidden="true"><div class="modal-mask" onclick="closePreview()"></div><div class="modal-panel"><div class="modal-head"><h3 id="mdTitle">Markdown Preview</h3><div class="modal-tools"><button id="mdThemeToggle" class="md-theme-btn" onclick="toggleMdPreviewTheme()">预览: 跟随</button><button onclick="closePreview()">关闭</button></div></div><div id="mdBody" class="md-body muted">加载中...</div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -1773,12 +1886,12 @@ async fn cleaner_page() -> Html<&'static str> {
     Html(
         r##"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>付费文章 Markdown 清洗器</title>
 <style>
-html,body,html[data-theme="light"],body[data-theme="light"]{color-scheme:light;--bg:#f4efe4;--card:#fffdf8;--text:#242019;--muted:#746b5a;--line:#d8cdb8;--accent:#9d6a2d;--panel:#faf6ec;--link:#2f4f7b;--shadow:0 18px 48px rgba(42,31,12,.12);--input:#fff;--hero-tint:rgba(255,255,255,.42);--button-shadow:0 5px 14px rgba(0,0,0,.06)}
-html[data-theme="dark"],body[data-theme="dark"]{color-scheme:dark;--bg:#14181a;--card:#242a2f;--text:#edf2f7;--muted:#aeb8c4;--line:#404955;--accent:#d4a260;--panel:#1b2126;--link:#92bdff;--shadow:0 18px 52px rgba(0,0,0,.36);--input:#171d22;--hero-tint:rgba(255,255,255,.06);--button-shadow:0 5px 14px rgba(0,0,0,.28)}
+html,body,html[data-theme="light"],body[data-theme="light"]{color-scheme:light;--bg:#f4efe4;--card:#fffdf8;--text:#242019;--muted:#746b5a;--line:#d8cdb8;--accent:#9d6a2d;--panel:#faf6ec;--link:#2f4f7b;--shadow:0 18px 48px rgba(42,31,12,.12);--input:#fff;--hero-tint:rgba(255,255,255,.42);--button-shadow:0 5px 14px rgba(0,0,0,.06);--primary-from:#f2c979;--primary-to:#dfa45a;--primary-border:#bd813b;--primary-text:#23190e}
+html[data-theme="dark"],body[data-theme="dark"]{color-scheme:dark;--bg:#14181a;--card:#242a2f;--text:#edf2f7;--muted:#aeb8c4;--line:#404955;--accent:#d4a260;--panel:#1b2126;--link:#92bdff;--shadow:0 18px 52px rgba(0,0,0,.36);--input:#171d22;--hero-tint:rgba(255,255,255,.06);--button-shadow:0 5px 14px rgba(0,0,0,.28);--primary-from:#4d3420;--primary-to:#8c663e;--primary-border:#a57947;--primary-text:#fff4dc}
 *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(900px 460px at 8% -12%,rgba(118,165,122,.35),transparent 58%),radial-gradient(760px 420px at 100% 0%,rgba(220,169,91,.28),transparent 55%),var(--bg);color:var(--text);font-family:"Noto Sans SC","Microsoft Yahei",sans-serif}
-.wrap{max-width:1280px;margin:22px auto;padding:0 16px 28px}.hero{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;background:var(--hero-tint);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:22px;padding:18px}.eyebrow{letter-spacing:.18em;color:var(--accent);font-weight:800;font-size:12px}.hero h1{margin:6px 0 8px;font-size:32px}.hero p{margin:0;color:var(--muted);line-height:1.7}.tools{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--card);color:var(--text);font-weight:700;text-decoration:none;cursor:pointer;box-shadow:var(--button-shadow)}button.primary{background:linear-gradient(135deg,#f2c979,#dfa45a);border-color:#bd813b;color:#23190e}.grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}@media(min-width:980px){.grid{grid-template-columns:1fr 1fr}}.card{background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:16px}.row{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px}@media(min-width:760px){.row{grid-template-columns:1fr 1fr}}label{display:block;font-size:13px;color:var(--muted);font-weight:700;margin-bottom:6px}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:13px;background:var(--input);color:var(--text);padding:11px 12px;font:inherit}textarea{min-height:560px;resize:vertical;line-height:1.72}.out{white-space:pre-wrap;font-family:"Noto Serif SC","Songti SC",serif}.hint{color:var(--muted);font-size:13px;line-height:1.7}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 10px;color:var(--muted);font-size:12px}.check{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.check input{width:auto}.status{min-height:22px;color:var(--muted);font-size:13px}.footer{margin-top:12px;color:var(--muted);font-size:12px;line-height:1.6}
-</style></head><body><div class="wrap"><section class="hero"><div><div class="eyebrow">BISHU XIFENG MARKDOWN CLEANER</div><h1>付费文章 Markdown 清洗器</h1><p>把你在微信里已购买的文章正文粘贴进来，我会本地规则清洗碎行、去掉常见噪声，并生成可复制 / 可下载的 Markdown。不会调用 LLM，也不会上传到外部服务。</p></div><div class="tools"><a class="btn" href="./">回到 RSS</a><button onclick="toggleTheme()">明暗切换</button></div></section>
-<section class="grid"><div class="card"><div class="row"><div><label>标题</label><input id="title" placeholder="例如：财富大洗牌，我该选择，还是努力？"/></div><div><label>来源</label><input id="source" value="记忆承载" placeholder="记忆承载 / 记忆承载3"/></div></div><div class="bar"><select id="format" style="max-width:180px"><option value="auto">自动识别 HTML / 文本</option><option value="text">按纯文本处理</option><option value="html">按 HTML 转 Markdown</option></select><select id="mergeMode" style="max-width:210px"><option value="auto" selected>作者节奏（推荐）</option><option value="preserve">保留原换行</option><option value="smart">合并碎行</option></select></div><label>粘贴微信正文 / HTML</label><textarea id="input" placeholder="在微信文章里复制正文，然后粘贴到这里。若复制出来包含 HTML，也可以直接粘贴。"></textarea><div class="bar"><button class="primary" onclick="cleanNow()">生成 Markdown</button><button onclick="clearAll()">清空</button></div><div class="hint">小提示：如果你从微信桌面版复制出来的是 HTML，保持“自动识别”即可；如果只是普通文本，默认会按记忆承载常见的句末与语义节奏断段，不按长度乱切；如果你已经整理好格式，可切到“保留原换行”；如果复制出来是短碎行，可切到“合并碎行”。</div></div>
+.wrap{max-width:1280px;margin:22px auto;padding:0 16px 28px}.hero{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;background:var(--hero-tint);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:22px;padding:18px}.eyebrow{letter-spacing:.18em;color:var(--accent);font-weight:800;font-size:12px}.hero h1{margin:6px 0 8px;font-size:32px}.hero p{margin:0;color:var(--muted);line-height:1.7}.tools{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--card);color:var(--text);font-weight:700;text-decoration:none;cursor:pointer;box-shadow:var(--button-shadow)}button.primary{background:linear-gradient(135deg,var(--primary-from),var(--primary-to));border-color:var(--primary-border);color:var(--primary-text)}.grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}@media(min-width:980px){.grid{grid-template-columns:1fr 1fr}}.card{background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:16px}.row{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px}@media(min-width:760px){.row{grid-template-columns:1fr 1fr 1fr}}label{display:block;font-size:13px;color:var(--muted);font-weight:700;margin-bottom:6px}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:13px;background:var(--input);color:var(--text);padding:11px 12px;font:inherit}::placeholder{color:var(--muted);opacity:.78}select option{background:var(--card);color:var(--text)}textarea[readonly]{background:var(--panel)}textarea{min-height:560px;resize:vertical;line-height:1.72}.out{white-space:pre-wrap;font-family:"Noto Serif SC","Songti SC",serif}.hint{color:var(--muted);font-size:13px;line-height:1.7}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 10px;color:var(--muted);font-size:12px}.check{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.check input{width:auto}.status{min-height:22px;color:var(--muted);font-size:13px}.footer{margin-top:12px;color:var(--muted);font-size:12px;line-height:1.6}
+</style></head><body><div class="wrap"><section class="hero"><div><div class="eyebrow">BISHU XIFENG MARKDOWN CLEANER</div><h1>付费文章 Markdown 清洗器</h1><p>&#25226;&#20320;&#22312;&#24494;&#20449;&#37324;&#24050;&#36141;&#20080;&#30340;&#25991;&#31456;&#27491;&#25991;&#31896;&#36148;&#36827;&#26469;&#65292;&#25105;&#20250;&#20808;&#20570;&#26412;&#22320;&#28165;&#27927;&#65292;&#20877;&#33258;&#21160;&#29992;&#20813;&#36153;&#30340; LongCat-Flash-Lite &#31934;&#20462;&#26029;&#27573;&#65307;&#22914;&#26524;&#27169;&#22411;&#25913;&#20889;&#25991;&#26412;&#65292;&#20250;&#31435;&#21051;&#22238;&#36864;&#26412;&#22320;&#32467;&#26524;&#12290;</p></div><div class="tools"><a class="btn" href="./">回到 RSS</a><button onclick="toggleTheme()">明暗切换</button></div></section>
+<section class="grid"><div class="card"><div class="row"><div><label>标题</label><input id="title" placeholder="例如：财富大洗牌，我该选择，还是努力？"/></div><div><label>来源</label><input id="source" value="记忆承载" placeholder="记忆承载 / 记忆承载3"/></div><div><label>&#21457;&#24067;&#26102;&#38388;</label><input id="published_at" placeholder="2026-05-07 11:27"/></div></div><div class="bar"><select id="format" style="max-width:180px"><option value="auto">自动识别 HTML / 文本</option><option value="text">按纯文本处理</option><option value="html">按 HTML 转 Markdown</option></select><select id="mergeMode" style="max-width:210px"><option value="auto" selected>作者节奏（推荐）</option><option value="preserve">保留原换行</option><option value="smart">合并碎行</option></select></div><label>粘贴微信正文 / HTML</label><textarea id="input" placeholder="在微信文章里复制正文，然后粘贴到这里。若复制出来包含 HTML，也可以直接粘贴。"></textarea><div class="bar"><button class="primary" onclick="cleanNow()">生成 Markdown</button><button onclick="clearAll()">清空</button></div><div class="hint">小提示：如果你从微信桌面版复制出来的是 HTML，保持“自动识别”即可；如果只是普通文本，默认会按记忆承载常见的句末与语义节奏断段，不按长度乱切；如果你已经整理好格式，可切到“保留原换行”；如果复制出来是短碎行，可切到“合并碎行”。</div></div>
 <div class="card"><div class="bar"><span class="pill" id="meta">等待生成</span><button onclick="copyMd()">复制 Markdown</button><button onclick="downloadMd()">下载 .md</button></div><label>Markdown 结果</label><textarea id="output" class="out" readonly placeholder="生成后的 Markdown 会出现在这里。"></textarea><div class="status" id="status"></div><div class="footer">这个工具适合你已购买后个人整理归档。RSS 订阅库仍只保存公开可抓到的内容；付费全文不自动入库，避免误把试读导流当完整文章。</div></div></section></div>
 <script>
 const KEY='paid_cleaner_theme';let lastFilename='wechat-paid-article.md';let capturedPasteHtml='';let capturedPasteText='';
@@ -1789,7 +1902,7 @@ function setStatus(t){document.getElementById('status').textContent=t||''}
 function normPasteText(s){return String(s||'').replace(/\r\n?/g,'\n').trim()}
 function shouldUseCapturedHtml(text,inputFormat){return !!capturedPasteHtml&&(inputFormat==='auto'||inputFormat==='html')&&normPasteText(text)===normPasteText(capturedPasteText)}
 function setupRichPaste(){const el=document.getElementById('input');if(!el)return;el.addEventListener('paste',e=>{const cd=e.clipboardData;if(!cd)return;const html=cd.getData('text/html')||'';const text=cd.getData('text/plain')||'';if(html&&/<a[\s>]/i.test(html)){capturedPasteHtml=html;capturedPasteText=text;const fmt=document.getElementById('format');if(fmt&&fmt.value==='auto')fmt.value='html';setTimeout(()=>setStatus('\u5df2\u6355\u83b7\u5bcc\u6587\u672c\u94fe\u63a5\uff0c\u751f\u6210\u65f6\u4f1a\u4fdd\u7559 Markdown \u8d85\u94fe\u63a5\u3002'),0)}else{capturedPasteHtml='';capturedPasteText=''}});el.addEventListener('input',()=>{if(capturedPasteText&&normPasteText(el.value)!==normPasteText(capturedPasteText)){capturedPasteHtml='';capturedPasteText=''}})}
-async function cleanNow(){const input=document.getElementById('input');const fmt=document.getElementById('format');let content=input.value;let inputFormat=fmt.value;const usedRichHtml=shouldUseCapturedHtml(content,inputFormat);if(usedRichHtml){content=capturedPasteHtml;inputFormat='html'}setStatus('\u6e05\u6d17\u4e2d...');const r=await fetch('/api/clean-markdown',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:document.getElementById('title').value,source:document.getElementById('source').value,content,input_format:inputFormat,merge_mode:document.getElementById('mergeMode').value,smart_merge:document.getElementById('mergeMode').value==='smart'})});const d=await r.json();if(!d.ok){setStatus('\u5931\u8d25\uff1a'+(d.error||'unknown'));return;}document.getElementById('output').value=d.markdown||'';lastFilename=d.filename||lastFilename;document.getElementById('meta').textContent=`${d.input_format} \u00b7 ${d.line_count} \u884c \u00b7 ${d.char_count} \u5b57`;setStatus(usedRichHtml?'\u5df2\u751f\u6210\uff0c\u5e76\u4fdd\u7559\u5bcc\u6587\u672c\u91cc\u7684 Markdown \u8d85\u94fe\u63a5\u3002':'\u5df2\u751f\u6210\uff0c\u53ef\u4ee5\u590d\u5236\u6216\u4e0b\u8f7d\u3002')}
+async function cleanNow(){const input=document.getElementById('input');const fmt=document.getElementById('format');let content=input.value;let inputFormat=fmt.value;const usedRichHtml=shouldUseCapturedHtml(content,inputFormat);if(usedRichHtml){content=capturedPasteHtml;inputFormat='html'}setStatus('\u6e05\u6d17\u4e2d...');const r=await fetch('/api/clean-markdown',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:document.getElementById('title').value,source:document.getElementById('source').value,published_at:document.getElementById('published_at').value,content,input_format:inputFormat,merge_mode:document.getElementById('mergeMode').value,smart_merge:document.getElementById('mergeMode').value==='smart'})});const d=await r.json();if(!d.ok){setStatus('\u5931\u8d25\uff1a'+(d.error||'unknown'));return;}document.getElementById('output').value=d.markdown||'';lastFilename=d.filename||lastFilename;document.getElementById('meta').textContent=`${d.input_format} \u00b7 ${d.line_count} \u884c \u00b7 ${d.char_count} \u5b57`;setStatus((d.llm_cleaner_status==='ok'?'\u5df2\u7528 LongCat \u514d\u8d39\u6a21\u578b\u7cbe\u4fee\u65ad\u6bb5\u3002':(usedRichHtml?'\u5df2\u751f\u6210\uff0c\u5e76\u4fdd\u7559\u5bcc\u6587\u672c\u91cc\u7684 Markdown \u8d85\u94fe\u63a5\u3002':'\u5df2\u751f\u6210\uff0c\u53ef\u4ee5\u590d\u5236\u6216\u4e0b\u8f7d\u3002'))+(d.llm_cleaner_status==='fallback_local'?' LongCat \u672a\u751f\u6548\uff0c\u5df2\u4fdd\u7559\u672c\u5730\u7ed3\u679c\u3002':''))}
 async function copyMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}await navigator.clipboard.writeText(v);setStatus('已复制到剪贴板。')}
 function downloadMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}const blob=new Blob([v],{type:'text/markdown;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=lastFilename;document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);a.remove();setStatus('已触发下载。')}
 function clearAll(){document.getElementById('input').value='';document.getElementById('output').value='';document.getElementById('meta').textContent='\u7b49\u5f85\u751f\u6210';capturedPasteHtml='';capturedPasteText='';setStatus('')}
@@ -2104,11 +2217,42 @@ async fn get_article_markdown(
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], md).into_response()
 }
 
-async fn clean_markdown(Json(payload): Json<CleanMarkdownPayload>) -> Json<Value> {
+async fn clean_markdown(
+    State(st): State<Arc<AppState>>,
+    Json(payload): Json<CleanMarkdownPayload>,
+) -> Json<Value> {
     if payload.content.as_deref().unwrap_or("").trim().is_empty() {
         return Json(json!({"ok": false, "error": "content is empty"}));
     }
-    Json(clean_paid_article_payload(&payload))
+    let mut result = clean_paid_article_payload(&payload);
+    let merge_mode = payload
+        .merge_mode
+        .as_deref()
+        .unwrap_or("auto")
+        .trim()
+        .to_ascii_lowercase();
+    let allow_llm = !matches!(merge_mode.as_str(), "preserve" | "raw");
+    if allow_llm {
+        let llm_input = prepare_paid_article_body(&payload, false).body;
+        if !llm_input.trim().is_empty() {
+            let llm = load_llm_settings_compat(&st.settings_path);
+            match llm_refine_cleaner_markdown(&st.http, &llm, &llm_input).await {
+                Ok(refined_body) => {
+                    let refined = assemble_paid_article_markdown(&payload, &refined_body);
+                    let line_count = refined.lines().count();
+                    let char_count = refined.chars().count();
+                    result["markdown"] = json!(refined);
+                    result["line_count"] = json!(line_count);
+                    result["char_count"] = json!(char_count);
+                    set_cleaner_llm_result(&mut result, "ok", None);
+                }
+                Err(e) => set_cleaner_llm_result(&mut result, "fallback_local", Some(e)),
+            }
+        }
+    } else {
+        set_cleaner_llm_result(&mut result, "skipped_preserve", None);
+    }
+    Json(result)
 }
 
 async fn create_subscription(
@@ -2538,6 +2682,7 @@ mod tests {
         let payload = CleanMarkdownPayload {
             title: Some("测试标题".to_string()),
             source: Some("记忆承载".to_string()),
+            published_at: None,
             content: Some(
                 "测试标题\n\n这是一个被微信\n拆碎的段落，\n还没有结束\n\n[保留链接](https://example.com)\n\n文章原文"
                     .to_string(),
@@ -2560,6 +2705,7 @@ mod tests {
         let payload = CleanMarkdownPayload {
             title: Some("短段落测试".to_string()),
             source: Some("记忆承载".to_string()),
+            published_at: None,
             content: Some("短段落测试\n\n你讲的这个现象，非常普遍，你的留言，让我想起一本20年前看过的电视剧，士兵突击。许三多，被发配到红三连五班去看守草原补给站。班长老马，三个老兵，每天除了做梦，就是打牌，坚持出操，整理内务的许三多，反而显得像个异类。人嘛，都是怕兄弟苦，更怕兄弟开路虎。兄弟和自己一样苦，苦也不觉得苦，兄弟要是开了路虎，那比自己苦还糟心。".to_string()),
             input_format: Some("text".to_string()),
             smart_merge: None,
@@ -2581,10 +2727,30 @@ mod tests {
     }
 
     #[test]
+    fn paid_article_cleaner_includes_italic_published_time() {
+        let payload = CleanMarkdownPayload {
+            title: Some("time test".to_string()),
+            source: Some("rss".to_string()),
+            published_at: Some("2026-05-07 11:27".to_string()),
+            content: Some("body".to_string()),
+            input_format: Some("text".to_string()),
+            smart_merge: None,
+            merge_mode: Some("preserve".to_string()),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            markdown.contains("*\u{53D1}\u{5E03}\u{65F6}\u{95F4}\u{FF1A}2026-05-07 11:27*"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
     fn paid_article_cleaner_preserves_html_links() {
         let payload = CleanMarkdownPayload {
             title: Some("link test".to_string()),
             source: Some("rss".to_string()),
+            published_at: None,
             content: Some(
                 r#"<p><a href="https://example.com/a">linked text</a></p><p>plain text.</p>"#
                     .to_string(),
@@ -2607,6 +2773,7 @@ mod tests {
         let payload = CleanMarkdownPayload {
             title: Some("rss beat regression".to_string()),
             source: Some("Bishu".to_string()),
+            published_at: None,
             content: Some("\u{6211}\u{4EEC}\u{6765}\u{770B}\u{8FD9}\u{4E2A}\u{95EE}\u{9898}\u{3002}\u{4F60}\u{8BB2}\u{7684}\u{8FD9}\u{4E2A}\u{73B0}\u{8C61}\u{FF0C}\u{975E}\u{5E38}\u{666E}\u{904D}\u{FF0C}\u{4F60}\u{7684}\u{7559}\u{8A00}\u{FF0C}\u{8BA9}\u{6211}\u{60F3}\u{8D77}\u{4E00}\u{672C}20\u{5E74}\u{524D}\u{770B}\u{8FC7}\u{7684}\u{7535}\u{89C6}\u{5267}\u{FF0C}\u{58EB}\u{5175}\u{7A81}\u{51FB}\u{3002}\u{8BB8}\u{4E09}\u{591A}\u{FF0C}\u{88AB}\u{53D1}\u{914D}\u{5230}\u{7EA2}\u{4E09}\u{8FDE}\u{4E94}\u{73ED}\u{53BB}\u{770B}\u{5B88}\u{8349}\u{539F}\u{8865}\u{7ED9}\u{7AD9}\u{3002}\u{73ED}\u{957F}\u{8001}\u{9A6C}\u{FF0C}\u{4E09}\u{4E2A}\u{8001}\u{5175}\u{FF0C}\u{6BCF}\u{5929}\u{9664}\u{4E86}\u{505A}\u{68A6}\u{FF0C}\u{5C31}\u{662F}\u{6253}\u{724C}\u{FF0C}\u{575A}\u{6301}\u{51FA}\u{64CD}\u{FF0C}\u{6574}\u{7406}\u{5185}\u{52A1}\u{7684}\u{8BB8}\u{4E09}\u{591A}\u{FF0C}\u{53CD}\u{800C}\u{663E}\u{5F97}\u{50CF}\u{4E2A}\u{5F02}\u{7C7B}\u{3002}\u{8001}\u{9A6C}\u{7ED9}\u{8BB8}\u{4E09}\u{591A}\u{8BB2}\u{8FC7}\u{8FD9}\u{4E48}\u{4E00}\u{4E2A}\u{5BD3}\u{8A00}\u{6545}\u{4E8B}\u{3002}".to_string()),
             input_format: Some("text".to_string()),
             smart_merge: None,
@@ -2638,6 +2805,7 @@ mod tests {
         let payload = CleanMarkdownPayload {
             title: Some("财富大洗牌，我该选择，还是努力？".to_string()),
             source: Some("记忆承载".to_string()),
+            published_at: None,
             content: Some("财富大洗牌，我该选择，还是努力？\n\n今年以来，很多读者都在跟我讲，自己非常困惑。要是大家都在变得不好倒也罢了，关键是有人变得更好，而自己的处境越发不妙。更糟糕的是，所有传统方式都在失效。过去的二十年，讲究选择大于努力，可当下是：努力吧，像没头的苍蝇，选择吧，又进退失据。.......好，我们今天就来详细的探讨大家遇到的困惑。选择的重点是怎么选择，努力的关键在于怎么努力。以下进入正文：第一个话题，选择不是重点，基于什么选择才是。首先，提出选择大于努力这句话的人，逻辑还是颇严谨的。人家讲的是选择大于努力，人家可没说选择可以覆盖努力。第二个话题，一切选择的底层逻辑：赚Alpha的钱？还是Beta的钱？如果我们看表面现象，你会发现有360个行业。".to_string()),
             input_format: Some("text".to_string()),
             smart_merge: None,
@@ -2665,6 +2833,7 @@ mod tests {
         let payload = CleanMarkdownPayload {
             title: Some("测试标题".to_string()),
             source: Some("记忆承载".to_string()),
+            published_at: None,
             content: Some("测试标题\n\n碧树西风\n2026年05月07日\n广东\n\n正文第一段。".to_string()),
             input_format: Some("text".to_string()),
             smart_merge: Some(true),
