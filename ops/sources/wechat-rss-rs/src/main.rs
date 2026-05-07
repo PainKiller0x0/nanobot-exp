@@ -1318,6 +1318,10 @@ fn insert_paid_article_break_hints(text: &str) -> String {
         .unwrap()
         .replace_all(&s, "……")
         .to_string();
+    s = Regex::new(r"以下进入正文\s*[:：]?")
+        .unwrap()
+        .replace_all(&s, "\n\n")
+        .to_string();
     s = Regex::new(r"(第[一二三四五六七八九十百0-9]+个话题[，,：:])")
         .unwrap()
         .replace_all(&s, "\n\n$1")
@@ -1400,9 +1404,17 @@ fn push_sentence_group(groups: &mut Vec<String>, current: &mut String) {
 fn group_paid_article_sentences(sentences: &[String]) -> Vec<String> {
     let mut groups = Vec::new();
     let mut current = String::new();
+
+    // Bishu Xifeng's public RSS articles are very paragraph-dense: recent
+    // samples average ~80-95 paragraphs per article, with a median paragraph
+    // around 30-40 Chinese chars.  Prefer one sentence per paragraph, only
+    // joining very short clause fragments.
     for sentence in sentences {
+        let sentence_len = visible_char_count(sentence);
         if !current.is_empty()
-            && (starts_discourse_block(sentence) || visible_char_count(&current) >= 180)
+            && (starts_discourse_block(sentence)
+                || visible_char_count(&current) >= 70
+                || (visible_char_count(&current) >= 18 && sentence_len >= 18))
         {
             push_sentence_group(&mut groups, &mut current);
         }
@@ -1411,7 +1423,7 @@ fn group_paid_article_sentences(sentences: &[String]) -> Vec<String> {
         } else {
             current = join_inline(&current, sentence);
         }
-        if visible_char_count(&current) >= 260 {
+        if visible_char_count(&current) >= 130 {
             push_sentence_group(&mut groups, &mut current);
         }
     }
@@ -1423,6 +1435,9 @@ fn segment_paid_article_paragraph(paragraph: &str) -> Vec<String> {
     let text = paragraph.trim();
     if text.is_empty() {
         return Vec::new();
+    }
+    if is_markdown_structural_line(text) {
+        return vec![text.to_string()];
     }
 
     let sentences = split_paid_article_sentences(text);
@@ -1443,10 +1458,10 @@ fn segment_paid_article_paragraph(paragraph: &str) -> Vec<String> {
         return out;
     }
 
-    if is_markdown_structural_line(text) || visible_char_count(text) <= 260 {
+    if sentences.len() <= 1 {
         return vec![text.to_string()];
     }
-    if sentences.len() <= 1 {
+    if sentences.len() <= 2 && visible_char_count(text) <= 140 {
         return vec![text.to_string()];
     }
     group_paid_article_sentences(&sentences)
@@ -2510,6 +2525,31 @@ mod tests {
     }
 
     #[test]
+    fn paid_article_cleaner_matches_bishu_short_paragraph_rhythm() {
+        let payload = CleanMarkdownPayload {
+            title: Some("短段落测试".to_string()),
+            source: Some("记忆承载".to_string()),
+            content: Some("短段落测试\n\n你讲的这个现象，非常普遍，你的留言，让我想起一本20年前看过的电视剧，士兵突击。许三多，被发配到红三连五班去看守草原补给站。班长老马，三个老兵，每天除了做梦，就是打牌，坚持出操，整理内务的许三多，反而显得像个异类。人嘛，都是怕兄弟苦，更怕兄弟开路虎。兄弟和自己一样苦，苦也不觉得苦，兄弟要是开了路虎，那比自己苦还糟心。".to_string()),
+            input_format: Some("text".to_string()),
+            smart_merge: None,
+            merge_mode: Some("auto".to_string()),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(markdown.contains("许三多，被发配到红三连五班去看守草原补给站。"));
+        assert!(markdown.contains("人嘛，都是怕兄弟苦，更怕兄弟开路虎。"));
+        let body_paras = markdown
+            .split("\n\n")
+            .filter(|p| !p.starts_with('#') && !p.starts_with('>'))
+            .collect::<Vec<_>>();
+        assert!(body_paras.len() >= 5, "{markdown}");
+        assert!(
+            body_paras.iter().all(|p| p.chars().count() < 150),
+            "{markdown}"
+        );
+    }
+
+    #[test]
     fn paid_article_cleaner_auto_segments_lumped_wechat_text() {
         let payload = CleanMarkdownPayload {
             title: Some("财富大洗牌，我该选择，还是努力？".to_string()),
@@ -2523,6 +2563,7 @@ mod tests {
         let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
         assert!(markdown.contains("好，我们今天就来详细的探讨大家遇到的困惑。"));
         assert!(markdown.contains("## 第一个话题，选择不是重点，基于什么选择才是。"));
+        assert!(!markdown.contains("以下进入正文"));
         assert!(markdown.contains("## 第二个话题，一切选择的底层逻辑：赚Alpha的钱？还是Beta的钱？"));
         let max_para = markdown
             .split("\n\n")
