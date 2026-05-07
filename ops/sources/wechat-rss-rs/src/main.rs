@@ -1415,6 +1415,30 @@ fn is_short_answer_sentence(sentence: &str) -> bool {
             || t.starts_with("\u{4E0D}\u{4F1A}"))
 }
 
+fn starts_demonstrative_continuation(sentence: &str) -> bool {
+    let t = sentence.trim_start();
+    [
+        "\u{8FD9}\u{4E2A}",
+        "\u{8FD9}\u{79CD}",
+        "\u{8FD9}\u{7C7B}",
+        "\u{8FD9}\u{4E9B}",
+        "\u{8FD9}\u{70B9}",
+        "\u{8FD9}\u{53E5}",
+        "\u{8FD9}\u{4EF6}\u{4E8B}",
+        "\u{8FD9}\u{65F6}",
+        "\u{8FD9}\u{5C31}",
+        "\u{8FD9}\u{624D}",
+        "\u{5B83}",
+        "\u{4ED6}",
+        "\u{5979}",
+        "\u{4EBA}\u{5BB6}",
+        "\u{524D}\u{8005}",
+        "\u{540E}\u{8005}",
+    ]
+    .iter()
+    .any(|prefix| t.starts_with(prefix))
+}
+
 fn should_join_paid_sentences(current: &str, sentence: &str) -> bool {
     let cur = current.trim();
     let next = sentence.trim();
@@ -1427,6 +1451,17 @@ fn should_join_paid_sentences(current: &str, sentence: &str) -> bool {
 
     let cur_len = visible_char_count(cur);
     let next_len = visible_char_count(next);
+
+    // Keep explanatory follow-up sentences with their antecedent. This handles
+    // copied paid articles where WeChat drops original paragraph breaks, e.g.
+    // "...a new person. This new self..." should stay in one paragraph.
+    if starts_demonstrative_continuation(next)
+        && cur_len >= 20
+        && next_len <= 80
+        && cur_len + next_len <= 120
+    {
+        return true;
+    }
 
     // Keep tightly-coupled rhetorical Q/A in one paragraph, e.g. "but is he convinced? no.".
     // Other short rhythm lines are intentionally left standalone because the RSS samples
@@ -1650,6 +1685,8 @@ fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
         "merge_mode": prepared.effective_merge_mode,
         "line_count": line_count,
         "char_count": char_count,
+        "cleaner_engine": "local_rules",
+        "llm_cleaner_status": "not_used",
     })
 }
 
@@ -1692,7 +1729,7 @@ async fn llm_refine_cleaner_markdown(
         .post(llm.chat_completions_url())
         .bearer_auth(llm.api_key.clone())
         .json(&body)
-        .timeout(std::time::Duration::from_secs(90))
+        .timeout(std::time::Duration::from_secs(120))
         .send()
         .await
         .map_err(|e| format!("LongCat request failed: {e}"))?;
@@ -1764,9 +1801,9 @@ html[data-theme="dark"] body,body[data-theme="dark"]{background:radial-gradient(
 @media (min-width:980px){.stats-card{grid-column:span 4}.subs-card{grid-column:span 8}.entries-card{grid-column:span 8}.llm-card{grid-column:span 4}}
 @media (max-width:760px){.subs .row{grid-template-columns:1fr auto;grid-template-areas:'name status' 'meta action'}.subs .name{grid-area:name}.subs .meta{grid-area:meta}.subs .status{grid-area:status}.subs .action{grid-area:action}.add-sub{grid-template-columns:1fr}.llm-grid{grid-template-columns:1fr}}
 </style></head>
-<body><div class="wrap"><section class="hero"><div><h1 class="title">RSS Sidecar · Rust</h1><p class="sub">&#32479;&#19968;&#35746;&#38405;&#20013;&#21488;&#65288;WeChat / Yage&#65289;+ &#19996;&#20843;&#21306;&#26102;&#38388; + &#24191;&#21578;&#25991;&#36339;&#36807;&#65288;&#35268;&#21017; + &#20813;&#36153; LongCat&#65289;</p></div><div class="btns"><button class="btn-main" onclick="refreshAll()">刷新全部订阅</button><button onclick="loadAll()">刷新页面数据</button><button onclick="location.href=\'cleaner\'">付费文章清洗器</button><button id="themeToggle" class="theme-btn" onclick="toggleTheme()">Theme</button><div class="auto-ctl"><label><input id="auto_enabled" type="checkbox" onchange="saveAutoRefresh()"> 自动刷新</label><input id="auto_interval_seconds" type="number" min="5" step="1" value="3600" onchange="saveAutoRefresh()">秒<button onclick="saveAutoRefresh()">应用</button></div><div id="auto_hint" class="muted auto-hint"></div></div></section>
+<body><div class="wrap"><section class="hero"><div><h1 class="title">RSS Sidecar · Rust</h1><p class="sub">&#32479;&#19968;&#35746;&#38405;&#20013;&#21488;&#65288;WeChat / Yage&#65289;+ &#19996;&#20843;&#21306;&#26102;&#38388; + &#24191;&#21578;&#25991;&#36339;&#36807;&#65288;&#35268;&#21017; + &#20813;&#36153; LongCat&#65289;</p></div><div class="btns"><button class="btn-main" onclick="refreshAll()">刷新全部订阅</button><button onclick="loadAll()">刷新页面数据</button><button class="btn-main" onclick="location.href='/rss/cleaner'">付费文章清洗器</button><button id="themeToggle" class="theme-btn" onclick="toggleTheme()">Theme</button><div class="auto-ctl"><label><input id="auto_enabled" type="checkbox" onchange="saveAutoRefresh()"> 自动刷新</label><input id="auto_interval_seconds" type="number" min="5" step="1" value="3600" onchange="saveAutoRefresh()">秒<button onclick="saveAutoRefresh()">应用</button></div><div id="auto_hint" class="muted auto-hint"></div></div></section>
 <section class="grid"><div class="card stats-card"><h2 class="h">运行概览</h2><div class="stats" id="stats"></div></div><div class="card subs-card"><h2 class="h">订阅列表</h2><div class="add-sub"><input id="new_biz" placeholder="biz (可选)"/><input id="new_name" placeholder="name"/><input id="new_feed_url" placeholder="feed url (https://...)"/><button onclick="createSub()">Add</button></div><div class="subs" id="subs"></div></div><div class="card entries-card"><h2 class="h">最近文章（东八区）</h2><div class="entries" id="entries"></div></div>
-<div class="card llm-card"><h2 class="h">LLM 设置</h2><p class="muted">&#36153;&#29992;&#31574;&#30053;&#65306;&#20165;&#20801;&#35768; LongCat-Flash-Lite &#33258;&#21160;&#21442;&#19982;&#24191;&#21578;&#21028;&#23450;&#21644; cleaner &#26029;&#27573;&#31934;&#20462;&#65307;&#20854;&#20182;&#20184;&#36153;&#27169;&#22411;&#19981;&#20250;&#34987; sidecar &#33258;&#21160;&#35843;&#29992;&#12290;</p><label class="llm-switch"><input id="llm_enabled" type="checkbox"/> 启用免费 LLM 广告判定</label><div class="llm-grid"><div class="llm-field"><div class="muted">API Base</div><input id="llm_api_base" placeholder="https://api.longcat.chat/openai/v1"/></div><div class="llm-field"><div class="muted">API Key</div><input id="llm_api_key" type="password" placeholder="ak-..."/></div><div class="llm-field"><div class="muted">Model</div><input id="llm_model" placeholder="LongCat-Flash-Lite"/></div></div><div class="llm-actions"><button onclick="saveLlm()">保存设置</button><button onclick="testLlm()">测试连接</button></div><div id="llm_result" class="llm-result">这里显示模型连通测试结果。</div></div>
+<div class="card llm-card"><h2 class="h">LLM 设置</h2><p class="muted">&#36153;&#29992;&#31574;&#30053;&#65306;&#20165;&#20801;&#35768; LongCat-Flash-Lite &#33258;&#21160;&#21442;&#19982;&#24191;&#21578;&#21028;&#23450;&#65307; cleaner &#40664;&#35748;&#26412;&#22320;&#35268;&#21017;&#24555;&#36895;&#28165;&#27927;&#65292;&#21482;&#26377;&#20320;&#28857; LLM &#31934;&#20462;&#26102;&#25165;&#20250;&#35843;&#29992;&#12290;</p><label class="llm-switch"><input id="llm_enabled" type="checkbox"/> 启用免费 LLM 广告判定</label><div class="llm-grid"><div class="llm-field"><div class="muted">API Base</div><input id="llm_api_base" placeholder="https://api.longcat.chat/openai/v1"/></div><div class="llm-field"><div class="muted">API Key</div><input id="llm_api_key" type="password" placeholder="ak-..."/></div><div class="llm-field"><div class="muted">Model</div><input id="llm_model" placeholder="LongCat-Flash-Lite"/></div></div><div class="llm-actions"><button onclick="saveLlm()">保存设置</button><button onclick="testLlm()">测试连接</button></div><div id="llm_result" class="llm-result">这里显示模型连通测试结果。</div></div>
 </section></div>
 <div id="mdModal" class="modal" aria-hidden="true"><div class="modal-mask" onclick="closePreview()"></div><div class="modal-panel"><div class="modal-head"><h3 id="mdTitle">Markdown Preview</h3><div class="modal-tools"><button id="mdThemeToggle" class="md-theme-btn" onclick="toggleMdPreviewTheme()">预览: 跟随</button><button onclick="closePreview()">关闭</button></div></div><div id="mdBody" class="md-body muted">加载中...</div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -1890,9 +1927,9 @@ html,body,html[data-theme="light"],body[data-theme="light"]{color-scheme:light;-
 html[data-theme="dark"],body[data-theme="dark"]{color-scheme:dark;--bg:#14181a;--card:#242a2f;--text:#edf2f7;--muted:#aeb8c4;--line:#404955;--accent:#d4a260;--panel:#1b2126;--link:#92bdff;--shadow:0 18px 52px rgba(0,0,0,.36);--input:#171d22;--hero-tint:rgba(255,255,255,.06);--button-shadow:0 5px 14px rgba(0,0,0,.28);--primary-from:#4d3420;--primary-to:#8c663e;--primary-border:#a57947;--primary-text:#fff4dc}
 *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(900px 460px at 8% -12%,rgba(118,165,122,.35),transparent 58%),radial-gradient(760px 420px at 100% 0%,rgba(220,169,91,.28),transparent 55%),var(--bg);color:var(--text);font-family:"Noto Sans SC","Microsoft Yahei",sans-serif}
 .wrap{max-width:1280px;margin:22px auto;padding:0 16px 28px}.hero{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;background:var(--hero-tint);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:22px;padding:18px}.eyebrow{letter-spacing:.18em;color:var(--accent);font-weight:800;font-size:12px}.hero h1{margin:6px 0 8px;font-size:32px}.hero p{margin:0;color:var(--muted);line-height:1.7}.tools{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--card);color:var(--text);font-weight:700;text-decoration:none;cursor:pointer;box-shadow:var(--button-shadow)}button.primary{background:linear-gradient(135deg,var(--primary-from),var(--primary-to));border-color:var(--primary-border);color:var(--primary-text)}.grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}@media(min-width:980px){.grid{grid-template-columns:1fr 1fr}}.card{background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:16px}.row{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px}@media(min-width:760px){.row{grid-template-columns:1fr 1fr 1fr}}label{display:block;font-size:13px;color:var(--muted);font-weight:700;margin-bottom:6px}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:13px;background:var(--input);color:var(--text);padding:11px 12px;font:inherit}::placeholder{color:var(--muted);opacity:.78}select option{background:var(--card);color:var(--text)}textarea[readonly]{background:var(--panel)}textarea{min-height:560px;resize:vertical;line-height:1.72}.out{white-space:pre-wrap;font-family:"Noto Serif SC","Songti SC",serif}.hint{color:var(--muted);font-size:13px;line-height:1.7}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 10px;color:var(--muted);font-size:12px}.check{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.check input{width:auto}.status{min-height:22px;color:var(--muted);font-size:13px}.footer{margin-top:12px;color:var(--muted);font-size:12px;line-height:1.6}
-</style></head><body><div class="wrap"><section class="hero"><div><div class="eyebrow">BISHU XIFENG MARKDOWN CLEANER</div><h1>付费文章 Markdown 清洗器</h1><p>&#25226;&#20320;&#22312;&#24494;&#20449;&#37324;&#24050;&#36141;&#20080;&#30340;&#25991;&#31456;&#27491;&#25991;&#31896;&#36148;&#36827;&#26469;&#65292;&#25105;&#20250;&#20808;&#20570;&#26412;&#22320;&#28165;&#27927;&#65292;&#20877;&#33258;&#21160;&#29992;&#20813;&#36153;&#30340; LongCat-Flash-Lite &#31934;&#20462;&#26029;&#27573;&#65307;&#22914;&#26524;&#27169;&#22411;&#25913;&#20889;&#25991;&#26412;&#65292;&#20250;&#31435;&#21051;&#22238;&#36864;&#26412;&#22320;&#32467;&#26524;&#12290;</p></div><div class="tools"><a class="btn" href="./">回到 RSS</a><button onclick="toggleTheme()">明暗切换</button></div></section>
+</style></head><body><div class="wrap"><section class="hero"><div><div class="eyebrow">BISHU XIFENG MARKDOWN CLEANER</div><h1>付费文章 Markdown 清洗器</h1><p>&#25226;&#20320;&#22312;&#24494;&#20449;&#37324;&#24050;&#36141;&#20080;&#30340;&#25991;&#31456;&#27491;&#25991;&#31896;&#36148;&#36827;&#26469;&#65292;&#40664;&#35748;&#29992;&#26412;&#22320;&#35268;&#21017;&#24555;&#36895;&#28165;&#27927;&#65306;&#20445;&#30041;&#36229;&#38142;&#25509;&#12289;&#21024;&#25481;&#22122;&#22768;&#12289;&#25353;&#30887;&#26641;&#35199;&#39118;&#30340;&#20889;&#20316;&#33410;&#22863;&#26029;&#27573;&#12290;&#22914;&#26524;&#20320;&#30475;&#23436;&#19981;&#28385;&#24847;&#65292;&#20877;&#28857;&#21491;&#20391; LLM &#31934;&#20462;&#12290;</p></div><div class="tools"><a class="btn" href="./">回到 RSS</a><button onclick="toggleTheme()">明暗切换</button></div></section>
 <section class="grid"><div class="card"><div class="row"><div><label>标题</label><input id="title" placeholder="例如：财富大洗牌，我该选择，还是努力？"/></div><div><label>来源</label><input id="source" value="记忆承载" placeholder="记忆承载 / 记忆承载3"/></div><div><label>&#21457;&#24067;&#26102;&#38388;</label><input id="published_at" placeholder="2026-05-07 11:27"/></div></div><div class="bar"><select id="format" style="max-width:180px"><option value="auto">自动识别 HTML / 文本</option><option value="text">按纯文本处理</option><option value="html">按 HTML 转 Markdown</option></select><select id="mergeMode" style="max-width:210px"><option value="auto" selected>作者节奏（推荐）</option><option value="preserve">保留原换行</option><option value="smart">合并碎行</option></select></div><label>粘贴微信正文 / HTML</label><textarea id="input" placeholder="在微信文章里复制正文，然后粘贴到这里。若复制出来包含 HTML，也可以直接粘贴。"></textarea><div class="bar"><button class="primary" onclick="cleanNow()">生成 Markdown</button><button onclick="clearAll()">清空</button></div><div class="hint">小提示：如果你从微信桌面版复制出来的是 HTML，保持“自动识别”即可；如果只是普通文本，默认会按记忆承载常见的句末与语义节奏断段，不按长度乱切；如果你已经整理好格式，可切到“保留原换行”；如果复制出来是短碎行，可切到“合并碎行”。</div></div>
-<div class="card"><div class="bar"><span class="pill" id="meta">等待生成</span><button onclick="copyMd()">复制 Markdown</button><button onclick="downloadMd()">下载 .md</button></div><label>Markdown 结果</label><textarea id="output" class="out" readonly placeholder="生成后的 Markdown 会出现在这里。"></textarea><div class="status" id="status"></div><div class="footer">这个工具适合你已购买后个人整理归档。RSS 订阅库仍只保存公开可抓到的内容；付费全文不自动入库，避免误把试读导流当完整文章。</div></div></section></div>
+<div class="card"><div class="bar"><span class="pill" id="meta">等待生成</span><button onclick="copyMd()">复制 Markdown</button><button onclick="downloadMd()">下载 .md</button><button id="refineBtn" onclick="refineWithLlm()">LLM &#31934;&#20462;</button></div><label>Markdown 结果</label><textarea id="output" class="out" readonly placeholder="生成后的 Markdown 会出现在这里。"></textarea><div class="status" id="status"></div><div class="footer">这个工具适合你已购买后个人整理归档。RSS 订阅库仍只保存公开可抓到的内容；付费全文不自动入库，避免误把试读导流当完整文章。</div></div></section></div>
 <script>
 const KEY='paid_cleaner_theme';let lastFilename='wechat-paid-article.md';let capturedPasteHtml='';let capturedPasteText='';
 function applyTheme(t){document.documentElement.setAttribute('data-theme',t);document.body&&document.body.setAttribute('data-theme',t);localStorage.setItem(KEY,t)}
@@ -1902,7 +1939,10 @@ function setStatus(t){document.getElementById('status').textContent=t||''}
 function normPasteText(s){return String(s||'').replace(/\r\n?/g,'\n').trim()}
 function shouldUseCapturedHtml(text,inputFormat){return !!capturedPasteHtml&&(inputFormat==='auto'||inputFormat==='html')&&normPasteText(text)===normPasteText(capturedPasteText)}
 function setupRichPaste(){const el=document.getElementById('input');if(!el)return;el.addEventListener('paste',e=>{const cd=e.clipboardData;if(!cd)return;const html=cd.getData('text/html')||'';const text=cd.getData('text/plain')||'';if(html&&/<a[\s>]/i.test(html)){capturedPasteHtml=html;capturedPasteText=text;const fmt=document.getElementById('format');if(fmt&&fmt.value==='auto')fmt.value='html';setTimeout(()=>setStatus('\u5df2\u6355\u83b7\u5bcc\u6587\u672c\u94fe\u63a5\uff0c\u751f\u6210\u65f6\u4f1a\u4fdd\u7559 Markdown \u8d85\u94fe\u63a5\u3002'),0)}else{capturedPasteHtml='';capturedPasteText=''}});el.addEventListener('input',()=>{if(capturedPasteText&&normPasteText(el.value)!==normPasteText(capturedPasteText)){capturedPasteHtml='';capturedPasteText=''}})}
-async function cleanNow(){const input=document.getElementById('input');const fmt=document.getElementById('format');let content=input.value;let inputFormat=fmt.value;const usedRichHtml=shouldUseCapturedHtml(content,inputFormat);if(usedRichHtml){content=capturedPasteHtml;inputFormat='html'}setStatus('\u6e05\u6d17\u4e2d...');const r=await fetch('/api/clean-markdown',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:document.getElementById('title').value,source:document.getElementById('source').value,published_at:document.getElementById('published_at').value,content,input_format:inputFormat,merge_mode:document.getElementById('mergeMode').value,smart_merge:document.getElementById('mergeMode').value==='smart'})});const d=await r.json();if(!d.ok){setStatus('\u5931\u8d25\uff1a'+(d.error||'unknown'));return;}document.getElementById('output').value=d.markdown||'';lastFilename=d.filename||lastFilename;document.getElementById('meta').textContent=`${d.input_format} \u00b7 ${d.line_count} \u884c \u00b7 ${d.char_count} \u5b57`;setStatus((d.llm_cleaner_status==='ok'?'\u5df2\u7528 LongCat \u514d\u8d39\u6a21\u578b\u7cbe\u4fee\u65ad\u6bb5\u3002':(usedRichHtml?'\u5df2\u751f\u6210\uff0c\u5e76\u4fdd\u7559\u5bcc\u6587\u672c\u91cc\u7684 Markdown \u8d85\u94fe\u63a5\u3002':'\u5df2\u751f\u6210\uff0c\u53ef\u4ee5\u590d\u5236\u6216\u4e0b\u8f7d\u3002'))+(d.llm_cleaner_status==='fallback_local'?' LongCat \u672a\u751f\u6548\uff0c\u5df2\u4fdd\u7559\u672c\u5730\u7ed3\u679c\u3002':''))}
+function buildCleanPayload(){const input=document.getElementById('input');const fmt=document.getElementById('format');let content=input.value;let inputFormat=fmt.value;const usedRichHtml=shouldUseCapturedHtml(content,inputFormat);if(usedRichHtml){content=capturedPasteHtml;inputFormat='html'}return{usedRichHtml,payload:{title:document.getElementById('title').value,source:document.getElementById('source').value,published_at:document.getElementById('published_at').value,content,input_format:inputFormat,merge_mode:document.getElementById('mergeMode').value,smart_merge:document.getElementById('mergeMode').value==='smart'}}}
+function applyCleanResult(d){document.getElementById('output').value=d.markdown||'';lastFilename=d.filename||lastFilename;document.getElementById('meta').textContent=`${d.input_format} \u00b7 ${d.line_count} \u884c \u00b7 ${d.char_count} \u5b57`}
+async function cleanNow(){const ctx=buildCleanPayload();setStatus('\u672c\u5730\u89c4\u5219\u6e05\u6d17\u4e2d...');const r=await fetch('/api/clean-markdown',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(ctx.payload)});const d=await r.json();if(!d.ok){setStatus('\u5931\u8d25\uff1a'+(d.error||'unknown'));return;}applyCleanResult(d);setStatus(ctx.usedRichHtml?'\u5df2\u7528\u672c\u5730\u89c4\u5219\u751f\u6210\uff0c\u5e76\u4fdd\u7559\u5bcc\u6587\u672c\u91cc\u7684 Markdown \u8d85\u94fe\u63a5\u3002':'\u5df2\u7528\u672c\u5730\u89c4\u5219\u5feb\u901f\u751f\u6210\uff0c\u53ef\u4ee5\u590d\u5236\u6216\u4e0b\u8f7d\u3002')}
+async function refineWithLlm(){const ctx=buildCleanPayload();const btn=document.getElementById('refineBtn');const old=btn?btn.textContent:'';if(btn){btn.disabled=true;btn.textContent='LLM \u7cbe\u4fee\u4e2d...'}setStatus('LLM \u7cbe\u4fee\u5904\u7406\u4e2d\uff0c\u957f\u6587\u53ef\u80fd\u9700\u8981\u4e00\u4f1a\u513f...');try{const r=await fetch('/api/clean-markdown/refine',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(ctx.payload)});const d=await r.json();if(!d.ok){setStatus('LLM \u7cbe\u4fee\u5931\u8d25\uff1a'+(d.error||'unknown')+'\u3002\u5f53\u524d\u672c\u5730\u7ed3\u679c\u4e0d\u53d8\u3002');return;}applyCleanResult(d);setStatus('LLM \u7cbe\u4fee\u5b8c\u6210\uff0c\u5df2\u901a\u8fc7\u672a\u6539\u5b57\u6821\u9a8c\u3002')}catch(e){setStatus('LLM \u7cbe\u4fee\u5931\u8d25\uff1a'+((e&&e.message)||String(e))+'\u3002\u5f53\u524d\u672c\u5730\u7ed3\u679c\u4e0d\u53d8\u3002')}finally{if(btn){btn.disabled=false;btn.textContent=old||'LLM \u7cbe\u4fee'}}}
 async function copyMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}await navigator.clipboard.writeText(v);setStatus('已复制到剪贴板。')}
 function downloadMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}const blob=new Blob([v],{type:'text/markdown;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=lastFilename;document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);a.remove();setStatus('已触发下载。')}
 function clearAll(){document.getElementById('input').value='';document.getElementById('output').value='';document.getElementById('meta').textContent='\u7b49\u5f85\u751f\u6210';capturedPasteHtml='';capturedPasteText='';setStatus('')}
@@ -2217,42 +2257,38 @@ async fn get_article_markdown(
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], md).into_response()
 }
 
-async fn clean_markdown(
+async fn clean_markdown(Json(payload): Json<CleanMarkdownPayload>) -> Json<Value> {
+    if payload.content.as_deref().unwrap_or("").trim().is_empty() {
+        return Json(json!({"ok": false, "error": "content is empty"}));
+    }
+    Json(clean_paid_article_payload(&payload))
+}
+
+async fn refine_clean_markdown(
     State(st): State<Arc<AppState>>,
     Json(payload): Json<CleanMarkdownPayload>,
 ) -> Json<Value> {
     if payload.content.as_deref().unwrap_or("").trim().is_empty() {
         return Json(json!({"ok": false, "error": "content is empty"}));
     }
-    let mut result = clean_paid_article_payload(&payload);
-    let merge_mode = payload
-        .merge_mode
-        .as_deref()
-        .unwrap_or("auto")
-        .trim()
-        .to_ascii_lowercase();
-    let allow_llm = !matches!(merge_mode.as_str(), "preserve" | "raw");
-    if allow_llm {
-        let llm_input = prepare_paid_article_body(&payload, false).body;
-        if !llm_input.trim().is_empty() {
-            let llm = load_llm_settings_compat(&st.settings_path);
-            match llm_refine_cleaner_markdown(&st.http, &llm, &llm_input).await {
-                Ok(refined_body) => {
-                    let refined = assemble_paid_article_markdown(&payload, &refined_body);
-                    let line_count = refined.lines().count();
-                    let char_count = refined.chars().count();
-                    result["markdown"] = json!(refined);
-                    result["line_count"] = json!(line_count);
-                    result["char_count"] = json!(char_count);
-                    set_cleaner_llm_result(&mut result, "ok", None);
-                }
-                Err(e) => set_cleaner_llm_result(&mut result, "fallback_local", Some(e)),
-            }
-        }
-    } else {
-        set_cleaner_llm_result(&mut result, "skipped_preserve", None);
+    let llm_input = prepare_paid_article_body(&payload, false).body;
+    if llm_input.trim().is_empty() {
+        return Json(json!({"ok": false, "error": "content is empty after cleanup"}));
     }
-    Json(result)
+    let llm = load_llm_settings_compat(&st.settings_path);
+    match llm_refine_cleaner_markdown(&st.http, &llm, &llm_input).await {
+        Ok(refined_body) => {
+            let refined = assemble_paid_article_markdown(&payload, &refined_body);
+            let mut result = clean_paid_article_payload(&payload);
+            result["markdown"] = json!(refined.clone());
+            result["line_count"] = json!(refined.lines().count());
+            result["char_count"] = json!(refined.chars().count());
+            result["cleaner_engine"] = json!("llm_refine");
+            set_cleaner_llm_result(&mut result, "ok", None);
+            Json(result)
+        }
+        Err(e) => Json(json!({"ok": false, "error": e, "llm_cleaner_status": "failed"})),
+    }
 }
 
 async fn create_subscription(
@@ -2846,6 +2882,50 @@ mod tests {
     }
 
     #[test]
+    fn paid_article_cleaner_keeps_demonstrative_continuation_together() {
+        let payload = CleanMarkdownPayload {
+            title: Some("rule regression".to_string()),
+            source: Some("rss".to_string()),
+            published_at: None,
+            content: Some("\u{6211}\u{6839}\u{672C}\u{5C31}\u{4E0D}\u{662F}\u{90A3}\u{4E2A}\u{8D4C}\u{5F92}\u{4E86}\u{FF0C}\u{90A3}\u{4E2A}\u{8D4C}\u{5F92}\u{5DF2}\u{7ECF}\u{4ECE}\u{8BA4}\u{77E5}\u{6DF1}\u{5904}\u{90FD}\u{6B7B}\u{7FD8}\u{7FD8}\u{4E86}\u{FF0C}\u{73B0}\u{5728}\u{662F}\u{4E00}\u{4E2A}\u{5168}\u{65B0}\u{7684}\u{4EBA}\u{3002}\u{8FD9}\u{4E2A}\u{5168}\u{65B0}\u{7684}\u{6211}\u{662F}\u{5F00}\u{8D4C}\u{573A}\u{7684}\u{FF0C}\u{94B1}\u{6E90}\u{6E90}\u{4E0D}\u{65AD}\u{6D41}\u{5411}\u{6211}\u{FF0C}\u{5B83}\u{53EB}\u{4EA4}\u{6613}\u{7CFB}\u{7EDF}\u{3002}".to_string()),
+            input_format: Some("text".to_string()),
+            smart_merge: None,
+            merge_mode: Some("auto".to_string()),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(markdown.contains("\u{5168}\u{65B0}\u{7684}\u{4EBA}\u{3002}\u{8FD9}\u{4E2A}\u{5168}\u{65B0}\u{7684}\u{6211}"), "{markdown}");
+        assert!(
+            !markdown.contains("\u{5168}\u{65B0}\u{7684}\u{4EBA}\u{3002}\n\n\u{8FD9}\u{4E2A}"),
+            "{markdown}"
+        );
+        assert_eq!(
+            value.get("llm_cleaner_status").and_then(|v| v.as_str()),
+            Some("not_used")
+        );
+    }
+
+    #[test]
+    fn paid_article_cleaner_keeps_related_question_pair_together() {
+        let payload = CleanMarkdownPayload {
+            title: Some("question regression".to_string()),
+            source: Some("rss".to_string()),
+            published_at: None,
+            content: Some("\u{5F88}\u{591A}\u{4EBA}\u{4E00}\u{542C}\u{5230}\u{9009}\u{62E9}\u{FF0C}\u{7B2C}\u{4E00}\u{53CD}\u{5E94}\u{4ECE}\u{6765}\u{90FD}\u{662F}\u{FF0C}\u{8981}\u{8003}\u{7814}\u{8FD8}\u{662F}\u{8981}\u{4E0A}\u{5CB8}\u{FF1F}\u{53BB}\u{54EA}\u{4E2A}\u{516C}\u{53F8}\u{4F1A}\u{53D1}\u{8D22}\u{FF1F}".to_string()),
+            input_format: Some("text".to_string()),
+            smart_merge: None,
+            merge_mode: Some("auto".to_string()),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(markdown.contains("\u{8981}\u{8003}\u{7814}\u{8FD8}\u{662F}\u{8981}\u{4E0A}\u{5CB8}\u{FF1F}\u{53BB}\u{54EA}\u{4E2A}\u{516C}\u{53F8}\u{4F1A}\u{53D1}\u{8D22}\u{FF1F}"), "{markdown}");
+        assert!(
+            !markdown.contains("\u{4E0A}\u{5CB8}\u{FF1F}\n\n\u{53BB}\u{54EA}\u{4E2A}"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
     fn yage_new_kit_html_wrapper_is_removed_before_markdown() {
         let raw = r#"
 <table><tbody><tr><td><div>
@@ -2904,8 +2984,12 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(root))
+        .route("/rss", get(root))
+        .route("/rss/", get(root))
         .route("/cleaner", get(cleaner_page))
         .route("/cleaner/", get(cleaner_page))
+        .route("/rss/cleaner", get(cleaner_page))
+        .route("/rss/cleaner/", get(cleaner_page))
         .route("/api/health", get(health))
         .route("/api/auto-refresh-status", get(auto_refresh_status))
         .route(
@@ -2932,6 +3016,7 @@ async fn main() {
         .route("/api/articles/{id}", get(get_article))
         .route("/api/articles/{id}/markdown", get(get_article_markdown))
         .route("/api/clean-markdown", post(clean_markdown))
+        .route("/api/clean-markdown/refine", post(refine_clean_markdown))
         .route("/api/refresh-all", post(refresh_all))
         .with_state(state);
 
