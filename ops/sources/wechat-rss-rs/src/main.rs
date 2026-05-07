@@ -1781,16 +1781,20 @@ html[data-theme="dark"],body[data-theme="dark"]{color-scheme:dark;--bg:#14181a;-
 <section class="grid"><div class="card"><div class="row"><div><label>标题</label><input id="title" placeholder="例如：财富大洗牌，我该选择，还是努力？"/></div><div><label>来源</label><input id="source" value="记忆承载" placeholder="记忆承载 / 记忆承载3"/></div></div><div class="bar"><select id="format" style="max-width:180px"><option value="auto">自动识别 HTML / 文本</option><option value="text">按纯文本处理</option><option value="html">按 HTML 转 Markdown</option></select><select id="mergeMode" style="max-width:210px"><option value="auto" selected>作者节奏（推荐）</option><option value="preserve">保留原换行</option><option value="smart">合并碎行</option></select></div><label>粘贴微信正文 / HTML</label><textarea id="input" placeholder="在微信文章里复制正文，然后粘贴到这里。若复制出来包含 HTML，也可以直接粘贴。"></textarea><div class="bar"><button class="primary" onclick="cleanNow()">生成 Markdown</button><button onclick="clearAll()">清空</button></div><div class="hint">小提示：如果你从微信桌面版复制出来的是 HTML，保持“自动识别”即可；如果只是普通文本，默认会按记忆承载常见的句末与语义节奏断段，不按长度乱切；如果你已经整理好格式，可切到“保留原换行”；如果复制出来是短碎行，可切到“合并碎行”。</div></div>
 <div class="card"><div class="bar"><span class="pill" id="meta">等待生成</span><button onclick="copyMd()">复制 Markdown</button><button onclick="downloadMd()">下载 .md</button></div><label>Markdown 结果</label><textarea id="output" class="out" readonly placeholder="生成后的 Markdown 会出现在这里。"></textarea><div class="status" id="status"></div><div class="footer">这个工具适合你已购买后个人整理归档。RSS 订阅库仍只保存公开可抓到的内容；付费全文不自动入库，避免误把试读导流当完整文章。</div></div></section></div>
 <script>
-const KEY='paid_cleaner_theme';let lastFilename='wechat-paid-article.md';
+const KEY='paid_cleaner_theme';let lastFilename='wechat-paid-article.md';let capturedPasteHtml='';let capturedPasteText='';
 function applyTheme(t){document.documentElement.setAttribute('data-theme',t);document.body&&document.body.setAttribute('data-theme',t);localStorage.setItem(KEY,t)}
 function initTheme(){const saved=localStorage.getItem(KEY);applyTheme(saved==='dark'||saved==='light'?saved:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'))}
 function toggleTheme(){applyTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark')}
 function setStatus(t){document.getElementById('status').textContent=t||''}
-async function cleanNow(){const content=document.getElementById('input').value;setStatus('清洗中...');const r=await fetch('/api/clean-markdown',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:document.getElementById('title').value,source:document.getElementById('source').value,content,input_format:document.getElementById('format').value,merge_mode:document.getElementById('mergeMode').value,smart_merge:document.getElementById('mergeMode').value==='smart'})});const d=await r.json();if(!d.ok){setStatus('失败：'+(d.error||'unknown'));return;}document.getElementById('output').value=d.markdown||'';lastFilename=d.filename||lastFilename;document.getElementById('meta').textContent=`${d.input_format} · ${d.line_count} 行 · ${d.char_count} 字`;setStatus('已生成，可以复制或下载。')}
+function normPasteText(s){return String(s||'').replace(/\r\n?/g,'\n').trim()}
+function shouldUseCapturedHtml(text,inputFormat){return !!capturedPasteHtml&&(inputFormat==='auto'||inputFormat==='html')&&normPasteText(text)===normPasteText(capturedPasteText)}
+function setupRichPaste(){const el=document.getElementById('input');if(!el)return;el.addEventListener('paste',e=>{const cd=e.clipboardData;if(!cd)return;const html=cd.getData('text/html')||'';const text=cd.getData('text/plain')||'';if(html&&/<a[\s>]/i.test(html)){capturedPasteHtml=html;capturedPasteText=text;const fmt=document.getElementById('format');if(fmt&&fmt.value==='auto')fmt.value='html';setTimeout(()=>setStatus('\u5df2\u6355\u83b7\u5bcc\u6587\u672c\u94fe\u63a5\uff0c\u751f\u6210\u65f6\u4f1a\u4fdd\u7559 Markdown \u8d85\u94fe\u63a5\u3002'),0)}else{capturedPasteHtml='';capturedPasteText=''}});el.addEventListener('input',()=>{if(capturedPasteText&&normPasteText(el.value)!==normPasteText(capturedPasteText)){capturedPasteHtml='';capturedPasteText=''}})}
+async function cleanNow(){const input=document.getElementById('input');const fmt=document.getElementById('format');let content=input.value;let inputFormat=fmt.value;const usedRichHtml=shouldUseCapturedHtml(content,inputFormat);if(usedRichHtml){content=capturedPasteHtml;inputFormat='html'}setStatus('\u6e05\u6d17\u4e2d...');const r=await fetch('/api/clean-markdown',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:document.getElementById('title').value,source:document.getElementById('source').value,content,input_format:inputFormat,merge_mode:document.getElementById('mergeMode').value,smart_merge:document.getElementById('mergeMode').value==='smart'})});const d=await r.json();if(!d.ok){setStatus('\u5931\u8d25\uff1a'+(d.error||'unknown'));return;}document.getElementById('output').value=d.markdown||'';lastFilename=d.filename||lastFilename;document.getElementById('meta').textContent=`${d.input_format} \u00b7 ${d.line_count} \u884c \u00b7 ${d.char_count} \u5b57`;setStatus(usedRichHtml?'\u5df2\u751f\u6210\uff0c\u5e76\u4fdd\u7559\u5bcc\u6587\u672c\u91cc\u7684 Markdown \u8d85\u94fe\u63a5\u3002':'\u5df2\u751f\u6210\uff0c\u53ef\u4ee5\u590d\u5236\u6216\u4e0b\u8f7d\u3002')}
 async function copyMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}await navigator.clipboard.writeText(v);setStatus('已复制到剪贴板。')}
 function downloadMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}const blob=new Blob([v],{type:'text/markdown;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=lastFilename;document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);a.remove();setStatus('已触发下载。')}
-function clearAll(){document.getElementById('input').value='';document.getElementById('output').value='';document.getElementById('meta').textContent='等待生成';setStatus('')}
+function clearAll(){document.getElementById('input').value='';document.getElementById('output').value='';document.getElementById('meta').textContent='\u7b49\u5f85\u751f\u6210';capturedPasteHtml='';capturedPasteText='';setStatus('')}
 initTheme();
+setupRichPaste();
 </script></body></html>"##,
     )
 }
@@ -2574,6 +2578,28 @@ mod tests {
             body_paras.iter().all(|p| p.chars().count() < 150),
             "{markdown}"
         );
+    }
+
+    #[test]
+    fn paid_article_cleaner_preserves_html_links() {
+        let payload = CleanMarkdownPayload {
+            title: Some("link test".to_string()),
+            source: Some("rss".to_string()),
+            content: Some(
+                r#"<p><a href="https://example.com/a">linked text</a></p><p>plain text.</p>"#
+                    .to_string(),
+            ),
+            input_format: Some("html".to_string()),
+            smart_merge: None,
+            merge_mode: Some("auto".to_string()),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            markdown.contains("[linked text](https://example.com/a)"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("plain text."), "{markdown}");
     }
 
     #[test]
