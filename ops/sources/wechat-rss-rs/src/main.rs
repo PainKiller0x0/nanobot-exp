@@ -48,6 +48,15 @@ struct RefreshPayload {
     days: Option<i64>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct CleanMarkdownPayload {
+    title: Option<String>,
+    source: Option<String>,
+    content: Option<String>,
+    input_format: Option<String>,
+    smart_merge: Option<bool>,
+}
+
 #[derive(Debug, Serialize)]
 struct Subscription {
     id: i64,
@@ -1087,6 +1096,269 @@ async fn refresh_one(
     }))
 }
 
+fn clean_control_text(input: &str) -> String {
+    input
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|c| {
+            !matches!(
+                *c,
+                '\u{0000}'..='\u{0008}'
+                    | '\u{000B}'
+                    | '\u{000C}'
+                    | '\u{000E}'..='\u{001F}'
+                    | '\u{007F}'
+                    | '\u{200B}'
+                    | '\u{200C}'
+                    | '\u{200D}'
+                    | '\u{FEFF}'
+            )
+        })
+        .collect()
+}
+
+fn looks_like_html(input: &str) -> bool {
+    let lower = input.to_lowercase();
+    [
+        "<p", "<br", "<div", "<section", "<article", "<span", "<h1", "<h2", "<strong", "<em",
+        "<img",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn is_cleaner_noise_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let exact = [
+        "文章原文",
+        "原文",
+        "原文链接",
+        "Original",
+        "Original:",
+        "Open Link",
+        "阅读原文",
+        "继续滑动看下一个",
+        "向上滑动看下一个",
+        "喜欢此内容的人还喜欢",
+    ];
+    if exact.iter().any(|x| t.eq_ignore_ascii_case(x)) {
+        return true;
+    }
+    [
+        "微信扫一扫",
+        "长按二维码",
+        "识别二维码",
+        "已关注",
+        "分享到朋友圈",
+        "赞和在看",
+    ]
+    .iter()
+    .any(|needle| t.contains(needle))
+}
+
+fn is_markdown_structural_line(line: &str) -> bool {
+    let t = line.trim_start();
+    if t.is_empty() {
+        return false;
+    }
+    if t.starts_with('#')
+        || t.starts_with('>')
+        || t.starts_with('|')
+        || t.starts_with("```")
+        || t.starts_with("---")
+        || t.starts_with("![")
+        || t.starts_with("- ")
+        || t.starts_with("* ")
+        || t.starts_with("+ ")
+    {
+        return true;
+    }
+    Regex::new(r"^\d+[.)、]\s+").unwrap().is_match(t)
+}
+
+fn ends_sentence(line: &str) -> bool {
+    let t = line.trim_end();
+    if t.is_empty() {
+        return false;
+    }
+    t.ends_with('。')
+        || t.ends_with('！')
+        || t.ends_with('？')
+        || t.ends_with('；')
+        || t.ends_with(';')
+        || t.ends_with('!')
+        || t.ends_with('?')
+        || t.ends_with('.')
+        || t.ends_with('：')
+        || t.ends_with(':')
+        || t.ends_with('”')
+        || t.ends_with('’')
+        || t.ends_with('」')
+        || t.ends_with('』')
+        || t.ends_with('）')
+        || t.ends_with(')')
+        || t.ends_with('】')
+}
+
+fn starts_with_punctuation(line: &str) -> bool {
+    line.trim_start()
+        .chars()
+        .next()
+        .map(|c| "，,。.!！?？；;：:、）)]】」』”’".contains(c))
+        .unwrap_or(false)
+}
+
+fn join_inline(left: &str, right: &str) -> String {
+    let l = left.trim_end();
+    let r = right.trim_start();
+    let left_c = l.chars().last().unwrap_or(' ');
+    let right_c = r.chars().next().unwrap_or(' ');
+    let need_space = left_c.is_ascii_alphanumeric() && right_c.is_ascii_alphanumeric();
+    if starts_with_punctuation(r) || !need_space {
+        format!("{l}{r}")
+    } else {
+        format!("{l} {r}")
+    }
+}
+
+fn normalize_paid_article_markdown(markdown: &str, smart_merge: bool) -> String {
+    let cleaned = clean_control_text(markdown);
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut current = String::new();
+
+    let flush = |current: &mut String, paragraphs: &mut Vec<String>| {
+        let text = current.trim();
+        if !text.is_empty() {
+            paragraphs.push(text.to_string());
+        }
+        current.clear();
+    };
+
+    for raw in cleaned.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            flush(&mut current, &mut paragraphs);
+            continue;
+        }
+        if is_cleaner_noise_line(line) {
+            continue;
+        }
+        if !smart_merge || is_markdown_structural_line(line) {
+            flush(&mut current, &mut paragraphs);
+            paragraphs.push(line.to_string());
+            continue;
+        }
+        if current.is_empty() {
+            current = line.to_string();
+        } else if !ends_sentence(&current) || starts_with_punctuation(line) {
+            current = join_inline(&current, line);
+        } else {
+            flush(&mut current, &mut paragraphs);
+            current = line.to_string();
+        }
+    }
+    flush(&mut current, &mut paragraphs);
+
+    let mut out = paragraphs.join("\n\n");
+    let blank_re = Regex::new(r"\n{3,}").unwrap();
+    out = blank_re.replace_all(&out, "\n\n").to_string();
+    out.trim().to_string()
+}
+
+fn remove_duplicate_title_prefix(markdown: &str, title: &str) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        return markdown.trim().to_string();
+    }
+    let mut lines: Vec<&str> = markdown.lines().collect();
+    while let Some(first) = lines.first() {
+        let clean = first
+            .trim()
+            .trim_start_matches('#')
+            .trim()
+            .trim_matches('【')
+            .trim_matches('】')
+            .trim();
+        if clean == title || clean.is_empty() {
+            lines.remove(0);
+            continue;
+        }
+        break;
+    }
+    lines.join("\n").trim().to_string()
+}
+
+fn sanitize_markdown_filename(title: &str) -> String {
+    let base = if title.trim().is_empty() {
+        format!("wechat-paid-article-{}", Utc::now().format("%Y%m%d-%H%M"))
+    } else {
+        title.trim().to_string()
+    };
+    let mut s = base
+        .chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            _ => c,
+        })
+        .collect::<String>();
+    s = Regex::new(r"\s+").unwrap().replace_all(&s, " ").to_string();
+    s.truncate(80);
+    if !s.ends_with(".md") {
+        s.push_str(".md");
+    }
+    s
+}
+
+fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
+    let title = payload.title.as_deref().unwrap_or("").trim();
+    let source = payload.source.as_deref().unwrap_or("").trim();
+    let raw = payload.content.as_deref().unwrap_or("");
+    let input_format = payload
+        .input_format
+        .as_deref()
+        .unwrap_or("auto")
+        .trim()
+        .to_ascii_lowercase();
+    let smart_merge = payload.smart_merge.unwrap_or(true);
+    let as_html = input_format == "html" || (input_format == "auto" && looks_like_html(raw));
+
+    let markdown_raw = if as_html {
+        parse_html(raw)
+    } else {
+        raw.to_string()
+    };
+    let body = normalize_paid_article_markdown(&markdown_raw, smart_merge);
+    let body = remove_duplicate_title_prefix(&body, title);
+
+    let mut parts: Vec<String> = Vec::new();
+    if !title.is_empty() {
+        parts.push(format!("# {title}"));
+    }
+    if !source.is_empty() {
+        parts.push(format!("> 来源：{source}"));
+    }
+    if !body.trim().is_empty() {
+        parts.push(body);
+    }
+    let markdown = parts.join("\n\n").trim().to_string();
+    let filename = sanitize_markdown_filename(title);
+    let line_count = markdown.lines().count();
+    let char_count = markdown.chars().count();
+    json!({
+        "ok": true,
+        "markdown": markdown,
+        "filename": filename,
+        "input_format": if as_html { "html" } else { "text" },
+        "smart_merge": smart_merge,
+        "line_count": line_count,
+        "char_count": char_count,
+    })
+}
+
 async fn root() -> Html<&'static str> {
     Html(
         r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>RSS Sidecar · Rust</title>
@@ -1122,7 +1394,7 @@ async fn root() -> Html<&'static str> {
 @media (min-width:980px){.stats-card{grid-column:span 4}.subs-card{grid-column:span 8}.entries-card{grid-column:span 8}.llm-card{grid-column:span 4}}
 @media (max-width:760px){.subs .row{grid-template-columns:1fr auto;grid-template-areas:'name status' 'meta action'}.subs .name{grid-area:name}.subs .meta{grid-area:meta}.subs .status{grid-area:status}.subs .action{grid-area:action}.add-sub{grid-template-columns:1fr}.llm-grid{grid-template-columns:1fr}}
 </style></head>
-<body><div class="wrap"><section class="hero"><div><h1 class="title">RSS Sidecar · Rust</h1><p class="sub">统一订阅中台（WeChat / Yage）+ 东八区时间 + 广告文跳过（规则 + 可选LLM）</p></div><div class="btns"><button class="btn-main" onclick="refreshAll()">刷新全部订阅</button><button onclick="loadAll()">刷新页面数据</button><button id="themeToggle" class="theme-btn" onclick="toggleTheme()">Theme</button><div class="auto-ctl"><label><input id="auto_enabled" type="checkbox" onchange="saveAutoRefresh()"> 自动刷新</label><input id="auto_interval_seconds" type="number" min="5" step="1" value="3600" onchange="saveAutoRefresh()">秒<button onclick="saveAutoRefresh()">应用</button></div><div id="auto_hint" class="muted auto-hint"></div></div></section>
+<body><div class="wrap"><section class="hero"><div><h1 class="title">RSS Sidecar · Rust</h1><p class="sub">统一订阅中台（WeChat / Yage）+ 东八区时间 + 广告文跳过（规则 + 可选LLM）</p></div><div class="btns"><button class="btn-main" onclick="refreshAll()">刷新全部订阅</button><button onclick="loadAll()">刷新页面数据</button><button onclick="location.href=\'cleaner\'">付费文章清洗器</button><button id="themeToggle" class="theme-btn" onclick="toggleTheme()">Theme</button><div class="auto-ctl"><label><input id="auto_enabled" type="checkbox" onchange="saveAutoRefresh()"> 自动刷新</label><input id="auto_interval_seconds" type="number" min="5" step="1" value="3600" onchange="saveAutoRefresh()">秒<button onclick="saveAutoRefresh()">应用</button></div><div id="auto_hint" class="muted auto-hint"></div></div></section>
 <section class="grid"><div class="card stats-card"><h2 class="h">运行概览</h2><div class="stats" id="stats"></div></div><div class="card subs-card"><h2 class="h">订阅列表</h2><div class="add-sub"><input id="new_biz" placeholder="biz (可选)"/><input id="new_name" placeholder="name"/><input id="new_feed_url" placeholder="feed url (https://...)"/><button onclick="createSub()">Add</button></div><div class="subs" id="subs"></div></div><div class="card entries-card"><h2 class="h">最近文章（东八区）</h2><div class="entries" id="entries"></div></div>
 <div class="card llm-card"><h2 class="h">LLM 设置</h2><p class="muted">费用策略：仅允许 LongCat-Flash-Lite 自动参与广告判定；其他模型不会被 sidecar 自动调用。</p><label class="llm-switch"><input id="llm_enabled" type="checkbox"/> 启用免费 LLM 广告判定</label><div class="llm-grid"><div class="llm-field"><div class="muted">API Base</div><input id="llm_api_base" placeholder="https://api.longcat.chat/openai/v1"/></div><div class="llm-field"><div class="muted">API Key</div><input id="llm_api_key" type="password" placeholder="ak-..."/></div><div class="llm-field"><div class="muted">Model</div><input id="llm_model" placeholder="LongCat-Flash-Lite"/></div></div><div class="llm-actions"><button onclick="saveLlm()">保存设置</button><button onclick="testLlm()">测试连接</button></div><div id="llm_result" class="llm-result">这里显示模型连通测试结果。</div></div>
 </section></div>
@@ -1237,6 +1509,32 @@ loadAutoRefresh();
 setInterval(loadAutoRefresh,15000);
 loadAll();
 </script></body></html>"#,
+    )
+}
+
+async fn cleaner_page() -> Html<&'static str> {
+    Html(
+        r##"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>付费文章 Markdown 清洗器</title>
+<style>
+:root{--bg:#f4efe4;--card:#fffdf8;--text:#242019;--muted:#746b5a;--line:#d8cdb8;--accent:#9d6a2d;--panel:#faf6ec;--link:#2f4f7b;--shadow:0 18px 48px rgba(42,31,12,.12);--input:#fff}
+[data-theme="dark"]{--bg:#14181a;--card:#242a2f;--text:#edf2f7;--muted:#aeb8c4;--line:#404955;--accent:#d4a260;--panel:#1b2126;--link:#92bdff;--shadow:0 18px 52px rgba(0,0,0,.36);--input:#171d22}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(900px 460px at 8% -12%,rgba(118,165,122,.35),transparent 58%),radial-gradient(760px 420px at 100% 0%,rgba(220,169,91,.28),transparent 55%),var(--bg);color:var(--text);font-family:"Noto Sans SC","Microsoft Yahei",sans-serif}
+.wrap{max-width:1280px;margin:22px auto;padding:0 16px 28px}.hero{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;background:rgba(255,255,255,.22);border:1px solid var(--line);box-shadow:var(--shadow);border-radius:22px;padding:18px}.eyebrow{letter-spacing:.18em;color:var(--accent);font-weight:800;font-size:12px}.hero h1{margin:6px 0 8px;font-size:32px}.hero p{margin:0;color:var(--muted);line-height:1.7}.tools{display:flex;gap:10px;flex-wrap:wrap}button,a.btn{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--card);color:var(--text);font-weight:700;text-decoration:none;cursor:pointer;box-shadow:0 5px 14px rgba(0,0,0,.06)}button.primary{background:linear-gradient(135deg,#f2c979,#dfa45a);border-color:#bd813b;color:#23190e}.grid{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}@media(min-width:980px){.grid{grid-template-columns:1fr 1fr}}.card{background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:16px}.row{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:12px}@media(min-width:760px){.row{grid-template-columns:1fr 1fr}}label{display:block;font-size:13px;color:var(--muted);font-weight:700;margin-bottom:6px}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:13px;background:var(--input);color:var(--text);padding:11px 12px;font:inherit}textarea{min-height:560px;resize:vertical;line-height:1.72}.out{white-space:pre-wrap;font-family:"Noto Serif SC","Songti SC",serif}.hint{color:var(--muted);font-size:13px;line-height:1.7}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 10px;color:var(--muted);font-size:12px}.check{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.check input{width:auto}.status{min-height:22px;color:var(--muted);font-size:13px}.footer{margin-top:12px;color:var(--muted);font-size:12px;line-height:1.6}
+</style></head><body><div class="wrap"><section class="hero"><div><div class="eyebrow">BISHU XIFENG MARKDOWN CLEANER</div><h1>付费文章 Markdown 清洗器</h1><p>把你在微信里已购买的文章正文粘贴进来，我会本地规则清洗碎行、去掉常见噪声，并生成可复制 / 可下载的 Markdown。不会调用 LLM，也不会上传到外部服务。</p></div><div class="tools"><a class="btn" href="./">回到 RSS</a><button onclick="toggleTheme()">明暗切换</button></div></section>
+<section class="grid"><div class="card"><div class="row"><div><label>标题</label><input id="title" placeholder="例如：财富大洗牌，我该选择，还是努力？"/></div><div><label>来源</label><input id="source" value="记忆承载" placeholder="记忆承载 / 记忆承载3"/></div></div><div class="bar"><select id="format" style="max-width:180px"><option value="auto">自动识别 HTML / 文本</option><option value="text">按纯文本处理</option><option value="html">按 HTML 转 Markdown</option></select><label class="check"><input id="smart" type="checkbox" checked/> 智能合并碎行</label></div><label>粘贴微信正文 / HTML</label><textarea id="input" placeholder="在微信文章里复制正文，然后粘贴到这里。若复制出来包含 HTML，也可以直接粘贴。"></textarea><div class="bar"><button class="primary" onclick="cleanNow()">生成 Markdown</button><button onclick="clearAll()">清空</button></div><div class="hint">小提示：如果你从微信桌面版复制出来的是 HTML，保持“自动识别”即可；如果只是普通文本，也会按中文文章规则整理换行。</div></div>
+<div class="card"><div class="bar"><span class="pill" id="meta">等待生成</span><button onclick="copyMd()">复制 Markdown</button><button onclick="downloadMd()">下载 .md</button></div><label>Markdown 结果</label><textarea id="output" class="out" readonly placeholder="生成后的 Markdown 会出现在这里。"></textarea><div class="status" id="status"></div><div class="footer">这个工具适合你已购买后个人整理归档。RSS 订阅库仍只保存公开可抓到的内容；付费全文不自动入库，避免误把试读导流当完整文章。</div></div></section></div>
+<script>
+const KEY='paid_cleaner_theme';let lastFilename='wechat-paid-article.md';
+function applyTheme(t){document.documentElement.setAttribute('data-theme',t);localStorage.setItem(KEY,t)}
+function initTheme(){const saved=localStorage.getItem(KEY);applyTheme(saved==='dark'||saved==='light'?saved:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'))}
+function toggleTheme(){applyTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark')}
+function setStatus(t){document.getElementById('status').textContent=t||''}
+async function cleanNow(){const content=document.getElementById('input').value;setStatus('清洗中...');const r=await fetch('/api/clean-markdown',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:document.getElementById('title').value,source:document.getElementById('source').value,content,input_format:document.getElementById('format').value,smart_merge:document.getElementById('smart').checked})});const d=await r.json();if(!d.ok){setStatus('失败：'+(d.error||'unknown'));return;}document.getElementById('output').value=d.markdown||'';lastFilename=d.filename||lastFilename;document.getElementById('meta').textContent=`${d.input_format} · ${d.line_count} 行 · ${d.char_count} 字`;setStatus('已生成，可以复制或下载。')}
+async function copyMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}await navigator.clipboard.writeText(v);setStatus('已复制到剪贴板。')}
+function downloadMd(){const v=document.getElementById('output').value;if(!v){setStatus('还没有 Markdown。');return;}const blob=new Blob([v],{type:'text/markdown;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=lastFilename;document.body.appendChild(a);a.click();URL.revokeObjectURL(a.href);a.remove();setStatus('已触发下载。')}
+function clearAll(){document.getElementById('input').value='';document.getElementById('output').value='';document.getElementById('meta').textContent='等待生成';setStatus('')}
+initTheme();
+</script></body></html>"##,
     )
 }
 
@@ -1543,6 +1841,13 @@ async fn get_article_markdown(
         md = "(暂无可预览正文)".to_string();
     }
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], md).into_response()
+}
+
+async fn clean_markdown(Json(payload): Json<CleanMarkdownPayload>) -> Json<Value> {
+    if payload.content.as_deref().unwrap_or("").trim().is_empty() {
+        return Json(json!({"ok": false, "error": "content is empty"}));
+    }
+    Json(clean_paid_article_payload(&payload))
 }
 
 async fn create_subscription(
@@ -1968,6 +2273,27 @@ mod tests {
     }
 
     #[test]
+    fn paid_article_cleaner_merges_broken_lines_and_keeps_markdown() {
+        let payload = CleanMarkdownPayload {
+            title: Some("测试标题".to_string()),
+            source: Some("记忆承载".to_string()),
+            content: Some(
+                "测试标题\n\n这是一个被微信\n拆碎的段落，\n还没有结束\n\n[保留链接](https://example.com)\n\n文章原文"
+                    .to_string(),
+            ),
+            input_format: Some("text".to_string()),
+            smart_merge: Some(true),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(markdown.starts_with("# 测试标题"));
+        assert!(markdown.contains("> 来源：记忆承载"));
+        assert!(markdown.contains("这是一个被微信拆碎的段落，还没有结束"));
+        assert!(markdown.contains("[保留链接](https://example.com)"));
+        assert!(!markdown.contains("文章原文"));
+    }
+
+    #[test]
     fn yage_new_kit_html_wrapper_is_removed_before_markdown() {
         let raw = r#"
 <table><tbody><tr><td><div>
@@ -2026,6 +2352,8 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(root))
+        .route("/cleaner", get(cleaner_page))
+        .route("/cleaner/", get(cleaner_page))
         .route("/api/health", get(health))
         .route("/api/auto-refresh-status", get(auto_refresh_status))
         .route(
@@ -2051,6 +2379,7 @@ async fn main() {
         .route("/api/settings/auto-refresh", post(set_auto_refresh))
         .route("/api/articles/{id}", get(get_article))
         .route("/api/articles/{id}/markdown", get(get_article_markdown))
+        .route("/api/clean-markdown", post(clean_markdown))
         .route("/api/refresh-all", post(refresh_all))
         .with_state(state);
 
