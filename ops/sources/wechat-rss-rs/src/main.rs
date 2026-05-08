@@ -90,6 +90,25 @@ struct Entry {
     subscription_name: Option<String>,
 }
 
+fn map_entry_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
+    let published_at: Option<String> = r.get(7)?;
+    Ok(Entry {
+        id: r.get(0)?,
+        subscription_id: r.get(1)?,
+        guid: r.get(2)?,
+        title: r.get(3)?,
+        link: r.get(4)?,
+        summary: r.get(5)?,
+        content_markdown: r.get(6)?,
+        published_at_local: to_shanghai_time(published_at.as_deref()),
+        published_at,
+        inserted_at: r.get(8)?,
+        last_seen_at: r.get(9)?,
+        sample_hits: r.get(10)?,
+        subscription_name: r.get(11)?,
+    })
+}
+
 #[derive(Debug, Serialize)]
 struct FetchRun {
     id: i64,
@@ -1751,25 +1770,37 @@ fn assemble_paid_article_markdown(payload: &CleanMarkdownPayload, body: &str) ->
     parts.join("\n\n").trim().to_string()
 }
 
-fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
+fn markdown_stats(markdown: &str) -> (usize, usize) {
+    (markdown.lines().count(), markdown.chars().count())
+}
+
+fn build_paid_article_cleaner_response(
+    payload: &CleanMarkdownPayload,
+    prepared: &PreparedPaidArticle,
+    markdown: String,
+    cleaner_engine: &str,
+    llm_cleaner_status: &str,
+) -> Value {
     let title = payload.title.as_deref().unwrap_or("").trim();
-    let prepared = prepare_paid_article_body(payload, true);
-    let markdown = assemble_paid_article_markdown(payload, &prepared.body);
-    let filename = sanitize_markdown_filename(title);
-    let line_count = markdown.lines().count();
-    let char_count = markdown.chars().count();
+    let (line_count, char_count) = markdown_stats(&markdown);
     json!({
         "ok": true,
         "markdown": markdown,
-        "filename": filename,
+        "filename": sanitize_markdown_filename(title),
         "input_format": if prepared.as_html { "html" } else { "text" },
         "smart_merge": prepared.smart_merge,
         "merge_mode": prepared.effective_merge_mode,
         "line_count": line_count,
         "char_count": char_count,
-        "cleaner_engine": "local_rules",
-        "llm_cleaner_status": "not_used",
+        "cleaner_engine": cleaner_engine,
+        "llm_cleaner_status": llm_cleaner_status,
     })
+}
+
+fn clean_paid_article_payload(payload: &CleanMarkdownPayload) -> Value {
+    let prepared = prepare_paid_article_body(payload, true);
+    let markdown = assemble_paid_article_markdown(payload, &prepared.body);
+    build_paid_article_cleaner_response(payload, &prepared, markdown, "local_rules", "not_used")
 }
 
 fn whitespace_compact_for_compare(s: &str) -> String {
@@ -2110,24 +2141,7 @@ async fn list_entries(State(st): State<Arc<AppState>>, Query(q): Query<ListQuery
         "SELECT e.id,e.subscription_id,e.guid,e.title,e.link,e.summary,e.content_markdown,e.published_at,e.inserted_at,e.last_seen_at,e.sample_hits,s.name FROM entries e JOIN subscriptions s ON s.id=e.subscription_id WHERE (e.published_at IS NULL OR e.published_at >= ?1) ORDER BY e.published_at DESC, e.inserted_at DESC LIMIT ?2"
     };
     if let Ok(mut stmt) = c.prepare(sql) {
-        let mapper = |r: &rusqlite::Row<'_>| {
-            let published_at: Option<String> = r.get(7)?;
-            Ok(Entry {
-                id: r.get(0)?,
-                subscription_id: r.get(1)?,
-                guid: r.get(2)?,
-                title: r.get(3)?,
-                link: r.get(4)?,
-                summary: r.get(5)?,
-                content_markdown: r.get(6)?,
-                published_at_local: to_shanghai_time(published_at.as_deref()),
-                published_at,
-                inserted_at: r.get(8)?,
-                last_seen_at: r.get(9)?,
-                sample_hits: r.get(10)?,
-                subscription_name: r.get(11)?,
-            })
-        };
+        let mapper = map_entry_row;
         let rows = if with_sid {
             stmt.query_map(
                 params![cutoff, q.subscription_id.unwrap_or_default(), limit],
@@ -2166,24 +2180,7 @@ async fn list_new_items(
     let mut items = Vec::<Entry>::new();
     let sql = "SELECT e.id,e.subscription_id,e.guid,e.title,e.link,e.summary,e.content_markdown,e.published_at,e.inserted_at,e.last_seen_at,e.sample_hits,s.name FROM entries e JOIN subscriptions s ON s.id=e.subscription_id WHERE e.inserted_at >= ?1 ORDER BY e.inserted_at DESC LIMIT ?2";
     if let Ok(mut stmt) = c.prepare(sql) {
-        if let Ok(rows) = stmt.query_map(params![cutoff, limit], |r| {
-            let published_at: Option<String> = r.get(7)?;
-            Ok(Entry {
-                id: r.get(0)?,
-                subscription_id: r.get(1)?,
-                guid: r.get(2)?,
-                title: r.get(3)?,
-                link: r.get(4)?,
-                summary: r.get(5)?,
-                content_markdown: r.get(6)?,
-                published_at_local: to_shanghai_time(published_at.as_deref()),
-                published_at,
-                inserted_at: r.get(8)?,
-                last_seen_at: r.get(9)?,
-                sample_hits: r.get(10)?,
-                subscription_name: r.get(11)?,
-            })
-        }) {
+        if let Ok(rows) = stmt.query_map(params![cutoff, limit], map_entry_row) {
             for row in rows.flatten() {
                 if ad_score(&row.title, &row.summary, &row.content_markdown) >= 2 {
                     continue;
@@ -2262,24 +2259,7 @@ async fn get_article(State(st): State<Arc<AppState>>, Path(id): Path<i64>) -> Js
         Ok(v) => v,
         Err(e) => return Json(json!({"error":e.to_string()})),
     };
-    let row = stmt.query_row(params![id], |r| {
-        let published_at: Option<String> = r.get(7)?;
-        Ok(Entry {
-            id: r.get(0)?,
-            subscription_id: r.get(1)?,
-            guid: r.get(2)?,
-            title: r.get(3)?,
-            link: r.get(4)?,
-            summary: r.get(5)?,
-            content_markdown: r.get(6)?,
-            published_at_local: to_shanghai_time(published_at.as_deref()),
-            published_at,
-            inserted_at: r.get(8)?,
-            last_seen_at: r.get(9)?,
-            sample_hits: r.get(10)?,
-            subscription_name: r.get(11)?,
-        })
-    });
+    let row = stmt.query_row(params![id], map_entry_row);
     match row {
         Ok(v) => Json(
             json!({"item": { "id": v.id, "title": v.title, "link": v.link, "summary": v.summary, "content_markdown": v.content_markdown, "published_at": v.published_at, "published_at_local": v.published_at_local, "inserted_at": v.inserted_at, "subscription_name": v.subscription_name, "article_markdown": if v.content_markdown.is_empty() { v.summary } else { v.content_markdown } }}),
@@ -2353,19 +2333,21 @@ async fn refine_clean_markdown(
     if payload.content.as_deref().unwrap_or("").trim().is_empty() {
         return Json(json!({"ok": false, "error": "content is empty"}));
     }
-    let llm_input = prepare_paid_article_body(&payload, false).body;
-    if llm_input.trim().is_empty() {
+    let prepared = prepare_paid_article_body(&payload, false);
+    if prepared.body.trim().is_empty() {
         return Json(json!({"ok": false, "error": "content is empty after cleanup"}));
     }
     let llm = load_llm_settings_compat(&st.settings_path);
-    match llm_refine_cleaner_markdown(&st.http, &llm, &llm_input).await {
+    match llm_refine_cleaner_markdown(&st.http, &llm, &prepared.body).await {
         Ok(refined_body) => {
             let refined = assemble_paid_article_markdown(&payload, &refined_body);
-            let mut result = clean_paid_article_payload(&payload);
-            result["markdown"] = json!(refined.clone());
-            result["line_count"] = json!(refined.lines().count());
-            result["char_count"] = json!(refined.chars().count());
-            result["cleaner_engine"] = json!("llm_refine");
+            let mut result = build_paid_article_cleaner_response(
+                &payload,
+                &prepared,
+                refined,
+                "llm_refine",
+                "not_used",
+            );
             set_cleaner_llm_result(&mut result, "ok", None);
             Json(result)
         }
