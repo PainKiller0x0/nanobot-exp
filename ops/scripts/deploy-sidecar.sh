@@ -106,6 +106,9 @@ deploy_rust() {
   fi
   [[ -x "$artifact" || "$DRY_RUN" -eq 1 ]] || die "missing release binary: $artifact"
   run install -m 0755 "$artifact" "$BIN_DIR/$bin"
+  if [[ "$id" == "notify" && -f "$src/calendar_reminder.py" ]]; then
+    run install -m 0755 "$src/calendar_reminder.py" /root/.nanobot/workspace/skills/notify-sidecar-rs/calendar_reminder.py
+  fi
   run systemctl daemon-reload
   if [[ "$SKIP_RESTART" -eq 0 ]]; then
     run systemctl restart "$unit"
