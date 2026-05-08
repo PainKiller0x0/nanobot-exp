@@ -76,6 +76,13 @@ def is_last_workday_before_rest(check_date: date) -> bool:
     return is_cn_workday(check_date) and not is_cn_workday(check_date + timedelta(days=1))
 
 
+def final_workday_label(check_date: date) -> str:
+    tomorrow = check_date + timedelta(days=1)
+    if tomorrow.month != check_date.month:
+        return "\u672c\u6708\u6700\u540e\u4e00\u4e2a\u5de5\u4f5c\u65e5"
+    return "\u672c\u5468\u6700\u540e\u4e00\u4e2a\u5de5\u4f5c\u65e5"
+
+
 def print_if(text: str, condition: bool) -> int:
     if condition:
         print(text)
@@ -89,13 +96,14 @@ def main() -> int:
     today_workday = is_cn_workday(today)
     tomorrow_workday = is_cn_workday(tomorrow)
     final_workday = today_workday and not tomorrow_workday
+    final_label = final_workday_label(today)
 
     if mode == "daily-final":
         if not final_workday:
             return 0
         if today.weekday() == 4:
             return print_if("\u5468\u4e94\u5566\uff0c\u8bb0\u5f97\u63d0\u4ea4\u65e5\u62a5\uff01\U0001f4dd", True)
-        return print_if("\u672c\u8f6e\u6700\u540e\u4e00\u4e2a\u5de5\u4f5c\u65e5\uff0c\u8bb0\u5f97\u63d0\u4ea4\u65e5\u62a5\uff01\U0001f4dd", True)
+        return print_if(f"{final_label}\uff0c\u8bb0\u5f97\u63d0\u4ea4\u65e5\u62a5\uff01\U0001f4dd", True)
 
     if mode == "daily-normal":
         return print_if("\u4e0b\u73ed\u524d\u8bb0\u5f97\u5199\u65e5\u62a5\uff01\U0001f4dd", today_workday and tomorrow_workday)
@@ -105,7 +113,7 @@ def main() -> int:
             return 0
         if today.weekday() == 4:
             return print_if("\u5468\u4e94\u5566\uff0c\u8bb0\u5f97\u5199\u9879\u76ee\u5468\u62a5\uff01\U0001f4dd", True)
-        return print_if("\u672c\u8f6e\u6700\u540e\u4e00\u4e2a\u5de5\u4f5c\u65e5\uff0c\u8bb0\u5f97\u5199\u9879\u76ee\u5468\u62a5\uff01\U0001f4dd", True)
+        return print_if(f"{final_label}\uff0c\u8bb0\u5f97\u5199\u9879\u76ee\u5468\u62a5\uff01\U0001f4dd", True)
 
     if mode == "debug":
         info = {
