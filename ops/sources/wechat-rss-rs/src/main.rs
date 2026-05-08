@@ -527,6 +527,58 @@ fn to_shanghai_time(v: Option<&str>) -> Option<String> {
     )
 }
 
+const MD_BOLD_OPEN_TOKEN: &str = "NBMDINLINEBOLDOPEN";
+const MD_BOLD_CLOSE_TOKEN: &str = "NBMDINLINEBOLDCLOSE";
+const MD_EM_OPEN_TOKEN: &str = "NBMDINLINEEMOPEN";
+const MD_EM_CLOSE_TOKEN: &str = "NBMDINLINEEMCLOSE";
+
+fn wrap_html_tag_with_markdown_tokens(
+    html: &str,
+    pattern: &str,
+    open_token: &str,
+    close_token: &str,
+) -> String {
+    let Ok(re) = Regex::new(pattern) else {
+        return html.to_string();
+    };
+    re.replace_all(html, |caps: &regex::Captures| {
+        let inner = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        if inner.trim().is_empty() {
+            inner.to_string()
+        } else {
+            format!("{open_token}{inner}{close_token}")
+        }
+    })
+    .to_string()
+}
+
+fn restore_inline_markdown_tokens(markdown: String) -> String {
+    markdown
+        .replace(MD_BOLD_OPEN_TOKEN, "**")
+        .replace(MD_BOLD_CLOSE_TOKEN, "**")
+        .replace(MD_EM_OPEN_TOKEN, "*")
+        .replace(MD_EM_CLOSE_TOKEN, "*")
+}
+
+fn parse_html_preserving_inline_markdown(html: &str) -> String {
+    let mut s = html.to_string();
+    for pattern in [
+        r"(?is)<strong\b[^>]*>(.*?)</strong>",
+        r"(?is)<b\b[^>]*>(.*?)</b>",
+    ] {
+        s = wrap_html_tag_with_markdown_tokens(
+            &s,
+            pattern,
+            MD_BOLD_OPEN_TOKEN,
+            MD_BOLD_CLOSE_TOKEN,
+        );
+    }
+    for pattern in [r"(?is)<em\b[^>]*>(.*?)</em>", r"(?is)<i\b[^>]*>(.*?)</i>"] {
+        s = wrap_html_tag_with_markdown_tokens(&s, pattern, MD_EM_OPEN_TOKEN, MD_EM_CLOSE_TOKEN);
+    }
+    restore_inline_markdown_tokens(parse_html(&s))
+}
+
 async fn fetch_feed_text(client: &Client, url: &str) -> Result<String, String> {
     let mut last_err = String::new();
     for attempt in 1..=3 {
@@ -559,7 +611,9 @@ async fn fetch_article_markdown_from_link(client: &Client, url: &str) -> Option<
         .error_for_status()
         .ok()?;
     let html = resp.text().await.ok()?;
-    let md = parse_html(&html).trim().to_string();
+    let md = parse_html_preserving_inline_markdown(&html)
+        .trim()
+        .to_string();
     if md.is_empty() {
         None
     } else {
@@ -680,7 +734,9 @@ async fn fetch_yage_article_markdown(
         .ok()?;
     let raw = yage_decode_content_field(&article_html)?;
     let cleaned = yage_prepare_content_html(&raw);
-    let markdown = parse_html(&cleaned).trim().to_string();
+    let markdown = parse_html_preserving_inline_markdown(&cleaned)
+        .trim()
+        .to_string();
     if markdown.is_empty() {
         return None;
     }
@@ -930,9 +986,9 @@ async fn refresh_one(
                 let raw_summary = item.description().unwrap_or("").to_string();
                 let raw_content = item.content().unwrap_or("").to_string();
                 let content_markdown = if raw_content.is_empty() {
-                    parse_html(&raw_summary)
+                    parse_html_preserving_inline_markdown(&raw_summary)
                 } else {
-                    parse_html(&raw_content)
+                    parse_html_preserving_inline_markdown(&raw_content)
                 };
                 let summary = if raw_summary.is_empty() {
                     content_markdown.chars().take(500).collect::<String>()
@@ -1412,7 +1468,9 @@ fn is_short_answer_sentence(sentence: &str) -> bool {
             || t.starts_with("\u{80FD}")
             || t.starts_with("\u{4E0D}\u{80FD}")
             || t.starts_with("\u{4F1A}")
-            || t.starts_with("\u{4E0D}\u{4F1A}"))
+            || t.starts_with("\u{4E0D}\u{4F1A}")
+            || t.starts_with("\u{6CA1}")
+            || t.starts_with("\u{6709}"))
 }
 
 fn starts_demonstrative_continuation(sentence: &str) -> bool {
@@ -1428,12 +1486,27 @@ fn starts_demonstrative_continuation(sentence: &str) -> bool {
         "\u{8FD9}\u{65F6}",
         "\u{8FD9}\u{5C31}",
         "\u{8FD9}\u{624D}",
+        "\u{5C31}\u{50CF}",
+        "\u{597D}\u{6BD4}",
+        "\u{6BD4}\u{5982}",
         "\u{5B83}",
         "\u{4ED6}",
         "\u{5979}",
         "\u{4EBA}\u{5BB6}",
         "\u{524D}\u{8005}",
         "\u{540E}\u{8005}",
+    ]
+    .iter()
+    .any(|prefix| t.starts_with(prefix))
+}
+
+fn starts_parallel_contrast_continuation(sentence: &str) -> bool {
+    let t = sentence.trim_start();
+    [
+        "\u{4E0D}\u{5954}",
+        "\u{4E0D}\u{4EE5}",
+        "\u{4E0D}\u{9760}",
+        "\u{4E0D}\u{53BB}",
     ]
     .iter()
     .any(|prefix| t.starts_with(prefix))
@@ -1463,6 +1536,21 @@ fn should_join_paid_sentences(current: &str, sentence: &str) -> bool {
         return true;
     }
 
+    if starts_parallel_contrast_continuation(next)
+        && cur_len <= 48
+        && next_len <= 48
+        && cur_len + next_len <= 100
+    {
+        return true;
+    }
+
+    if (cur.ends_with('\u{FF1F}') || cur.ends_with('?'))
+        && next_len <= 8
+        && is_short_answer_sentence(next)
+    {
+        return true;
+    }
+
     // Keep tightly-coupled rhetorical Q/A in one paragraph, e.g. "but is he convinced? no.".
     // Other short rhythm lines are intentionally left standalone because the RSS samples
     // show Bishu often uses them as paragraph beats instead of inline clauses.
@@ -1472,13 +1560,7 @@ fn should_join_paid_sentences(current: &str, sentence: &str) -> bool {
     {
         return true;
     }
-    (cur.ends_with('\u{FF1F}') || cur.ends_with('?'))
-        && cur_len <= 18
-        && next_len <= 8
-        && is_short_answer_sentence(next)
-        && (cur.starts_with("\u{4F46}")
-            || cur.starts_with("\u{53EF}")
-            || cur.starts_with("\u{90A3}"))
+    false
 }
 
 fn group_paid_article_sentences(sentences: &[String]) -> Vec<String> {
@@ -1630,7 +1712,7 @@ fn prepare_paid_article_body(
     let as_html = input_format == "html" || (input_format == "auto" && looks_like_html(raw));
 
     let markdown_raw = if as_html {
-        parse_html(raw)
+        parse_html_preserving_inline_markdown(raw)
     } else {
         raw.to_string()
     };
@@ -2926,6 +3008,56 @@ mod tests {
     }
 
     #[test]
+    fn paid_article_cleaner_keeps_new_user_regression_pairs() {
+        let payload = CleanMarkdownPayload {
+            title: Some("new regression".to_string()),
+            source: Some("rss".to_string()),
+            published_at: None,
+            content: Some("\u{8981}\u{662F}\u{5927}\u{5BB6}\u{90FD}\u{5728}\u{53D8}\u{5F97}\u{4E0D}\u{597D}\u{5012}\u{4E5F}\u{7F62}\u{4E86}\u{FF0C}\u{5173}\u{952E}\u{662F}\u{6709}\u{4EBA}\u{53D8}\u{5F97}\u{66F4}\u{597D}\u{FF0C}\u{800C}\u{81EA}\u{5DF1}\u{7684}\u{5904}\u{5883}\u{8D8A}\u{53D1}\u{4E0D}\u{5999}\u{3002}\u{5C31}\u{50CF}\u{8D22}\u{5BCC}\u{5927}\u{6D17}\u{724C}\u{FF0C}\u{62BC}\u{6CE8}\u{78B3}\u{57FA}\u{7684}\u{FF0C}\u{90FD}\u{5728}\u{5411}\u{62BC}\u{6CE8}\u{7845}\u{57FA}\u{7684}\u{8F93}\u{8840}\u{3002}\n\u{6240}\u{4EE5}\u{4EA4}\u{6613}\u{7CFB}\u{7EDF}\u{7ED9}\u{4E00}\u{4E2A}\u{8D4C}\u{5F92}\u{6709}\u{7528}\u{4E48}\u{FF1F}\u{6CA1}\u{6709}\u{7684}\u{3002}\n\u{5954}\u{5B66}\u{672F}\u{53BB}\u{FF0C}\u{90A3}\u{5C31}\u{6309}\u{7167}\u{5B66}\u{672F}\u{7684}\u{8981}\u{6C42}\u{3002}\u{4E0D}\u{5954}\u{5B66}\u{672F}\u{53BB}\u{FF0C}\u{90A3}\u{5C31}\u{6309}\u{7167}\u{6700}\u{7701}\u{65F6}\u{8981}\u{6C42}\u{3002}".to_string()),
+            input_format: Some("text".to_string()),
+            smart_merge: None,
+            merge_mode: Some("auto".to_string()),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(markdown.contains("\u{8D8A}\u{53D1}\u{4E0D}\u{5999}\u{3002}\u{5C31}\u{50CF}\u{8D22}\u{5BCC}\u{5927}\u{6D17}\u{724C}"), "{markdown}");
+        assert!(markdown.contains("\u{6240}\u{4EE5}\u{4EA4}\u{6613}\u{7CFB}\u{7EDF}\u{7ED9}\u{4E00}\u{4E2A}\u{8D4C}\u{5F92}\u{6709}\u{7528}\u{4E48}\u{FF1F}\u{6CA1}\u{6709}\u{7684}\u{3002}"), "{markdown}");
+        assert!(markdown.contains("\u{5954}\u{5B66}\u{672F}\u{53BB}\u{FF0C}\u{90A3}\u{5C31}\u{6309}\u{7167}\u{5B66}\u{672F}\u{7684}\u{8981}\u{6C42}\u{3002}\u{4E0D}\u{5954}\u{5B66}\u{672F}\u{53BB}"), "{markdown}");
+        assert!(
+            !markdown.contains("\u{4E0D}\u{5999}\u{3002}\n\n\u{5C31}\u{50CF}"),
+            "{markdown}"
+        );
+        assert!(
+            !markdown.contains("\u{7528}\u{4E48}\u{FF1F}\n\n\u{6CA1}\u{6709}"),
+            "{markdown}"
+        );
+        assert!(
+            !markdown.contains("\u{8981}\u{6C42}\u{3002}\n\n\u{4E0D}\u{5954}"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn paid_article_cleaner_preserves_html_bold() {
+        let payload = CleanMarkdownPayload {
+            title: Some("bold regression".to_string()),
+            source: Some("rss".to_string()),
+            published_at: None,
+            content: Some(
+                r#"<p><strong>core point</strong>: keep bold.</p><p><b>second point</b></p>"#
+                    .to_string(),
+            ),
+            input_format: Some("html".to_string()),
+            smart_merge: None,
+            merge_mode: Some("preserve".to_string()),
+        };
+        let value = clean_paid_article_payload(&payload);
+        let markdown = value.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(markdown.contains("**core point**"), "{markdown}");
+        assert!(markdown.contains("**second point**"), "{markdown}");
+    }
+
+    #[test]
     fn yage_new_kit_html_wrapper_is_removed_before_markdown() {
         let raw = r#"
 <table><tbody><tr><td><div>
@@ -2941,7 +3073,7 @@ h1 { color: red; }
 </div></td></tr></tbody></table>
 "#;
         let cleaned = yage_prepare_content_html(raw);
-        let markdown = parse_html(&cleaned);
+        let markdown = parse_html_preserving_inline_markdown(&cleaned);
 
         assert!(markdown.contains("[鸭哥 AI 手记] 2026-05-03: 正文标题"));
         assert!(markdown.contains("第一段摘要"));
