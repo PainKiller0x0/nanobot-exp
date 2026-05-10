@@ -260,6 +260,16 @@ class QQConfig(Base):
     send_retry_attempts: int = 1
     send_retry_delay_sec: float = 0.8
 
+    # QQ officially accepts a stream payload on markdown messages even though
+    # public docs lag behind. Keep it opt-in and limited to passive replies so
+    # cron/RSS pushes keep the older one-shot path.
+    stream_enabled: bool = False
+    stream_requires_msg_id: bool = True
+    stream_min_chars: int = 120
+    stream_max_chars: int = 5000
+    stream_chunk_chars: int = 80
+    stream_interval_sec: float = 0.12
+
 
 class QQChannel(BaseChannel):
     """QQ channel using botpy SDK with WebSocket connection."""
@@ -1103,6 +1113,26 @@ class QQChannel(BaseChannel):
                         e,
                     )
 
+            if self._should_stream_text(
+                msg_id=msg_id,
+                is_signed_payload=is_signed_payload,
+                content=safe_content,
+            ):
+                try:
+                    await self._send_text_streaming(
+                        chat_id=msg.chat_id,
+                        is_group=is_group,
+                        msg_id=msg_id,
+                        content=safe_content,
+                    )
+                    return
+                except Exception as e:
+                    logger.warning(
+                        "QQ stream send failed, fallback to normal chunking chat_id={} err={}",
+                        msg.chat_id,
+                        e,
+                    )
+
             max_len = max(200, int(getattr(self.config, "text_chunk_max_len", 1200) or 1200))
             for chunk in split_message(safe_content, max_len):
                 if not chunk:
@@ -1188,6 +1218,120 @@ class QQChannel(BaseChannel):
             payload=payload,
         )
 
+    def _should_stream_text(
+        self,
+        *,
+        msg_id: str | None,
+        is_signed_payload: bool,
+        content: str,
+    ) -> bool:
+        if not getattr(self.config, "stream_enabled", False):
+            return False
+        if self.config.msg_format != "markdown":
+            return False
+        if is_signed_payload:
+            return False
+        if getattr(self.config, "stream_requires_msg_id", True) and not msg_id:
+            return False
+        text_len = len(content.strip())
+        min_chars = max(1, int(getattr(self.config, "stream_min_chars", 120) or 120))
+        max_chars = max(min_chars, int(getattr(self.config, "stream_max_chars", 5000) or 5000))
+        return min_chars <= text_len <= max_chars
+
+    def _split_stream_chunks(self, text: str) -> list[str]:
+        """Split markdown for QQ stream append frames, preserving line endings."""
+        max_chars = max(20, int(getattr(self.config, "stream_chunk_chars", 80) or 80))
+        chunks: list[str] = []
+        current = ""
+        for line in text.splitlines(keepends=True):
+            if len(line) > max_chars:
+                if current:
+                    chunks.append(current if current.endswith("\n") else f"{current}\n")
+                    current = ""
+                for i in range(0, len(line), max_chars):
+                    piece = line[i : i + max_chars]
+                    chunks.append(piece if piece.endswith("\n") else f"{piece}\n")
+                continue
+            if len(current) + len(line) <= max_chars:
+                current += line
+            else:
+                if current:
+                    chunks.append(current if current.endswith("\n") else f"{current}\n")
+                current = line
+        if current:
+            chunks.append(current if current.endswith("\n") else f"{current}\n")
+        return chunks or [text if text.endswith("\n") else f"{text}\n"]
+
+    async def _send_text_streaming(
+        self,
+        chat_id: str,
+        is_group: bool,
+        msg_id: str | None,
+        content: str,
+    ) -> None:
+        """Send a markdown message through QQ's streaming payload."""
+        if not self._client:
+            return
+        content = _strip_silent_marker(content)
+        if not content:
+            return
+
+        chunks = self._split_stream_chunks(content)
+        stream_id: str | None = None
+        interval = max(0.0, float(getattr(self.config, "stream_interval_sec", 0.12) or 0.0))
+        logger.info(
+            "QQ stream send start chat_id={} chunks={} chars={}",
+            chat_id,
+            len(chunks),
+            len(content),
+        )
+
+        for index, chunk in enumerate(chunks):
+            self._msg_seq += 1
+            payload: dict[str, Any] = {
+                "msg_type": 2,
+                "msg_id": msg_id,
+                "msg_seq": self._msg_seq,
+                "markdown": {"content": chunk},
+                "stream": {
+                    "state": 1,
+                    "id": stream_id,
+                    "index": index,
+                    "reset": False,
+                },
+            }
+            result = await self._post_text_payload(
+                chat_id=chat_id,
+                is_group=is_group,
+                msg_id=msg_id,
+                payload=payload,
+            )
+            if isinstance(result, dict) and result.get("id"):
+                stream_id = str(result["id"])
+            if interval and index + 1 < len(chunks):
+                await asyncio.sleep(interval)
+
+        self._msg_seq += 1
+        final_payload: dict[str, Any] = {
+            "msg_type": 2,
+            "msg_id": msg_id,
+            "msg_seq": self._msg_seq,
+            "markdown": {"content": content},
+            "stream": {
+                "state": 10,
+                "id": stream_id,
+                "index": 1,
+                "reset": True,
+            },
+        }
+        await self._post_text_payload(
+            chat_id=chat_id,
+            is_group=is_group,
+            msg_id=msg_id,
+            payload=final_payload,
+        )
+        logger.info("QQ stream send done chat_id={} stream_id={}", chat_id, stream_id)
+
     def _apply_botpy_http_timeout(self) -> None:
         """Keep botpy sends from hanging longer than our QQ channel budget."""
         timeout = float(getattr(self.config, "botpy_http_timeout_sec", 0) or 0)
@@ -1207,7 +1351,7 @@ class QQChannel(BaseChannel):
         is_group: bool,
         msg_id: str | None,
         payload: dict[str, Any],
-    ) -> None:
+    ) -> Any | None:
         """Post text through botpy, retrying passive replies when botpy reports no response."""
         self._apply_botpy_http_timeout()
         can_retry = bool(msg_id) and bool(getattr(self.config, "send_retry_on_empty_response", False))
@@ -1223,7 +1367,7 @@ class QQChannel(BaseChannel):
                     result = await self._client.api.post_c2c_message(openid=chat_id, **payload)
                 if can_retry and result is None:
                     raise asyncio.TimeoutError("QQ API returned no response")
-                return
+                return result
             except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
                 if attempt >= attempts:
                     logger.warning(

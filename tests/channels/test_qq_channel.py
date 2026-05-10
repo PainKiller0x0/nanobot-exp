@@ -27,11 +27,13 @@ class _FakeApi:
         self.c2c_calls: list[dict] = []
         self.group_calls: list[dict] = []
 
-    async def post_c2c_message(self, **kwargs) -> None:
+    async def post_c2c_message(self, **kwargs) -> dict[str, str]:
         self.c2c_calls.append(kwargs)
+        return {"id": f"c2c-{len(self.c2c_calls)}"}
 
-    async def post_group_message(self, **kwargs) -> None:
+    async def post_group_message(self, **kwargs) -> dict[str, str]:
         self.group_calls.append(kwargs)
+        return {"id": f"group-{len(self.group_calls)}"}
 
 
 class _FakeClient:
@@ -201,6 +203,44 @@ async def test_send_group_message_uses_markdown_when_configured() -> None:
         "msg_id": "msg1",
         "msg_seq": 2,
     }
+
+
+@pytest.mark.asyncio
+async def test_send_c2c_markdown_stream_when_enabled() -> None:
+    channel = QQChannel(
+        QQConfig(
+            app_id="app",
+            secret="secret",
+            allow_from=["*"],
+            msg_format="markdown",
+            stream_enabled=True,
+            stream_min_chars=1,
+            stream_chunk_chars=8,
+            stream_interval_sec=0,
+        ),
+        MessageBus(),
+    )
+    channel._client = _FakeClient()
+
+    content = "line one\\nline two\\nline three"
+    await channel.send(
+        OutboundMessage(
+            channel="qq",
+            chat_id="user123",
+            content=content,
+            metadata={"message_id": "msg1"},
+        )
+    )
+
+    calls = channel._client.api.c2c_calls
+    assert len(calls) >= 2
+    assert all(call["msg_type"] == 2 for call in calls)
+    assert all("stream" in call for call in calls)
+    assert calls[0]["stream"] == {"state": 1, "id": None, "index": 0, "reset": False}
+    assert calls[1]["stream"]["id"] == "c2c-1"
+    assert calls[-1]["stream"] == {"state": 10, "id": f"c2c-{len(calls) - 1}", "index": 1, "reset": True}
+    assert calls[-1]["markdown"] == {"content": content}
+    assert not channel._client.api.group_calls
 
 
 @pytest.mark.asyncio
