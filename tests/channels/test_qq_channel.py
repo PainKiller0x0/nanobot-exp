@@ -22,10 +22,20 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.qq import QQChannel, QQConfig
 
 
+class _FakeHttp:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def request(self, route, json):
+        self.calls.append(json)
+        return {"id": f"raw-{len(self.calls)}"}
+
+
 class _FakeApi:
     def __init__(self) -> None:
         self.c2c_calls: list[dict] = []
         self.group_calls: list[dict] = []
+        self._http = _FakeHttp()
 
     async def post_c2c_message(self, **kwargs) -> dict[str, str]:
         self.c2c_calls.append(kwargs)
@@ -232,14 +242,15 @@ async def test_send_c2c_markdown_stream_when_enabled() -> None:
         )
     )
 
-    calls = channel._client.api.c2c_calls
+    calls = channel._client.api._http.calls
     assert len(calls) >= 2
     assert all(call["msg_type"] == 2 for call in calls)
     assert all("stream" in call for call in calls)
-    assert calls[0]["stream"] == {"state": 1, "id": None, "index": 0, "reset": False}
-    assert calls[1]["stream"]["id"] == "c2c-1"
-    assert calls[-1]["stream"] == {"state": 10, "id": f"c2c-{len(calls) - 1}", "index": 1, "reset": True}
+    assert calls[0]["stream"] == {"state": 1, "index": 0, "reset": False}
+    assert calls[1]["stream"]["id"] == "raw-1"
+    assert calls[-1]["stream"] == {"state": 10, "id": f"raw-{len(calls) - 1}", "index": 1, "reset": True}
     assert calls[-1]["markdown"] == {"content": content}
+    assert not channel._client.api.c2c_calls
     assert not channel._client.api.group_calls
 
 

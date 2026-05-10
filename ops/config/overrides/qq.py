@@ -1288,22 +1288,23 @@ class QQChannel(BaseChannel):
 
         for index, chunk in enumerate(chunks):
             self._msg_seq += 1
+            stream_meta: dict[str, Any] = {
+                "state": 1,
+                "index": index,
+                "reset": False,
+            }
+            if stream_id:
+                stream_meta["id"] = stream_id
             payload: dict[str, Any] = {
                 "msg_type": 2,
                 "msg_id": msg_id,
                 "msg_seq": self._msg_seq,
                 "markdown": {"content": chunk},
-                "stream": {
-                    "state": 1,
-                    "id": stream_id,
-                    "index": index,
-                    "reset": False,
-                },
+                "stream": stream_meta,
             }
-            result = await self._post_text_payload(
+            result = await self._post_stream_payload(
                 chat_id=chat_id,
                 is_group=is_group,
-                msg_id=msg_id,
                 payload=payload,
             )
             if isinstance(result, dict) and result.get("id"):
@@ -1324,13 +1325,33 @@ class QQChannel(BaseChannel):
                 "reset": True,
             },
         }
-        await self._post_text_payload(
+        await self._post_stream_payload(
             chat_id=chat_id,
             is_group=is_group,
-            msg_id=msg_id,
             payload=final_payload,
         )
         logger.info("QQ stream send done chat_id={} stream_id={}", chat_id, stream_id)
+
+    async def _post_stream_payload(
+        self,
+        chat_id: str,
+        is_group: bool,
+        payload: dict[str, Any],
+    ) -> Any | None:
+        """Post QQ stream payload through raw botpy HTTP to avoid SDK kwarg filtering."""
+        self._apply_botpy_http_timeout()
+        if not self._client or not getattr(self._client.api, "_http", None) or Route is None:
+            raise RuntimeError("QQ raw HTTP client is not available for streaming")
+
+        if is_group:
+            endpoint = "/v2/groups/{group_openid}/messages"
+            id_key = "group_openid"
+        else:
+            endpoint = "/v2/users/{openid}/messages"
+            id_key = "openid"
+
+        route = Route("POST", endpoint, **{id_key: chat_id})
+        return await self._client.api._http.request(route, json=payload)
 
     def _apply_botpy_http_timeout(self) -> None:
         """Keep botpy sends from hanging longer than our QQ channel budget."""
