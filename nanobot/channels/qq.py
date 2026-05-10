@@ -267,8 +267,8 @@ class QQConfig(Base):
     stream_requires_msg_id: bool = True
     stream_min_chars: int = 120
     stream_max_chars: int = 5000
-    stream_chunk_chars: int = 80
-    stream_interval_sec: float = 0.12
+    stream_chunk_chars: int = 180
+    stream_interval_sec: float = 0.0
 
 
 class QQChannel(BaseChannel):
@@ -1240,7 +1240,7 @@ class QQChannel(BaseChannel):
 
     def _split_stream_chunks(self, text: str) -> list[str]:
         """Split markdown for QQ stream append frames, preserving line endings."""
-        max_chars = max(20, int(getattr(self.config, "stream_chunk_chars", 80) or 80))
+        max_chars = max(20, int(getattr(self.config, "stream_chunk_chars", 180) or 180))
         chunks: list[str] = []
         current = ""
         for line in text.splitlines(keepends=True):
@@ -1278,7 +1278,7 @@ class QQChannel(BaseChannel):
 
         chunks = self._split_stream_chunks(content)
         stream_id: str | None = None
-        interval = max(0.0, float(getattr(self.config, "stream_interval_sec", 0.12) or 0.0))
+        interval = max(0.0, float(getattr(self.config, "stream_interval_sec", 0.0) or 0.0))
         logger.info(
             "QQ stream send start chat_id={} chunks={} chars={}",
             chat_id,
