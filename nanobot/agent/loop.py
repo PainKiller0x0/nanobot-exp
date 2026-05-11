@@ -866,6 +866,11 @@ class AgentLoop:
         session_key = self._effective_session_key(msg)
         if session_key != msg.session_key:
             msg = dataclasses.replace(msg, session_key_override=session_key)
+        if "_turn_id" not in (msg.metadata or {}):
+            meta = dict(msg.metadata or {})
+            meta["_turn_id"] = self._new_turn_id()
+            meta["_turn_started_perf"] = time.perf_counter()
+            msg = dataclasses.replace(msg, metadata=meta)
         lock = self._session_locks.setdefault(session_key, asyncio.Lock())
         gate = self._concurrency_gate or nullcontext()
 
@@ -882,12 +887,24 @@ class AgentLoop:
                         # Split one answer into distinct stream segments.
                         stream_base_id = f"{msg.session_key}:{time.time_ns()}"
                         stream_segment = 0
+                        first_stream_logged = False
 
                         def _current_stream_id() -> str:
                             return f"{stream_base_id}:{stream_segment}"
 
                         async def on_stream(delta: str) -> None:
+                            nonlocal first_stream_logged
                             meta = dict(msg.metadata or {})
+                            if delta and not first_stream_logged:
+                                first_stream_logged = True
+                                logger.info(
+                                    "Turn first stream delta turn_id={} channel={} chat_id={} first_delta_ms={} chars={}",
+                                    meta.get("_turn_id", ""),
+                                    msg.channel,
+                                    msg.chat_id,
+                                    self._elapsed_ms(float(meta.get("_turn_started_perf") or time.perf_counter())),
+                                    len(delta),
+                                )
                             meta["_stream_delta"] = True
                             meta["_stream_id"] = _current_stream_id()
                             await self.bus.publish_outbound(OutboundMessage(
@@ -1148,7 +1165,10 @@ class AgentLoop:
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         turn_id = str((msg.metadata or {}).get("_turn_id") or self._new_turn_id())
-        turn_start = time.perf_counter()
+        try:
+            turn_start = float((msg.metadata or {}).get("_turn_started_perf") or time.perf_counter())
+        except (TypeError, ValueError):
+            turn_start = time.perf_counter()
         self._refresh_provider_snapshot()
         # System messages: parse origin from chat_id ("channel:chat_id")
         if msg.channel == "system":

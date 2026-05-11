@@ -255,6 +255,70 @@ async def test_send_c2c_markdown_stream_when_enabled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qq_supports_streaming_when_stream_enabled() -> None:
+    channel = QQChannel(
+        QQConfig(
+            app_id="app",
+            secret="secret",
+            allow_from=["*"],
+            msg_format="markdown",
+            stream_enabled=True,
+        ),
+        MessageBus(),
+    )
+    data = SimpleNamespace(
+        id="msg-stream",
+        content="hello stream",
+        author=SimpleNamespace(user_openid="user123"),
+        attachments=[],
+    )
+
+    await channel._on_message(data, is_group=False)
+
+    msg = await channel.bus.consume_inbound()
+    assert msg.metadata["_wants_stream"] is True
+    assert msg.metadata["message_id"] == "msg-stream"
+
+
+@pytest.mark.asyncio
+async def test_send_delta_streams_and_finalizes_with_raw_http() -> None:
+    channel = QQChannel(
+        QQConfig(
+            app_id="app",
+            secret="secret",
+            allow_from=["*"],
+            msg_format="markdown",
+            stream_enabled=True,
+            stream_first_flush_chars=1,
+            stream_delta_flush_chars=20,
+            stream_delta_flush_interval_sec=999,
+        ),
+        MessageBus(),
+    )
+    channel._client = _FakeClient()
+
+    metadata = {"_stream_id": "s1", "_stream_delta": True, "message_id": "msg1"}
+    await channel.send_delta("user123", "he", metadata)
+    await channel.send_delta("user123", "llo", metadata)
+    await channel.send_delta(
+        "user123",
+        "",
+        {"_stream_id": "s1", "_stream_end": True, "message_id": "msg1"},
+    )
+
+    calls = channel._client.api._http.calls
+    assert len(calls) == 3
+    assert calls[0]["markdown"] == {"content": "he"}
+    assert calls[0]["stream"] == {"state": 1, "index": 0, "reset": False}
+    assert calls[1]["markdown"] == {"content": "llo"}
+    assert calls[1]["stream"]["id"] == "raw-1"
+    assert calls[2]["markdown"] == {"content": "hello"}
+    assert calls[2]["stream"] == {"state": 10, "id": "raw-2", "index": 1, "reset": True}
+    assert "s1" not in channel._stream_states
+    assert not channel._client.api.c2c_calls
+
+
+@pytest.mark.asyncio
 async def test_read_media_bytes_local_path() -> None:
     channel = QQChannel(QQConfig(app_id="app", secret="secret"), MessageBus())
 

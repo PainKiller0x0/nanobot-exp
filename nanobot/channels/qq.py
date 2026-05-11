@@ -24,6 +24,7 @@ import json
 import mimetypes
 import os
 import re
+import time
 import urllib.request
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -269,6 +270,9 @@ class QQConfig(Base):
     stream_max_chars: int = 5000
     stream_chunk_chars: int = 180
     stream_interval_sec: float = 0.0
+    stream_first_flush_chars: int = 24
+    stream_delta_flush_chars: int = 120
+    stream_delta_flush_interval_sec: float = 0.35
 
 
 class QQChannel(BaseChannel):
@@ -280,6 +284,13 @@ class QQChannel(BaseChannel):
     @classmethod
     def default_config(cls) -> dict[str, Any]:
         return QQConfig().model_dump(by_alias=True)
+
+    @property
+    def supports_streaming(self) -> bool:
+        return bool(
+            getattr(self.config, "stream_enabled", False)
+            and self.config.msg_format == "markdown"
+        )
 
     def __init__(self, config: Any, bus: MessageBus):
         if isinstance(config, dict):
@@ -293,6 +304,7 @@ class QQChannel(BaseChannel):
         self._processed_ids: deque[str] = deque(maxlen=1000)
         self._msg_seq: int = 1  # used to avoid QQ API dedup
         self._chat_type_cache: dict[str, str] = {}
+        self._stream_states: dict[str, dict[str, Any]] = {}
 
         self._media_root: Path = self._init_media_root()
 
@@ -1262,6 +1274,208 @@ class QQChannel(BaseChannel):
             chunks.append(current if current.endswith("\n") else f"{current}\n")
         return chunks or [text if text.endswith("\n") else f"{text}\n"]
 
+    async def _send_stream_frame(
+        self,
+        *,
+        chat_id: str,
+        is_group: bool,
+        msg_id: str | None,
+        content: str,
+        state: int,
+        index: int,
+        reset: bool,
+        stream_id: str | None = None,
+    ) -> str | None:
+        self._msg_seq += 1
+        stream_meta: dict[str, Any] = {
+            "state": state,
+            "index": index,
+            "reset": reset,
+        }
+        if stream_id:
+            stream_meta["id"] = stream_id
+        payload: dict[str, Any] = {
+            "msg_type": 2,
+            "msg_id": msg_id,
+            "msg_seq": self._msg_seq,
+            "markdown": {"content": content},
+            "stream": stream_meta,
+        }
+        result = await self._post_stream_payload(
+            chat_id=chat_id,
+            is_group=is_group,
+            payload=payload,
+        )
+        if isinstance(result, dict) and result.get("id"):
+            return str(result["id"])
+        return None
+
+    async def _flush_delta_stream_state(
+        self,
+        *,
+        stream_key: str,
+        chat_id: str,
+        is_group: bool,
+        msg_id: str | None,
+        state: dict[str, Any],
+    ) -> None:
+        pending = str(state.get("pending") or "")
+        if not pending.strip():
+            return
+        index = int(state.get("index") or 0)
+        qq_stream_id = state.get("qq_stream_id")
+        new_id = await self._send_stream_frame(
+            chat_id=chat_id,
+            is_group=is_group,
+            msg_id=msg_id,
+            content=pending,
+            state=1,
+            index=index,
+            reset=False,
+            stream_id=str(qq_stream_id) if qq_stream_id else None,
+        )
+        if new_id:
+            state["qq_stream_id"] = new_id
+        state["pending"] = ""
+        state["index"] = index + 1
+        state["last_flush_at"] = time.monotonic()
+        if not state.get("first_frame_sent"):
+            state["first_frame_sent"] = True
+            started_at = float(state.get("started_at") or state["last_flush_at"])
+            logger.info(
+                "QQ delta stream first frame stream_key={} chat_id={} first_frame_ms={} chars={}",
+                stream_key,
+                chat_id,
+                int((state["last_flush_at"] - started_at) * 1000),
+                len(pending),
+            )
+
+    async def send_delta(
+        self,
+        chat_id: str,
+        delta: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        metadata = metadata or {}
+        if not self.supports_streaming:
+            return
+        stream_key = str(metadata.get("_stream_id") or chat_id)
+        is_end = bool(metadata.get("_stream_end"))
+        msg_id = metadata.get("message_id") or metadata.get("msg_id")
+        msg_id = str(msg_id) if msg_id else None
+        is_group = self._chat_type_cache.get(str(chat_id)) == "group"
+
+        state = self._stream_states.get(stream_key)
+        if state is None:
+            now = time.monotonic()
+            state = {
+                "content": "",
+                "pending": "",
+                "qq_stream_id": None,
+                "index": 0,
+                "started_at": now,
+                "last_flush_at": now,
+                "disabled": False,
+                "first_frame_sent": False,
+            }
+            self._stream_states[stream_key] = state
+            logger.info("QQ delta stream start stream_key={} chat_id={}", stream_key, chat_id)
+
+        if delta:
+            state["content"] = str(state.get("content") or "") + delta
+            state["pending"] = str(state.get("pending") or "") + delta
+
+        if not msg_id:
+            if is_end:
+                self._stream_states.pop(stream_key, None)
+            logger.warning("QQ delta stream skipped without msg_id stream_key={} chat_id={}", stream_key, chat_id)
+            return
+
+        try:
+            if not is_end:
+                if state.get("disabled"):
+                    return
+                pending = str(state.get("pending") or "")
+                if not pending.strip():
+                    return
+                first_threshold = max(
+                    1,
+                    int(getattr(self.config, "stream_first_flush_chars", 24) or 24),
+                )
+                threshold = (
+                    first_threshold
+                    if not state.get("first_frame_sent")
+                    else max(20, int(getattr(self.config, "stream_delta_flush_chars", 120) or 120))
+                )
+                interval = max(
+                    0.0,
+                    float(getattr(self.config, "stream_delta_flush_interval_sec", 0.35) or 0.0),
+                )
+                elapsed = time.monotonic() - float(state.get("last_flush_at") or time.monotonic())
+                if len(pending) < threshold and elapsed < interval:
+                    return
+                await self._flush_delta_stream_state(
+                    stream_key=stream_key,
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=msg_id,
+                    state=state,
+                )
+                return
+
+            content = str(state.get("content") or "").strip()
+            if not content:
+                self._stream_states.pop(stream_key, None)
+                return
+            if not state.get("disabled") and str(state.get("pending") or "").strip():
+                await self._flush_delta_stream_state(
+                    stream_key=stream_key,
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=msg_id,
+                    state=state,
+                )
+            qq_stream_id = state.get("qq_stream_id")
+            if not state.get("disabled") and qq_stream_id:
+                await self._send_stream_frame(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=msg_id,
+                    content=content,
+                    state=10,
+                    index=1,
+                    reset=True,
+                    stream_id=str(qq_stream_id),
+                )
+                logger.info(
+                    "QQ delta stream done stream_key={} chat_id={} frames={} chars={}",
+                    stream_key,
+                    chat_id,
+                    int(state.get("index") or 0),
+                    len(content),
+                )
+            else:
+                await self._send_text_only(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=msg_id,
+                    content=content,
+                )
+                logger.info("QQ delta stream fallback text sent stream_key={} chat_id={}", stream_key, chat_id)
+        except Exception as e:
+            state["disabled"] = True
+            logger.warning("QQ delta stream failed stream_key={} chat_id={} err={}", stream_key, chat_id, e)
+            if is_end and str(state.get("content") or "").strip():
+                await self._send_text_only(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=msg_id,
+                    content=str(state.get("content") or ""),
+                )
+        finally:
+            if is_end:
+                self._stream_states.pop(stream_key, None)
+
     async def _send_text_streaming(
         self,
         chat_id: str,
@@ -1287,48 +1501,30 @@ class QQChannel(BaseChannel):
         )
 
         for index, chunk in enumerate(chunks):
-            self._msg_seq += 1
-            stream_meta: dict[str, Any] = {
-                "state": 1,
-                "index": index,
-                "reset": False,
-            }
-            if stream_id:
-                stream_meta["id"] = stream_id
-            payload: dict[str, Any] = {
-                "msg_type": 2,
-                "msg_id": msg_id,
-                "msg_seq": self._msg_seq,
-                "markdown": {"content": chunk},
-                "stream": stream_meta,
-            }
-            result = await self._post_stream_payload(
+            new_id = await self._send_stream_frame(
                 chat_id=chat_id,
                 is_group=is_group,
-                payload=payload,
+                msg_id=msg_id,
+                content=chunk,
+                state=1,
+                index=index,
+                reset=False,
+                stream_id=stream_id,
             )
-            if isinstance(result, dict) and result.get("id"):
-                stream_id = str(result["id"])
+            if new_id:
+                stream_id = new_id
             if interval and index + 1 < len(chunks):
                 await asyncio.sleep(interval)
 
-        self._msg_seq += 1
-        final_payload: dict[str, Any] = {
-            "msg_type": 2,
-            "msg_id": msg_id,
-            "msg_seq": self._msg_seq,
-            "markdown": {"content": content},
-            "stream": {
-                "state": 10,
-                "id": stream_id,
-                "index": 1,
-                "reset": True,
-            },
-        }
-        await self._post_stream_payload(
+        await self._send_stream_frame(
             chat_id=chat_id,
             is_group=is_group,
-            payload=final_payload,
+            msg_id=msg_id,
+            content=content,
+            state=10,
+            index=1,
+            reset=True,
+            stream_id=stream_id,
         )
         logger.info("QQ stream send done chat_id={} stream_id={}", chat_id, stream_id)
 

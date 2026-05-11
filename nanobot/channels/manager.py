@@ -486,6 +486,8 @@ class ChannelManager:
         error: Exception | None = None,
     ) -> None:
         meta = msg.metadata or {}
+        if meta.get("_stream_delta") and not meta.get("_stream_end"):
+            return
         turn_id = meta.get("_turn_id")
         if not turn_id:
             return
