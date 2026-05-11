@@ -892,9 +892,20 @@ class AgentLoop:
                         def _current_stream_id() -> str:
                             return f"{stream_base_id}:{stream_segment}"
 
+                        async def _publish_stream_event(content: str, **flags: Any) -> None:
+                            meta = dict(msg.metadata or {})
+                            meta.update(flags)
+                            meta["_stream_id"] = _current_stream_id()
+                            await self.bus.publish_outbound(OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content=content,
+                                metadata=meta,
+                            ))
+
                         async def on_stream(delta: str) -> None:
                             nonlocal first_stream_logged
-                            meta = dict(msg.metadata or {})
+                            meta = msg.metadata or {}
                             if delta and not first_stream_logged:
                                 first_stream_logged = True
                                 logger.info(
@@ -905,25 +916,11 @@ class AgentLoop:
                                     self._elapsed_ms(float(meta.get("_turn_started_perf") or time.perf_counter())),
                                     len(delta),
                                 )
-                            meta["_stream_delta"] = True
-                            meta["_stream_id"] = _current_stream_id()
-                            await self.bus.publish_outbound(OutboundMessage(
-                                channel=msg.channel, chat_id=msg.chat_id,
-                                content=delta,
-                                metadata=meta,
-                            ))
+                            await _publish_stream_event(delta, _stream_delta=True)
 
                         async def on_stream_end(*, resuming: bool = False) -> None:
                             nonlocal stream_segment
-                            meta = dict(msg.metadata or {})
-                            meta["_stream_end"] = True
-                            meta["_resuming"] = resuming
-                            meta["_stream_id"] = _current_stream_id()
-                            await self.bus.publish_outbound(OutboundMessage(
-                                channel=msg.channel, chat_id=msg.chat_id,
-                                content="",
-                                metadata=meta,
-                            ))
+                            await _publish_stream_event("", _stream_end=True, _resuming=resuming)
                             stream_segment += 1
 
                     response = await self._process_message(

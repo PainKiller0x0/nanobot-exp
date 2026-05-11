@@ -328,9 +328,22 @@ class ChannelManager:
                 queue.task_done()
 
     @staticmethod
+    def _is_stream_event(msg: OutboundMessage) -> bool:
+        meta = msg.metadata or {}
+        return bool(meta.get("_stream_delta") or meta.get("_stream_end"))
+
+    @staticmethod
+    def _is_stream_delta(msg: OutboundMessage) -> bool:
+        return bool((msg.metadata or {}).get("_stream_delta"))
+
+    @staticmethod
+    def _is_stream_end(msg: OutboundMessage) -> bool:
+        return bool((msg.metadata or {}).get("_stream_end"))
+
+    @staticmethod
     async def _send_once(channel: BaseChannel, msg: OutboundMessage) -> None:
         """Send one outbound message without retry policy."""
-        if msg.metadata.get("_stream_delta") or msg.metadata.get("_stream_end"):
+        if ChannelManager._is_stream_event(msg):
             await channel.send_delta(msg.chat_id, msg.content, msg.metadata)
         elif not msg.metadata.get("_streamed"):
             await channel.send(msg)
@@ -361,14 +374,12 @@ class ChannelManager:
 
             # Check if this message belongs to the same stream
             same_target = (next_msg.channel, next_msg.chat_id) == target_key
-            is_delta = next_msg.metadata and next_msg.metadata.get("_stream_delta")
-            is_end = next_msg.metadata and next_msg.metadata.get("_stream_end")
 
-            if same_target and is_delta and not final_metadata.get("_stream_end"):
+            if same_target and self._is_stream_delta(next_msg) and not final_metadata.get("_stream_end"):
                 # Accumulate content
                 combined_content += next_msg.content
                 # If we see _stream_end, remember it and stop coalescing this stream
-                if is_end:
+                if self._is_stream_end(next_msg):
                     final_metadata["_stream_end"] = True
                     # Stream ended - stop coalescing this stream
                     break
@@ -396,7 +407,7 @@ class ChannelManager:
             return
         if msg.metadata.get("_delivery_alert"):
             return
-        if msg.metadata.get("_progress") or msg.metadata.get("_stream_delta") or msg.metadata.get("_stream_end"):
+        if msg.metadata.get("_progress") or self._is_stream_event(msg):
             return
 
         alert = OutboundMessage(
@@ -486,7 +497,7 @@ class ChannelManager:
         error: Exception | None = None,
     ) -> None:
         meta = msg.metadata or {}
-        if meta.get("_stream_delta") and not meta.get("_stream_end"):
+        if self._is_stream_delta(msg) and not self._is_stream_end(msg):
             return
         turn_id = meta.get("_turn_id")
         if not turn_id:

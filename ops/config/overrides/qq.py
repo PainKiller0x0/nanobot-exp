@@ -1250,6 +1250,14 @@ class QQChannel(BaseChannel):
         max_chars = max(min_chars, int(getattr(self.config, "stream_max_chars", 5000) or 5000))
         return min_chars <= text_len <= max_chars
 
+    def _stream_delta_flush_policy(self, *, first_frame_sent: bool) -> tuple[int, float]:
+        threshold_key = "stream_delta_flush_chars" if first_frame_sent else "stream_first_flush_chars"
+        threshold_floor = 20 if first_frame_sent else 1
+        threshold_default = 120 if first_frame_sent else 24
+        threshold = max(threshold_floor, int(getattr(self.config, threshold_key, threshold_default) or threshold_default))
+        interval = float(getattr(self.config, "stream_delta_flush_interval_sec", 0.35) or 0.0)
+        return threshold, max(0.0, interval)
+
     def _split_stream_chunks(self, text: str) -> list[str]:
         """Split markdown for QQ stream append frames, preserving line endings."""
         max_chars = max(20, int(getattr(self.config, "stream_chunk_chars", 180) or 180))
@@ -1398,18 +1406,8 @@ class QQChannel(BaseChannel):
                 pending = str(state.get("pending") or "")
                 if not pending.strip():
                     return
-                first_threshold = max(
-                    1,
-                    int(getattr(self.config, "stream_first_flush_chars", 24) or 24),
-                )
-                threshold = (
-                    first_threshold
-                    if not state.get("first_frame_sent")
-                    else max(20, int(getattr(self.config, "stream_delta_flush_chars", 120) or 120))
-                )
-                interval = max(
-                    0.0,
-                    float(getattr(self.config, "stream_delta_flush_interval_sec", 0.35) or 0.0),
+                threshold, interval = self._stream_delta_flush_policy(
+                    first_frame_sent=bool(state.get("first_frame_sent"))
                 )
                 elapsed = time.monotonic() - float(state.get("last_flush_at") or time.monotonic())
                 if len(pending) < threshold and elapsed < interval:
