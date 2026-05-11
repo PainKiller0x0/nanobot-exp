@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobot.command.builtin import register_builtin_commands
+from nanobot.command.help_panel import CAPABILITY_MENU_ALIASES, HELP_ALIASES
 from nanobot.command.router import CommandContext, CommandRouter
 
 
@@ -20,14 +21,12 @@ class TestIsDispatchableCommand:
         return r
 
     def test_exact_commands_match(self, router: CommandRouter) -> None:
-        assert router.is_dispatchable_command("/new")
-        assert router.is_dispatchable_command("/help")
-        assert router.is_dispatchable_command("help")
-        assert router.is_dispatchable_command("\u5e2e\u52a9")
-        assert router.is_dispatchable_command("\u6211\u80fd\u8ba9\u4f60\u505a\u4ec0\u4e48")
-        assert router.is_dispatchable_command("/dream")
-        assert router.is_dispatchable_command("/dream-log")
-        assert router.is_dispatchable_command("/dream-restore")
+        for command in ("/new", "/help", "/dream", "/dream-log", "/dream-restore"):
+            assert router.is_dispatchable_command(command)
+
+    @pytest.mark.parametrize("alias", HELP_ALIASES + CAPABILITY_MENU_ALIASES)
+    def test_registered_chat_aliases_match(self, router: CommandRouter, alias: str) -> None:
+        assert router.is_dispatchable_command(alias)
 
     def test_prefix_commands_match(self, router: CommandRouter) -> None:
         assert router.is_dispatchable_command("/dream-log abc123")
@@ -39,10 +38,19 @@ class TestIsDispatchableCommand:
         assert not router.is_dispatchable_command("/stop")
         assert not router.is_dispatchable_command("/restart")
 
-    def test_regular_text_not_matched(self, router: CommandRouter) -> None:
-        assert not router.is_dispatchable_command("hello")
-        assert not router.is_dispatchable_command("what is 2+2?")
-        assert not router.is_dispatchable_command("")
+    @pytest.mark.parametrize(
+        "text",
+        (
+            "hello",
+            "what is 2+2?",
+            "",
+            "\u8fd9\u4e2a\u6587\u6863\u91cc\u6709\u5e2e\u52a9\u4e24\u4e2a\u5b57",
+            "\u5e2e\u6211\u770b\u770b\u8fd9\u4e2a\u5e2e\u52a9\u6587\u6863",
+            "\u8fd9\u6bb5\u6587\u672c /help \u4e0d\u8981\u89e6\u53d1",
+        ),
+    )
+    def test_regular_text_not_matched(self, router: CommandRouter, text: str) -> None:
+        assert not router.is_dispatchable_command(text)
 
     def test_case_insensitive(self, router: CommandRouter) -> None:
         assert router.is_dispatchable_command("/NEW")
@@ -59,6 +67,10 @@ class TestIsDispatchableCommand:
 class TestMidTurnCommandDispatchedDirectly:
     """Verify that commands matching is_dispatchable_command() are dispatched
     correctly when session=None (the mid-turn path)."""
+
+    @staticmethod
+    def _ctx(msg: MagicMock, loop: MagicMock, raw: str) -> CommandContext:
+        return CommandContext(msg=msg, session=None, key="test:chat1", raw=raw, loop=loop)
 
     @pytest.fixture()
     def router(self) -> CommandRouter:
@@ -113,41 +125,29 @@ class TestMidTurnCommandDispatchedDirectly:
         fake_loop.sessions.get_or_create.assert_called_once_with("test:chat1")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ("/help", "\u5e2e\u52a9"))
     async def test_help_dispatched_with_session_none(
         self,
         router: CommandRouter,
         fake_loop: MagicMock,
         fake_msg: MagicMock,
+        raw: str,
     ) -> None:
-        ctx = CommandContext(
-            msg=fake_msg,
-            session=None,
-            key="test:chat1",
-            raw="/help",
-            loop=fake_loop,
-        )
-        result = await router.dispatch(ctx)
+        result = await router.dispatch(self._ctx(fake_msg, fake_loop, raw))
         assert result is not None
         assert "Nanobot" in result.content
+        assert "OBP" in result.content
 
     @pytest.mark.asyncio
-    async def test_help_alias_dispatched_with_session_none(
+    async def test_capability_alias_dispatched_with_session_none(
         self,
         router: CommandRouter,
         fake_loop: MagicMock,
         fake_msg: MagicMock,
     ) -> None:
-        ctx = CommandContext(
-            msg=fake_msg,
-            session=None,
-            key="test:chat1",
-            raw="\u5e2e\u52a9",
-            loop=fake_loop,
-        )
-        result = await router.dispatch(ctx)
+        result = await router.dispatch(self._ctx(fake_msg, fake_loop, "\u80fd\u529b\u5217\u8868"))
         assert result is not None
-        assert "Nanobot" in result.content
-        assert "OBP" in result.content
+        assert "\u80fd\u529b\u83dc\u5355" in result.content
 
     @pytest.mark.asyncio
     async def test_prefix_command_args_populated(self, router: CommandRouter) -> None:

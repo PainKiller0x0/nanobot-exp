@@ -15,6 +15,7 @@ from nanobot.agent.capability_reply import (
 )
 from nanobot.agent.direct_reply_common import compact_text as _compact_text
 from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.command.help_panel import is_capability_menu_query
 
 _MEMORY_WORD = "\u5185\u5b58"
 _ACK_WORDS = {
@@ -86,7 +87,7 @@ def build_direct_reply(
         return _outbound(msg, memory_reply.search_memory(memory_query))
     if _is_memory_query(text):
         return _outbound(msg, _format_memory_report(model, start_time, last_usage or {}))
-    if _is_capability_menu_query(text):
+    if is_capability_menu_query(_compact_text(text)):
         return _outbound(msg, format_capability_menu())
     if _is_capability_status_query(text):
         return _outbound(msg, format_capability_status())
@@ -139,29 +140,6 @@ def _is_memory_query(text: str) -> bool:
                 "\u67e5\u4e00\u4e0b",
             )
         )
-    )
-
-
-def _is_capability_menu_query(text: str) -> bool:
-    compact = _compact_text(text)
-    exact = {
-        "\u4f60\u4f1a\u4ec0\u4e48",
-        "\u4f60\u80fd\u505a\u4ec0\u4e48",
-        "\u4f60\u80fd\u5e72\u4ec0\u4e48",
-        "\u6211\u80fd\u8ba9\u4f60\u505a\u4ec0\u4e48",
-        "\u80fd\u529b\u5217\u8868",
-        "\u80fd\u529b\u83dc\u5355",
-        "\u529f\u80fd\u5217\u8868",
-        "\u529f\u80fd\u83dc\u5355",
-        "\u6280\u80fd\u5217\u8868",
-        "\u6280\u80fd\u83dc\u5355",
-        "nanobot\u4f1a\u4ec0\u4e48",
-        "nanobot\u80fd\u505a\u4ec0\u4e48",
-    }
-    if compact in exact:
-        return True
-    return "\u80fd\u529b" in compact and compact.endswith(
-        ("\u6709\u54ea\u4e9b", "\u662f\u4ec0\u4e48", "\u5217\u51fa\u6765")
     )
 
 
