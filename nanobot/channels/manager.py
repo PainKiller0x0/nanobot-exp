@@ -328,17 +328,12 @@ class ChannelManager:
                 queue.task_done()
 
     @staticmethod
-    def _is_stream_event(msg: OutboundMessage) -> bool:
-        meta = msg.metadata or {}
-        return bool(meta.get("_stream_delta") or meta.get("_stream_end"))
+    def _stream_flag(msg: OutboundMessage, key: str) -> bool:
+        return bool((msg.metadata or {}).get(key))
 
-    @staticmethod
-    def _is_stream_delta(msg: OutboundMessage) -> bool:
-        return bool((msg.metadata or {}).get("_stream_delta"))
-
-    @staticmethod
-    def _is_stream_end(msg: OutboundMessage) -> bool:
-        return bool((msg.metadata or {}).get("_stream_end"))
+    @classmethod
+    def _is_stream_event(cls, msg: OutboundMessage) -> bool:
+        return cls._stream_flag(msg, "_stream_delta") or cls._stream_flag(msg, "_stream_end")
 
     @staticmethod
     async def _send_once(channel: BaseChannel, msg: OutboundMessage) -> None:
@@ -375,11 +370,11 @@ class ChannelManager:
             # Check if this message belongs to the same stream
             same_target = (next_msg.channel, next_msg.chat_id) == target_key
 
-            if same_target and self._is_stream_delta(next_msg) and not final_metadata.get("_stream_end"):
+            if same_target and self._stream_flag(next_msg, "_stream_delta") and not final_metadata.get("_stream_end"):
                 # Accumulate content
                 combined_content += next_msg.content
                 # If we see _stream_end, remember it and stop coalescing this stream
-                if self._is_stream_end(next_msg):
+                if self._stream_flag(next_msg, "_stream_end"):
                     final_metadata["_stream_end"] = True
                     # Stream ended - stop coalescing this stream
                     break
@@ -497,7 +492,7 @@ class ChannelManager:
         error: Exception | None = None,
     ) -> None:
         meta = msg.metadata or {}
-        if self._is_stream_delta(msg) and not self._is_stream_end(msg):
+        if self._stream_flag(msg, "_stream_delta") and not self._stream_flag(msg, "_stream_end"):
             return
         turn_id = meta.get("_turn_id")
         if not turn_id:
