@@ -286,6 +286,14 @@
       get monthKey(){return this.dayKey.slice(0,7)},
       get today(){return this.stats.by_day?.[this.dayKey]||{}},
       get month(){return this.stats.by_month?.[this.monthKey]||{}},
+      get sourceMonthList(){
+        const byMonth=this.stats.by_source_month||{};
+        const byTotal=this.stats.by_source||{};
+        const names=[...new Set([...Object.keys(byMonth),...Object.keys(byTotal)])];
+        return names.map(name=>({name,...(byMonth[name]?.[this.monthKey]||byTotal[name]||{})}))
+          .filter(item=>(item.requests||0)>0||(item.total_tokens||0)>0||(item.cost_cny||0)>0)
+          .sort((a,b)=>(b.cost_cny||0)-(a.cost_cny||0)||((b.requests||0)-(a.requests||0))||a.name.localeCompare(b.name));
+      },
       get successRate(){const t=this.stats.total?.requests||0;return t?Math.round((this.stats.total.success||0)*1000/t)/10+'%':'-'},
       get budgetPct(){const hard=Number(this.router.monthly_hard_limit_rmb||0);return hard?Math.min(100,Math.round((Number(this.month.cost_cny||0)/hard)*100)):0},
       get groupNames(){return [...new Set((this.channels||[]).map(c=>c.group).filter(Boolean))]},
