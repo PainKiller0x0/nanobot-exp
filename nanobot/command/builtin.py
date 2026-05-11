@@ -20,8 +20,7 @@ async def cmd_stop(ctx: CommandContext) -> OutboundMessage:
     total = await loop._cancel_active_tasks(msg.session_key)
     content = f"Stopped {total} task(s)." if total else "No active task to stop."
     return OutboundMessage(
-        channel=msg.channel, chat_id=msg.chat_id, content=content,
-        metadata=dict(msg.metadata or {})
+        channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=dict(msg.metadata or {})
     )
 
 
@@ -40,8 +39,10 @@ async def cmd_restart(ctx: CommandContext) -> OutboundMessage:
 
     asyncio.create_task(_do_restart())
     return OutboundMessage(
-        channel=msg.channel, chat_id=msg.chat_id, content="Restarting...",
-        metadata=dict(msg.metadata or {})
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content="Restarting...",
+        metadata=dict(msg.metadata or {}),
     )
 
 
@@ -61,6 +62,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     search_usage_text: str | None = None
     try:
         from nanobot.utils.searchusage import fetch_search_usage
+
         web_cfg = getattr(loop, "web_config", None)
         search_cfg = getattr(web_cfg, "search", None) if web_cfg else None
         if search_cfg is not None:
@@ -80,8 +82,10 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content=build_status_content(
-            version=__version__, model=loop.model,
-            start_time=loop._start_time, last_usage=loop._last_usage,
+            version=__version__,
+            model=loop.model,
+            start_time=loop._start_time,
+            last_usage=loop._last_usage,
             context_window_tokens=loop.context_window_tokens,
             session_msg_count=len(session.get_history(max_messages=0)),
             context_tokens_estimate=ctx_est,
@@ -100,16 +104,17 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
     loop = ctx.loop
     await loop._cancel_active_tasks(ctx.key)
     session = ctx.session or loop.sessions.get_or_create(ctx.key)
-    snapshot = session.messages[session.last_consolidated:]
+    snapshot = session.messages[session.last_consolidated :]
     session.clear()
     loop.sessions.save(session)
     loop.sessions.invalidate(session.key)
     if snapshot:
         loop._schedule_background(loop.consolidator.archive(snapshot))
     return OutboundMessage(
-        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
         content="New session started.",
-        metadata=dict(ctx.msg.metadata or {})
+        metadata=dict(ctx.msg.metadata or {}),
     )
 
 
@@ -132,13 +137,19 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
         except Exception as e:
             elapsed = time.monotonic() - t0
             content = f"Dream failed after {elapsed:.1f}s: {e}"
-        await loop.bus.publish_outbound(OutboundMessage(
-            channel=msg.channel, chat_id=msg.chat_id, content=content,
-        ))
+        await loop.bus.publish_outbound(
+            OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=content,
+            )
+        )
 
     asyncio.create_task(_run_dream())
     return OutboundMessage(
-        channel=msg.channel, chat_id=msg.chat_id, content="Dreaming...",
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content="Dreaming...",
     )
 
 
@@ -174,26 +185,32 @@ def _format_dream_log_content(commit, diff: str, *, requested_sha: str | None = 
     lines = [
         "## Dream Update",
         "",
-        "Here is the selected Dream memory change." if requested_sha else "Here is the latest Dream memory change.",
+        "Here is the selected Dream memory change."
+        if requested_sha
+        else "Here is the latest Dream memory change.",
         "",
         f"- Commit: `{commit.sha}`",
         f"- Time: {commit.timestamp}",
         f"- Changed files: {files_line}",
     ]
     if diff:
-        lines.extend([
-            "",
-            f"Use `/dream-restore {commit.sha}` to undo this change.",
-            "",
-            "```diff",
-            diff.rstrip(),
-            "```",
-        ])
+        lines.extend(
+            [
+                "",
+                f"Use `/dream-restore {commit.sha}` to undo this change.",
+                "",
+                "```diff",
+                diff.rstrip(),
+                "```",
+            ]
+        )
     else:
-        lines.extend([
-            "",
-            "Dream recorded this version, but there is no file diff to display.",
-        ])
+        lines.extend(
+            [
+                "",
+                "Dream recorded this version, but there is no file diff to display.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -206,11 +223,13 @@ def _format_dream_restore_list(commits: list) -> str:
     ]
     for c in commits:
         lines.append(f"- `{c.sha}` {c.timestamp} - {c.message.splitlines()[0]}")
-    lines.extend([
-        "",
-        "Preview a version with `/dream-log <sha>` before restoring it.",
-        "Restore a version with `/dream-restore <sha>`.",
-    ])
+    lines.extend(
+        [
+            "",
+            "Preview a version with `/dream-log <sha>` before restoring it.",
+            "Restore a version with `/dream-restore <sha>`.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -229,8 +248,10 @@ async def cmd_dream_log(ctx: CommandContext) -> OutboundMessage:
         else:
             msg = "Dream history is not available because memory versioning is not initialized."
         return OutboundMessage(
-            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
-            content=msg, metadata={"render_as": "text"},
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=msg,
+            metadata={"render_as": "text"},
         )
 
     args = ctx.args.strip()
@@ -259,8 +280,10 @@ async def cmd_dream_log(ctx: CommandContext) -> OutboundMessage:
             content = "Dream memory has no saved versions yet."
 
     return OutboundMessage(
-        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
-        content=content, metadata={"render_as": "text"},
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=content,
+        metadata={"render_as": "text"},
     )
 
 
@@ -275,7 +298,8 @@ async def cmd_dream_restore(ctx: CommandContext) -> OutboundMessage:
     git = store.git
     if not git.is_initialized():
         return OutboundMessage(
-            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
             content="Dream history is not available because memory versioning is not initialized.",
         )
 
@@ -305,8 +329,10 @@ async def cmd_dream_restore(ctx: CommandContext) -> OutboundMessage:
                 "It may not exist, or it may be the first saved version with no earlier state to restore."
             )
     return OutboundMessage(
-        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
-        content=content, metadata={"render_as": "text"},
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=content,
+        metadata={"render_as": "text"},
     )
 
 
@@ -322,7 +348,9 @@ def _format_history_message(msg: dict) -> str | None:
         return None
     content = msg.get("content") or ""
     if isinstance(content, list):
-        parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        parts = [
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        ]
         content = " ".join(parts)
     content = str(content).strip()
     if not content:
@@ -344,7 +372,8 @@ async def cmd_history(ctx: CommandContext) -> OutboundMessage:
             count = max(1, min(int(ctx.args.strip()), _HISTORY_MAX_COUNT))
         except ValueError:
             return OutboundMessage(
-                channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
                 content="Usage: /history [count] — e.g. /history 5 (default: 10, max: 50)",
                 metadata=dict(ctx.msg.metadata or {}),
             )
@@ -357,14 +386,16 @@ async def cmd_history(ctx: CommandContext) -> OutboundMessage:
 
     if not recent:
         return OutboundMessage(
-            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
             content="No conversation history yet.",
             metadata=dict(ctx.msg.metadata or {}),
         )
 
     header = f"Last {len(recent)} message(s):\n"
     return OutboundMessage(
-        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
         content=header + "\n".join(recent),
         metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
     )
@@ -381,20 +412,60 @@ async def cmd_help(ctx: CommandContext) -> OutboundMessage:
 
 
 def build_help_text() -> str:
-    """Build canonical help text shared across channels."""
+    """Build the user-facing help panel shared across channels."""
     lines = [
-        "🐈 nanobot commands:",
-        "/new — Stop current task and start a new conversation",
-        "/stop — Stop the current task",
-        "/restart — Restart the bot",
-        "/status — Show bot status",
-        "/history [n] — Show the last N conversation messages (default 10)",
-        "/dream — Manually trigger Dream consolidation",
-        "/dream-log — Show what the last Dream changed",
-        "/dream-restore — Revert memory to a previous state",
-        "/help — Show available commands",
+        "\U0001f9ed Nanobot \u4f7f\u7528\u9762\u677f\uff08\u672a\u8c03\u7528 LLM\uff09",
+        "",
+        "\u4f60\u53ef\u4ee5\u76f4\u63a5\u8fd9\u6837\u95ee\uff1a",
+        "- \u5185\u5b58\u600e\u4e48\u6837 \u2014 \u67e5\u770b\u670d\u52a1\u5668\u548c nanobot \u5185\u5b58\uff0c\u4e0d\u8d70\u6a21\u578b",
+        "- \u670d\u52a1\u72b6\u6001 \u2014 \u68c0\u67e5 sidecar / \u80fd\u529b\u5065\u5eb7",
+        "- \u4eca\u5929\u5148\u770b\u4ec0\u4e48 \u2014 \u4eca\u65e5\u6587\u7ae0\u3001LOF\u3001\u4efb\u52a1\u5f02\u5e38\u6458\u8981",
+        "- \u6a21\u578b\u82b1\u8d39 \u2014 \u67e5\u770b OBP \u6d88\u8017\u548c\u6765\u6e90\u7edf\u8ba1",
+        "- LOF \u6709\u673a\u4f1a\u5417 \u2014 \u67e5\u770b LOF/QDII \u5b9e\u65f6\u770b\u677f\u548c\u62a5\u544a",
+        "- \u4eca\u5929\u70ed\u70b9 / \u65b0\u95fb\u7b80\u62a5 \u2014 \u67e5\u770b\u8fc7\u6ee4\u540e\u7684\u70ed\u70b9\u65b0\u95fb",
+        "- \u6536\u4e00\u4e0b <\u94fe\u63a5> \u2014 \u6293\u53d6\u7f51\u9875\u8fdb\u77e5\u8bc6\u6536\u4ef6\u7bb1",
+        "- \u8fd9\u4e2a\u503c\u5f97\u770b\u5417 <\u94fe\u63a5> \u2014 \u751f\u6210\u8f7b\u91cf\u51b3\u7b56\u5305",
+        "- \u8bb0\u4f4f <\u5185\u5bb9> \u2014 \u5199\u5165\u672c\u5730\u8bb0\u5fc6",
+        "- \u8bb0\u5fc6\u72b6\u6001 / \u641c\u8bb0\u5fc6 <\u5173\u952e\u8bcd> \u2014 \u67e5\u770b\u6216\u68c0\u7d22\u8bb0\u5fc6",
+        "- \u4f60\u6700\u8fd1\u8fdb\u5316\u4e86\u5417 \u2014 \u67e5\u770b\u8fdb\u5316\u65e5\u5fd7",
+        "",
+        "\u5feb\u6377\u547d\u4ee4\uff1a",
+        "/new \u2014 \u5f00\u542f\u65b0\u4f1a\u8bdd",
+        "/stop \u2014 \u505c\u6b62\u5f53\u524d\u4efb\u52a1",
+        "/restart \u2014 \u91cd\u542f nanobot",
+        "/status \u2014 \u67e5\u770b\u8fd0\u884c\u72b6\u6001",
+        "/history [n] \u2014 \u67e5\u770b\u6700\u8fd1 n \u6761\u5bf9\u8bdd",
+        "/dream \u2014 \u624b\u52a8\u89e6\u53d1\u8bb0\u5fc6\u6574\u7406",
+        "/dream-log \u2014 \u67e5\u770b\u6700\u8fd1\u8bb0\u5fc6\u53d8\u66f4",
+        "/dream-restore \u2014 \u56de\u6eda\u8bb0\u5fc6\u7248\u672c",
+        "/help \u2014 \u663e\u793a\u8fd9\u4e2a\u9762\u677f",
+        "",
+        "\u7f51\u9875\u5165\u53e3\uff1ahttp://150.158.121.88:8093/sidecars",
     ]
     return "\n".join(lines)
+
+
+_HELP_ALIASES = (
+    "help",
+    "menu",
+    "nanobot help",
+    "\u5e2e\u52a9",
+    "\u83dc\u5355",
+    "\u6307\u4ee4",
+    "\u6307\u4ee4\u5217\u8868",
+    "\u4f7f\u7528\u8bf4\u660e",
+    "\u600e\u4e48\u7528",
+    "\u4f60\u4f1a\u4ec0\u4e48",
+    "\u4f60\u80fd\u505a\u4ec0\u4e48",
+    "\u4f60\u80fd\u5e72\u4ec0\u4e48",
+    "\u6211\u80fd\u8ba9\u4f60\u505a\u4ec0\u4e48",
+    "\u80fd\u529b\u5217\u8868",
+    "\u80fd\u529b\u83dc\u5355",
+    "\u529f\u80fd\u5217\u8868",
+    "\u529f\u80fd\u83dc\u5355",
+    "\u6280\u80fd\u5217\u8868",
+    "\u6280\u80fd\u83dc\u5355",
+)
 
 
 def register_builtin_commands(router: CommandRouter) -> None:
@@ -412,3 +483,5 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/dream-restore", cmd_dream_restore)
     router.prefix("/dream-restore ", cmd_dream_restore)
     router.exact("/help", cmd_help)
+    for alias in _HELP_ALIASES:
+        router.exact(alias, cmd_help)

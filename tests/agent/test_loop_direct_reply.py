@@ -97,3 +97,23 @@ async def test_capability_menu_uses_direct_reply(tmp_path) -> None:
     assert out is not None
     assert "\u672a\u8c03\u7528 LLM" in out.content
     provider.chat_with_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_help_alias_uses_local_command_without_llm(tmp_path) -> None:
+    provider = _provider()
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+
+    out = await loop._process_message(
+        InboundMessage(
+            channel="qq",
+            sender_id="user",
+            chat_id="chat",
+            content="\u5e2e\u52a9",
+        )
+    )
+
+    assert out is not None
+    assert "Nanobot" in out.content
+    assert "OBP" in out.content
+    provider.chat_with_retry.assert_not_awaited()

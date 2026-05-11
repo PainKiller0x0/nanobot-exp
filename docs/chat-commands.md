@@ -13,7 +13,8 @@ These commands work inside chat channels and interactive agent sessions:
 | `/dream-log <sha>` | Show a specific Dream memory change |
 | `/dream-restore` | List recent Dream memory versions |
 | `/dream-restore <sha>` | Restore memory to the state before a specific change |
-| `/help` | Show available in-chat commands |
+| `/help` | Show the usage panel with common natural-language prompts |
+| `help` / `menu` / Chinese help aliases | Same as `/help`, useful in chat apps where slash commands are awkward |
 
 ## Periodic Tasks
 

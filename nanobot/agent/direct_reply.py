@@ -7,13 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent import inbox_reply, memory_reply
-from nanobot.agent.direct_reply_common import compact_text as _compact_text
 from nanobot.agent.capability_reply import (
     format_capability_menu,
     format_capability_status,
     format_evolution_brief,
     format_today_brief,
 )
+from nanobot.agent.direct_reply_common import compact_text as _compact_text
 from nanobot.bus.events import InboundMessage, OutboundMessage
 
 _MEMORY_WORD = "\u5185\u5b58"
@@ -148,6 +148,7 @@ def _is_capability_menu_query(text: str) -> bool:
         "\u4f60\u4f1a\u4ec0\u4e48",
         "\u4f60\u80fd\u505a\u4ec0\u4e48",
         "\u4f60\u80fd\u5e72\u4ec0\u4e48",
+        "\u6211\u80fd\u8ba9\u4f60\u505a\u4ec0\u4e48",
         "\u80fd\u529b\u5217\u8868",
         "\u80fd\u529b\u83dc\u5355",
         "\u529f\u80fd\u5217\u8868",
