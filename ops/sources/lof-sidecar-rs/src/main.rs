@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fs,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -87,6 +88,18 @@ struct AppState {
 #[derive(Debug, Deserialize)]
 struct RunRequest {
     tag: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ObpLoginRequest {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ObpPasswordRequest {
+    username: String,
+    password: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -363,6 +376,11 @@ async fn main() {
         .route("/reflexio", any(proxy_reflexio_root))
         .route("/reflexio/", any(proxy_reflexio_root))
         .route("/reflexio/*path", any(proxy_reflexio_path))
+        .route("/obp-login", get(obp_login_page))
+        .route("/obp-auth/status", get(obp_auth_status))
+        .route("/obp-auth/login", post(obp_auth_login))
+        .route("/obp-auth/logout", post(obp_auth_logout))
+        .route("/obp-auth/password", post(obp_auth_password))
         .route("/obp", any(proxy_obp_root))
         .route("/obp/", any(proxy_obp_root))
         .route("/obp/*path", any(proxy_obp_path))
@@ -812,7 +830,7 @@ async fn proxy_obp_root(
     body: Bytes,
 ) -> Response {
     if !is_obp_proxy_authorized(&headers) {
-        return obp_unauthorized_response();
+        return obp_unauthorized_response(&headers, &method);
     }
     reverse_proxy(
         state,
@@ -836,7 +854,7 @@ async fn proxy_obp_path(
     body: Bytes,
 ) -> Response {
     if !is_obp_proxy_authorized(&headers) {
-        return obp_unauthorized_response();
+        return obp_unauthorized_response(&headers, &method);
     }
     reverse_proxy(
         state,
@@ -851,11 +869,72 @@ async fn proxy_obp_path(
     .await
 }
 
+async fn obp_login_page() -> Html<&'static str> {
+    Html(OBP_LOGIN_HTML)
+}
+
+async fn obp_auth_status(headers: HeaderMap) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "authenticated": is_obp_proxy_authorized(&headers),
+        "form_login": true,
+    }))
+}
+
+async fn obp_auth_login(Json(req): Json<ObpLoginRequest>) -> Response {
+    let basic_b64 = encode_basic_pair(&req.username, &req.password);
+    if current_obp_basic_b64().is_some_and(|saved| saved == basic_b64) {
+        return json_with_cookie(
+            StatusCode::OK,
+            serde_json::json!({"ok": true}),
+            Some(session_cookie_value()),
+        );
+    }
+    json_response(
+        StatusCode::UNAUTHORIZED,
+        serde_json::json!({"ok": false, "error": "invalid_credentials"}),
+    )
+}
+
+async fn obp_auth_logout() -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .header(
+            header::SET_COOKIE,
+            "obp_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
+        )
+        .body(Body::from(r#"{"ok":true}"#))
+        .unwrap()
+}
+
+async fn obp_auth_password(headers: HeaderMap, Json(req): Json<ObpPasswordRequest>) -> Response {
+    if !is_obp_proxy_authorized(&headers) {
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({"ok": false, "error": "unauthorized"}),
+        );
+    }
+    if req.username.trim().is_empty() || req.password.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"ok": false, "error": "username_and_password_required"}),
+        );
+    }
+    match save_obp_basic_b64(&encode_basic_pair(req.username.trim(), &req.password)) {
+        Ok(()) => json_with_cookie(
+            StatusCode::OK,
+            serde_json::json!({"ok": true}),
+            Some(session_cookie_value()),
+        ),
+        Err(err) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({"ok": false, "error": err.to_string()}),
+        ),
+    }
+}
+
 fn is_obp_proxy_authorized(headers: &HeaderMap) -> bool {
-    let token = std::env::var("OBP_PROXY_TOKEN")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let token = current_obp_secret("OBP_PROXY_TOKEN").unwrap_or_default();
     if token.is_empty() {
         return true;
     }
@@ -865,6 +944,10 @@ fn is_obp_proxy_authorized(headers: &HeaderMap) -> bool {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.trim() == token)
     {
+        return true;
+    }
+
+    if cookie_value(headers, "obp_session").is_some_and(|v| v == session_cookie_value()) {
         return true;
     }
 
@@ -879,21 +962,202 @@ fn is_obp_proxy_authorized(headers: &HeaderMap) -> bool {
         return true;
     }
 
-    let basic_b64 = std::env::var("OBP_PROXY_BASIC_B64")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    !basic_b64.is_empty() && auth == format!("Basic {basic_b64}")
+    current_obp_basic_b64().is_some_and(|basic_b64| auth == format!("Basic {basic_b64}"))
 }
 
-fn obp_unauthorized_response() -> Response {
+fn obp_unauthorized_response(headers: &HeaderMap, method: &Method) -> Response {
+    let accept_html = *method == Method::GET
+        && headers
+            .get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|value| value.contains("text/html"));
+    if accept_html {
+        return Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header(header::LOCATION, "/obp-login")
+            .body(Body::empty())
+            .unwrap();
+    }
+    json_response(
+        StatusCode::UNAUTHORIZED,
+        serde_json::json!({"ok": false, "error": "obp_requires_authentication"}),
+    )
+}
+
+fn json_response(status: StatusCode, value: serde_json::Value) -> Response {
     Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .header(header::WWW_AUTHENTICATE, r#"Basic realm="OBP""#)
-        .body(Body::from("OBP requires authentication"))
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from(value.to_string()))
         .unwrap()
 }
+
+fn json_with_cookie(
+    status: StatusCode,
+    value: serde_json::Value,
+    session_value: Option<String>,
+) -> Response {
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json; charset=utf-8");
+    if let Some(value) = session_value {
+        builder = builder.header(
+            header::SET_COOKIE,
+            format!("obp_session={value}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax"),
+        );
+    }
+    builder.body(Body::from(value.to_string())).unwrap()
+}
+
+fn session_cookie_value() -> String {
+    current_obp_secret("OBP_PROXY_TOKEN")
+        .or_else(current_obp_basic_b64)
+        .unwrap_or_default()
+}
+
+fn current_obp_basic_b64() -> Option<String> {
+    current_obp_secret("OBP_PROXY_BASIC_B64")
+}
+
+fn current_obp_secret(key: &str) -> Option<String> {
+    if let Some(value) = read_obp_env_file_value(key) {
+        return Some(value);
+    }
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn read_obp_env_file_value(key: &str) -> Option<String> {
+    let path = obp_proxy_env_path();
+    let data = fs::read_to_string(path).ok()?;
+    for line in data.lines() {
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name.trim() == key {
+            let value = value
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn save_obp_basic_b64(value: &str) -> std::io::Result<()> {
+    let path = obp_proxy_env_path();
+    let mut lines = fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let mut updated = false;
+    for line in &mut lines {
+        if line.trim_start().starts_with("OBP_PROXY_BASIC_B64=") {
+            *line = format!("OBP_PROXY_BASIC_B64={value}");
+            updated = true;
+            break;
+        }
+    }
+    if !updated {
+        lines.push(format!("OBP_PROXY_BASIC_B64={value}"));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, format!("{}\n", lines.join("\n")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+fn obp_proxy_env_path() -> PathBuf {
+    std::env::var("OBP_PROXY_ENV_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/root/.nanobot/secrets/obp-proxy.env"))
+}
+
+fn cookie_value(headers: &HeaderMap, key: &str) -> Option<String> {
+    let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
+    for item in cookie.split(';') {
+        let (name, value) = item.trim().split_once('=')?;
+        if name == key {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn encode_basic_pair(username: &str, password: &str) -> String {
+    base64_encode(format!("{}:{}", username.trim(), password).as_bytes())
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+const OBP_LOGIN_HTML: &str = r#"<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OBP 登录</title>
+<style>
+:root{color-scheme:dark light}body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:ui-sans-serif,system-ui;background:radial-gradient(circle at 20% 10%,#14b8a633,transparent 34%),linear-gradient(135deg,#020617,#0f172a);color:#e5e7eb}.card{width:min(92vw,420px);border:1px solid #334155;border-radius:28px;background:#0f172add;box-shadow:0 28px 80px #0008;padding:28px}h1{margin:0 0 8px;font-size:32px;letter-spacing:-.04em}.hint{color:#94a3b8;line-height:1.7;font-size:14px}.field{display:block;margin-top:16px;font-size:13px;font-weight:800;color:#cbd5e1}.input{box-sizing:border-box;width:100%;margin-top:7px;border:1px solid #475569;border-radius:14px;background:#020617;color:#f8fafc;padding:13px 14px;font-size:16px;outline:none}.input:focus{border-color:#2dd4bf;box-shadow:0 0 0 4px #2dd4bf22}.btn{width:100%;border:0;border-radius:16px;margin-top:20px;padding:13px 16px;font-size:16px;font-weight:900;background:#ccfbf1;color:#042f2e;cursor:pointer}.err{min-height:20px;margin-top:12px;color:#fb7185;font-size:13px;font-weight:800}.foot{margin-top:18px;color:#64748b;font-size:12px;line-height:1.6}
+</style>
+</head>
+<body>
+<form class="card" id="login">
+<div style="font-size:12px;font-weight:900;letter-spacing:.22em;color:#5eead4">MODEL ROUTER</div>
+<h1>OBP 登录</h1>
+<div class="hint">使用网页表单登录，浏览器可以正常保存密码。API 调用仍然使用 Bearer Token 或 Basic Auth。</div>
+<label class="field">用户名<input class="input" name="username" autocomplete="username" required autofocus></label>
+<label class="field">密码<input class="input" name="password" type="password" autocomplete="current-password" required></label>
+<button class="btn" type="submit">进入 OBP 控制台</button>
+<div class="err" id="err"></div>
+<div class="foot">登录成功后会跳转到 /obp/，并写入 HttpOnly 会话 Cookie。</div>
+</form>
+<script>
+document.getElementById('login').addEventListener('submit', async (event)=>{
+  event.preventDefault();
+  const fd=new FormData(event.currentTarget);
+  const err=document.getElementById('err');
+  err.textContent='';
+  const res=await fetch('/obp-auth/login',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:fd.get('username'),password:fd.get('password')})});
+  if(res.ok){ location.href='/obp/'; return; }
+  err.textContent='账号或密码不对';
+});
+</script>
+</body>
+</html>"#;
 
 async fn reverse_proxy(
     state: AppState,

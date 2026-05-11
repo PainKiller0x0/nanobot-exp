@@ -75,6 +75,8 @@ pub struct RequestLog {
     pub day: String,
     pub month: String,
     pub time: String,
+    #[serde(default = "default_source")]
+    pub source: String,
     pub channel: String,
     pub channel_id: Option<u64>,
     pub requested_model: String,
@@ -101,6 +103,7 @@ pub struct RequestLog {
 impl RequestLog {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        source: String,
         channel_id: Option<u64>,
         channel: String,
         requested_model: String,
@@ -120,6 +123,7 @@ impl RequestLog {
             day,
             month,
             time,
+            source: normalize_key(source, "unknown-source"),
             channel,
             channel_id,
             requested_model: normalize_key(requested_model, "unknown"),
@@ -194,6 +198,12 @@ pub struct UsageStats {
     #[serde(default)]
     pub by_channel: BTreeMap<String, UsageBucket>,
     #[serde(default)]
+    pub by_source: BTreeMap<String, UsageBucket>,
+    #[serde(default)]
+    pub by_source_day: BTreeMap<String, BTreeMap<String, UsageBucket>>,
+    #[serde(default)]
+    pub by_source_month: BTreeMap<String, BTreeMap<String, UsageBucket>>,
+    #[serde(default)]
     pub by_model: BTreeMap<String, UsageBucket>,
     #[serde(default)]
     pub by_route: BTreeMap<String, UsageBucket>,
@@ -211,6 +221,23 @@ impl UsageStats {
             .add(&log);
         self.by_channel
             .entry(normalize_key(log.channel.clone(), "unknown-channel"))
+            .or_default()
+            .add(&log);
+        let source_key = normalize_key(log.source.clone(), "unknown-source");
+        self.by_source
+            .entry(source_key.clone())
+            .or_default()
+            .add(&log);
+        self.by_source_day
+            .entry(source_key.clone())
+            .or_default()
+            .entry(log.day.clone())
+            .or_default()
+            .add(&log);
+        self.by_source_month
+            .entry(source_key)
+            .or_default()
+            .entry(log.month.clone())
             .or_default()
             .add(&log);
         self.by_model
@@ -337,6 +364,10 @@ fn first_u64(root: Option<&Value>, paths: &[&[&str]]) -> u64 {
         }
     }
     0
+}
+
+fn default_source() -> String {
+    "unknown-source".to_string()
 }
 
 fn normalize_key(value: String, fallback: &str) -> String {

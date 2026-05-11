@@ -133,6 +133,34 @@ impl RouteHints {
     }
 }
 
+fn request_source(headers: &HeaderMap, request_json: Option<&Value>) -> String {
+    let source = first_non_empty(&[
+        header_hint(headers, "x-obp-source"),
+        header_hint(headers, "x-nanobot-source"),
+        json_hint(request_json, &["obp_source", "x_obp_source", "source"]),
+    ]);
+    sanitize_source(&source)
+}
+
+fn sanitize_source(source: &str) -> String {
+    let cleaned: String = source
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('-').trim();
+    if trimmed.is_empty() {
+        "unknown-source".to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
+}
+
 const PRO_HINTS: &[&str] = &[
     "compact",
     "compression",
@@ -280,6 +308,7 @@ async fn handle_proxy(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let route_hints = RouteHints::from_request(&parts.headers, request_json.as_ref());
+    let source = request_source(&parts.headers, request_json.as_ref());
 
     let router = state.router.lock().await.clone();
     if !router.external_enabled {
@@ -315,6 +344,7 @@ async fn handle_proxy(
             decision.reason,
             StatusCode::NOT_FOUND.as_u16(),
             started.elapsed(),
+            &source,
         )
         .await;
         return (StatusCode::NOT_FOUND, "No active channels available").into_response();
@@ -366,6 +396,7 @@ async fn handle_proxy(
                     StatusCode::BAD_GATEWAY.as_u16(),
                     started.elapsed(),
                     TokenUsage::default(),
+                    &source,
                 )
                 .await;
                 continue;
@@ -389,6 +420,7 @@ async fn handle_proxy(
                     status_u16,
                     started.elapsed(),
                     TokenUsage::default(),
+                    &source,
                 )
                 .await;
                 continue;
@@ -403,10 +435,11 @@ async fn handle_proxy(
                 status_u16,
                 started.elapsed(),
                 TokenUsage::default(),
+                &source,
             )
             .await;
             let mut res_builder = response_with_headers(status, response.headers());
-            res_builder = route_headers(res_builder, attempt, &decision);
+            res_builder = route_headers(res_builder, attempt, &decision, &source);
             let res_stream = response.bytes_stream();
             return res_builder
                 .body(Body::from_stream(res_stream))
@@ -429,6 +462,7 @@ async fn handle_proxy(
                     StatusCode::BAD_GATEWAY.as_u16(),
                     started.elapsed(),
                     TokenUsage::default(),
+                    &source,
                 )
                 .await;
                 continue;
@@ -447,6 +481,7 @@ async fn handle_proxy(
             status_u16,
             started.elapsed(),
             usage,
+            &source,
         )
         .await;
 
@@ -457,7 +492,7 @@ async fn handle_proxy(
                 .status(status)
                 .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         };
-        res_builder = route_headers(res_builder, attempt, &decision);
+        res_builder = route_headers(res_builder, attempt, &decision, &source);
         let response = res_builder
             .body(Body::from(response_bytes.clone()))
             .unwrap_or_else(|_| {
@@ -1287,6 +1322,7 @@ fn route_headers(
     mut builder: axum::http::response::Builder,
     attempt: &Attempt,
     decision: &RouteDecision,
+    source: &str,
 ) -> axum::http::response::Builder {
     let headers = [
         ("x-obp-route", attempt.role.as_str()),
@@ -1295,6 +1331,7 @@ fn route_headers(
         ("x-obp-actual-model", attempt.actual_model.as_str()),
         ("x-obp-channel", attempt.channel.name.as_str()),
         ("x-obp-reason", attempt.reason.as_str()),
+        ("x-obp-source", source),
     ];
     for (name, value) in headers {
         if let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) {
@@ -1313,6 +1350,7 @@ async fn record_failure(
     reason: String,
     status: u16,
     elapsed: Duration,
+    source: &str,
 ) {
     if let Some(ch) = channel {
         record_result(
@@ -1325,6 +1363,7 @@ async fn record_failure(
             status,
             elapsed,
             TokenUsage::default(),
+            source,
         )
         .await;
     }
@@ -1341,9 +1380,11 @@ async fn record_result(
     status: u16,
     elapsed: Duration,
     usage: TokenUsage,
+    source: &str,
 ) {
     let latency_ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
     let log = RequestLog::new(
+        source.to_string(),
         ch.id,
         ch.name.clone(),
         requested_model.to_string(),
@@ -1396,6 +1437,8 @@ fn log_model_route(log: &RequestLog, ch: &Channel) {
         tracing::info!(
             target: "obp.model",
             time = %log.time,
+            source = %log.source,
+            source = %log.source,
             channel = %log.channel,
             group = %group,
             requested_model = %log.requested_model,
