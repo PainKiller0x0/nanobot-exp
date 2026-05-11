@@ -1438,7 +1438,6 @@ fn log_model_route(log: &RequestLog, ch: &Channel) {
             target: "obp.model",
             time = %log.time,
             source = %log.source,
-            source = %log.source,
             channel = %log.channel,
             group = %group,
             requested_model = %log.requested_model,
