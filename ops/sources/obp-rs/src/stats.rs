@@ -212,6 +212,26 @@ pub struct UsageStats {
 }
 
 impl UsageStats {
+    pub fn backfill_default_source(&mut self, default_source: &str) {
+        for log in &mut self.recent {
+            if log.source.trim().is_empty() || log.source == "unknown-source" {
+                log.source = default_source.to_string();
+            }
+        }
+
+        let source_requests: u64 = self.by_source.values().map(|bucket| bucket.requests).sum();
+        if source_requests >= self.total.requests && !self.by_source.contains_key("unknown-source")
+        {
+            return;
+        }
+
+        self.by_source = backfill_source_map(&self.by_source, &self.total, default_source);
+        self.by_source_day =
+            backfill_source_nested_map(&self.by_source_day, &self.by_day, default_source);
+        self.by_source_month =
+            backfill_source_nested_map(&self.by_source_month, &self.by_month, default_source);
+    }
+
     pub fn record(&mut self, log: RequestLog) {
         self.total.add(&log);
         self.by_day.entry(log.day.clone()).or_default().add(&log);
@@ -337,7 +357,9 @@ pub fn load_stats<P: AsRef<Path>>(path: P) -> UsageStats {
         return UsageStats::default();
     }
     let data = fs::read_to_string(path).unwrap_or_default();
-    serde_json::from_str(&data).unwrap_or_default()
+    let mut stats: UsageStats = serde_json::from_str(&data).unwrap_or_default();
+    stats.backfill_default_source("default-nanobot");
+    stats
 }
 
 pub fn save_stats<P: AsRef<Path>>(path: P, stats: &UsageStats) {
@@ -351,6 +373,88 @@ pub fn save_stats<P: AsRef<Path>>(path: P, stats: &UsageStats) {
         return;
     }
     let _ = fs::write(path, data);
+}
+
+fn backfill_source_map(
+    existing: &BTreeMap<String, UsageBucket>,
+    total: &UsageBucket,
+    default_source: &str,
+) -> BTreeMap<String, UsageBucket> {
+    let mut out = BTreeMap::new();
+    let mut preserved = Vec::new();
+    for (source, bucket) in existing {
+        if source == default_source || source == "unknown-source" {
+            continue;
+        }
+        if bucket_has_usage(bucket) {
+            out.insert(source.clone(), bucket.clone());
+            preserved.push(bucket.clone());
+        }
+    }
+    let default_bucket = subtract_buckets(total, &preserved);
+    if bucket_has_usage(&default_bucket) {
+        out.insert(default_source.to_string(), default_bucket);
+    }
+    out
+}
+
+fn backfill_source_nested_map(
+    existing: &BTreeMap<String, BTreeMap<String, UsageBucket>>,
+    totals: &BTreeMap<String, UsageBucket>,
+    default_source: &str,
+) -> BTreeMap<String, BTreeMap<String, UsageBucket>> {
+    let mut out: BTreeMap<String, BTreeMap<String, UsageBucket>> = BTreeMap::new();
+    for (period, total) in totals {
+        let mut preserved = Vec::new();
+        for (source, periods) in existing {
+            if source == default_source || source == "unknown-source" {
+                continue;
+            }
+            let Some(bucket) = periods.get(period) else {
+                continue;
+            };
+            if bucket_has_usage(bucket) {
+                out.entry(source.clone())
+                    .or_default()
+                    .insert(period.clone(), bucket.clone());
+                preserved.push(bucket.clone());
+            }
+        }
+        let default_bucket = subtract_buckets(total, &preserved);
+        if bucket_has_usage(&default_bucket) {
+            out.entry(default_source.to_string())
+                .or_default()
+                .insert(period.clone(), default_bucket);
+        }
+    }
+    out
+}
+
+fn subtract_buckets(total: &UsageBucket, subtracts: &[UsageBucket]) -> UsageBucket {
+    let mut out = total.clone();
+    for item in subtracts {
+        out.requests = out.requests.saturating_sub(item.requests);
+        out.success = out.success.saturating_sub(item.success);
+        out.errors = out.errors.saturating_sub(item.errors);
+        out.latency_ms = out.latency_ms.saturating_sub(item.latency_ms);
+        out.prompt_tokens = out.prompt_tokens.saturating_sub(item.prompt_tokens);
+        out.cached_tokens = out.cached_tokens.saturating_sub(item.cached_tokens);
+        out.uncached_prompt_tokens = out
+            .uncached_prompt_tokens
+            .saturating_sub(item.uncached_prompt_tokens);
+        out.completion_tokens = out.completion_tokens.saturating_sub(item.completion_tokens);
+        out.total_tokens = out.total_tokens.saturating_sub(item.total_tokens);
+        out.cost_cny = (out.cost_cny - item.cost_cny).max(0.0);
+    }
+    out
+}
+
+fn bucket_has_usage(bucket: &UsageBucket) -> bool {
+    bucket.requests > 0
+        || bucket.total_tokens > 0
+        || bucket.prompt_tokens > 0
+        || bucket.completion_tokens > 0
+        || bucket.cost_cny > 0.0
 }
 
 fn first_u64(root: Option<&Value>, paths: &[&[&str]]) -> u64 {
