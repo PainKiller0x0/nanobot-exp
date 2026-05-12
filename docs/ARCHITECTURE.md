@@ -247,6 +247,8 @@ ops/sources/_shared/ops_common.py
 
 前端公共 helper 边界：
 
+- Rust 内部 `sidecar_manager.rs` 负责读取服务注册表、探测 systemd/http/tcp、输出 `/api/sidecars` 聚合状态。
+- Rust 内部 `system_metrics.rs` 负责内存、CPU、磁盘和 loadavg 读取，驾驶舱只消费 JSON。
 - `nb-shell.js` 负责“壳”：导航、全局主题同步、反代 HTML 注入和统一视觉变量。
 - `nb-common.js` 负责“机制”：`esc`、`fmtTime`、`host`、`bindTheme`、`stat`、`shortList`、`copyText`、`copyFromButton`、`cmdHtml`。
 - 业务页面只组合数据、布局和文案，不再复制基础 escape、复制按钮、短列表、命令块和常规时间/host helper。
@@ -273,6 +275,8 @@ LOF 定时报告不是直接读缓存发送。Notify 任务调用 `qdii-monitor/
 实现边界：
 
 - `db.rs` 保存数据库 schema、读写和查询 helper。
+- `markdown.rs` 保存 HTML -> Markdown 的 inline bold/em/link 保真转换。
+- `paid_cleaner.rs` 保存付费文章清洗 payload、断句/合段规则、Markdown 组装和 cleaner 响应元信息。
 - `main.rs` 仍然承载 HTTP route、crawler、UI 和 settings，是后续继续拆分的主要对象。
 - `LlmSettings` 是 RSS LLM 配置的单一入口，负责 payload merge、密钥遮蔽、持久化 JSON、公开 JSON、chat completions URL 和 `free_only` 状态说明。
 - 自动刷新链路只读 `LlmSettings::enabled()`，不要在 handler 或 crawler 里重新手写“是否允许付费模型”的判断。
@@ -343,8 +347,10 @@ HERMES 任务调用 `hermes-check/hermes_check.py`。脚本应读取 `8093/api/s
 | 层级 | 公共入口 | 负责内容 | 不负责内容 |
 |---|---|---|---|
 | Python skill/script | `ops/sources/_shared/ops_common.py` | HTTP fallback、JSON 请求、东八区时间、节假日/补班日、短文本截断 | 业务文案、具体报告格式、secret |
+| RSS cleaner | `wechat-rss-rs::{markdown,paid_cleaner}` | HTML/Markdown 保真转换、付费文章规则清洗、断句/合段、cleaner 响应元信息 | RSS 抓取、订阅存储、LLM 自动判定 |
 | RSS LLM settings | `wechat-rss-rs::LlmSettings` | LLM 设置 merge、密钥遮蔽、保存/公开 JSON、免费策略状态、测试 URL | crawler 业务判断、文章格式化 |
 | Reflexio cost policy | `nanobot-reflexio-rs/src/cost_policy.rs` | 免费 LLM/embedding 默认值、环境开关、白名单、启用判断 | 具体 prompt、事实抽取、SQLite 检索 |
+| OBP protocol adapter | `obp-rs::protocol` | OpenAI/Anthropic 请求响应互转、upstream endpoint、渠道鉴权适配 | 路由策略、成本统计、熔断降级 |
 | OBP route metadata | `obp-rs::{config,proxy,stats}` | 模型组、渠道配置、fallback、成本统计、响应头路由信息 | Nanobot agent 语义判断、sidecar 主动消费模型 |
 | Sidecar shell JS | `/assets/nb-shell.js` | 统一导航壳、明暗主题同步、反代页面注入、跨页面入口 | 业务页面渲染、数据解释、prompt |
 | Sidecar common JS | `/assets/nb-common.js` | HTML escape、东八区时间、host 解析、主题绑定、统计卡片、短列表、复制按钮、命令块 | 页面布局、业务字段、具体文案 |
@@ -386,18 +392,19 @@ QQ 回复 / dashboard 摘要
 - 服务矩阵和 `sidecarctl` 让 health/log/restart 有统一入口。
 - Trend Radar 提供新闻采集和 MCP 风格工具，但没有把重 Python 服务塞进 core。
 - `_shared/ops_common.py` 已经减少 skill 客户端重复代码，HERMES、LOF wrapper、Trend、RSS skill 和个人 ops summary 都复用同一套 HTTP/时间 helper。
+- RSS 的 cleaner 规则已经收口到 `paid_cleaner.rs`，HTML inline Markdown 保真收口到 `markdown.rs`；handler 只负责接收请求和返回 JSON。
 - RSS 的 LLM settings 重复逻辑已经收口到 `LlmSettings`，避免 handler、settings API、test endpoint 各自处理密钥遮蔽和 `free_only`。
 - Reflexio 的免费模型策略已经收口到 `cost_policy.rs`，`main.rs` 和 `embedding.rs` 不再各自复制 env bool 与免费白名单判断。
 - sidecar 页面已开始复用 `/assets/nb-shell.js` 和 `/assets/nb-common.js`；`inbox`、`evolution`、`sidecars` 不再各自复制 escape、主题切换、时间/host、短列表、命令块和复制按钮逻辑。
 - 能力总控台已经明确分成“能力层：我能做什么”和“支撑服务层：谁在跑”，两个区块默认展开、可折叠；能力卡只展示触发语/入口/运行形态，服务卡承载端口、日志、重启和健康细节，避免同一服务重复铺成两套重卡片。
 - 内容工作台已经成为信息阅读入口，聚合 RSS、知识收件箱和热点雷达；卡片已做 Inbox Markdown 决策摘要结构化，避免把原始 Markdown 或噪音关键词直接铺出来。
 - 知识收件箱已经具备微信链接解析、免费 LongCat 摘要、删除、预览整理和噪音关键词过滤，适合作为按需 skill，而不是常驻服务。
-- OBP 已避免 heartbeat 的 `review` 文本误升 Pro；路由日志仍通过响应头进入 Nanobot provider 日志，便于追踪钱包行为。
+- OBP 已避免 heartbeat 的 `review` 文本误升 Pro；协议互转已收口到 `protocol.rs`，路由日志仍通过响应头进入 Nanobot provider 日志，便于追踪钱包行为。
 
 主要技术债：
 
-- `lof-sidecar-rs` 仍然偏大，一个文件里同时有 dashboard、LOF 逻辑、反代和服务管理。
-- `wechat-rss-rs` 仍然偏大，虽然 DB 和 LLM settings 已有边界，但 UI、crawler、route handler、文章格式化仍主要挤在 `main.rs`。
+- `lof-sidecar-rs` 仍然偏大，一个文件里同时有 dashboard、LOF 逻辑和反代；服务管理与系统指标已经拆出，但页面和 LOF domain 还需要继续 deepening。
+- `wechat-rss-rs` 仍然偏大，虽然 DB、Markdown helper、paid cleaner 和 LLM settings 已有边界，但 UI、crawler、route handler 仍主要挤在 `main.rs`。
 - `ops/` 快照和 `/root/nanobot-ops` 线上工作副本可能漂移，需要把 sync/commit 变成习惯。
 - `/obp/` 和未来 MCP 入口的认证边界要继续显式维护，不能为了方便把 admin 面裸露出去。
 - 部分 systemd unit 指向 `/root/.nanobot` 线上路径，这是设计选择，但恢复环境时必须先恢复 workspace 和 secrets。
@@ -407,8 +414,8 @@ QQ 回复 / dashboard 摘要
 建议下一步重构：
 
 1. Rust sidecar 的大块 HTML/CSS 如果继续增长，拆到 `static` 或 `include_str!` 文件；公共 JS 已有 `/assets/nb-shell.js` 和 `/assets/nb-common.js`，不要再复制基础导航、主题、复制、时间、host、短列表和命令块工具函数。
-2. `lof-sidecar-rs` 如果继续加功能，把 reverse proxy、service manager、LOF domain 分 module。
-3. `wechat-rss-rs` 下一步优先拆 crawler、article formatter、settings routes；`LlmSettings` 继续保留为 settings/cost policy 入口。
+2. `lof-sidecar-rs` 如果继续加功能，下一步拆 reverse proxy、dashboard pages、LOF domain；service manager 和 system metrics 已经完成第一轮拆分。
+3. `wechat-rss-rs` 下一步优先拆 crawler、settings routes 和页面 HTML；`paid_cleaner` 与 `LlmSettings` 继续分别保留为文章格式化和 settings/cost policy 入口。
 4. `weather-expert/weather_check.py` 如果出现第二个天气/通勤脚本，再把节假日和未来时段选择抽进 `_shared`。
 5. 增加 `ops/scripts/check-architecture.sh`，检查 sidecars registry、systemd unit、文档端口是否一致。
 6. 新个人自动化默认采用 `skill + sidecar API`，除非确实必须改 Nanobot core。

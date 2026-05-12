@@ -1,4 +1,5 @@
 mod config;
+mod protocol;
 mod proxy;
 mod stats;
 

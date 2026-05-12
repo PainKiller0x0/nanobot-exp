@@ -20,8 +20,15 @@ use futures::{stream, StreamExt};
 use reqwest::Client;
 use scraper::{Html as ScraperHtml, Selector};
 use serde::{Deserialize, Serialize};
-use tokio::{net::TcpStream, process::Command, sync::Mutex};
+use tokio::sync::Mutex;
 
+mod sidecar_manager;
+mod system_metrics;
+
+use sidecar_manager::ManagedSidecarStatus;
+use system_metrics::{
+    json_f64, json_u64, read_cpu_info, read_disk_root, read_loadavg, read_meminfo_mb,
+};
 const DEFAULT_COST: f64 = 0.0153;
 const PREMIUM_THRESHOLD: f64 = 0.05;
 const AMOUNT_THRESHOLD: f64 = 500_000.0;
@@ -116,56 +123,6 @@ struct RunResponse {
 struct TriggerResponse {
     queued: bool,
     tag: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ManagedSidecar {
-    id: String,
-    name: String,
-    description: String,
-    port: Option<u16>,
-    unit: Option<String>,
-    homepage_url: Option<String>,
-    check_url: Option<String>,
-    check_kind: Option<String>,
-    public: bool,
-    logs_command: String,
-    restart_command: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ManagedSidecarStatus {
-    id: String,
-    name: String,
-    description: String,
-    port: Option<u16>,
-    unit: Option<String>,
-    homepage_url: Option<String>,
-    public: bool,
-    ok: bool,
-    check_status: String,
-    unit_status: Option<String>,
-    http_code: Option<u16>,
-    latency_ms: Option<u128>,
-    error: Option<String>,
-    active_since: Option<String>,
-    recent_errors: Vec<String>,
-    logs_command: String,
-    restart_command: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct SidecarManagerSummary {
-    total: usize,
-    healthy: usize,
-    unhealthy: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct SidecarManagerResponse {
-    now: String,
-    summary: SidecarManagerSummary,
-    items: Vec<ManagedSidecarStatus>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -484,7 +441,7 @@ async fn refresh_dashboard_history(state: &AppState) -> serde_json::Value {
     let mem_used = json_u64(&memory, "used_mb");
     let mem_pct = json_f64(&memory, "used_pct");
 
-    let sidecars = sidecar_manager_snapshot(state).await;
+    let sidecars = sidecar_manager::snapshot(&state.http).await;
     let service_total = sidecars.summary.total as u64;
     let service_healthy = sidecars.summary.healthy as u64;
     let service_unhealthy = sidecars.summary.unhealthy as u64;
@@ -686,88 +643,8 @@ fn mem_value(value: &serde_json::Value, key: &str) -> u64 {
     value.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
 }
 
-fn json_u64(value: &serde_json::Value, key: &str) -> u64 {
-    value.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
-}
-
-fn json_f64(value: &serde_json::Value, key: &str) -> f64 {
-    value.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)
-}
-
-fn read_meminfo_mb() -> serde_json::Value {
-    let text = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
-    let mut values: HashMap<String, u64> = HashMap::new();
-    for line in text.lines() {
-        let mut parts = line.split_whitespace();
-        let Some(key) = parts.next() else { continue };
-        let Some(raw) = parts.next() else { continue };
-        if let Ok(kb) = raw.parse::<u64>() {
-            values.insert(key.trim_end_matches(':').to_string(), kb / 1024);
-        }
-    }
-    let total = values.get("MemTotal").copied().unwrap_or(0);
-    let available = values.get("MemAvailable").copied().unwrap_or(0);
-    let used = total.saturating_sub(available);
-    let swap_total = values.get("SwapTotal").copied().unwrap_or(0);
-    let swap_free = values.get("SwapFree").copied().unwrap_or(0);
-    serde_json::json!({
-        "total_mb": total,
-        "available_mb": available,
-        "used_mb": used,
-        "used_pct": if total > 0 { (used as f64 * 100.0 / total as f64 * 10.0).round() / 10.0 } else { 0.0 },
-        "swap_used_mb": swap_total.saturating_sub(swap_free),
-        "swap_total_mb": swap_total,
-    })
-}
-
-fn read_loadavg() -> serde_json::Value {
-    let text = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
-    let parts: Vec<&str> = text.split_whitespace().take(3).collect();
-    serde_json::json!({
-        "one": parts.first().copied().unwrap_or("-"),
-        "five": parts.get(1).copied().unwrap_or("-"),
-        "fifteen": parts.get(2).copied().unwrap_or("-"),
-    })
-}
-
-fn read_cpu_info() -> serde_json::Value {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    serde_json::json!({"cores": cores})
-}
-
-async fn read_disk_root() -> serde_json::Value {
-    let output = tokio::time::timeout(
-        Duration::from_secs(2),
-        Command::new("df").arg("-Pm").arg("/").output(),
-    )
-    .await;
-    match output {
-        Ok(Ok(out)) => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            let Some(line) = text.lines().nth(1) else {
-                return serde_json::json!({"ok": false});
-            };
-            let cols: Vec<&str> = line.split_whitespace().collect();
-            if cols.len() < 6 {
-                return serde_json::json!({"ok": false});
-            }
-            serde_json::json!({
-                "ok": true,
-                "total_mb": cols.get(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0),
-                "used_mb": cols.get(2).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0),
-                "available_mb": cols.get(3).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0),
-                "used_pct": cols.get(4).copied().unwrap_or("-"),
-                "mount": cols.get(5).copied().unwrap_or("/"),
-            })
-        }
-        _ => serde_json::json!({"ok": false}),
-    }
-}
-
 async fn api_sidecars(State(state): State<AppState>) -> impl IntoResponse {
-    Json(sidecar_manager_snapshot(&state).await)
+    Json(sidecar_manager::snapshot(&state.http).await)
 }
 
 async fn api_capabilities(State(state): State<AppState>) -> impl IntoResponse {
@@ -1878,27 +1755,40 @@ fn shanghai_now() -> DateTime<FixedOffset> {
     Utc::now().with_timezone(&sh_tz)
 }
 
-async fn sidecar_manager_snapshot(state: &AppState) -> SidecarManagerResponse {
-    let configs = load_managed_sidecars().await;
-    let mut items = Vec::new();
-    for cfg in configs {
-        items.push(check_managed_sidecar(&state.http, cfg).await);
-    }
-    let healthy = items.iter().filter(|item| item.ok).count();
-    let total = items.len();
-    SidecarManagerResponse {
-        now: shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-        summary: SidecarManagerSummary {
-            total,
-            healthy,
-            unhealthy: total.saturating_sub(healthy),
-        },
-        items,
+async fn load_capabilities() -> Vec<Capability> {
+    let path = std::env::var("CAPABILITY_REGISTRY_CONFIG")
+        .unwrap_or_else(|_| "/root/.nanobot/capabilities.json".to_string());
+    match tokio::fs::read_to_string(&path).await {
+        Ok(text) => serde_json::from_str::<Vec<Capability>>(&text)
+            .unwrap_or_else(|_| default_capabilities()),
+        Err(_) => default_capabilities(),
     }
 }
 
+fn default_capabilities() -> Vec<Capability> {
+    vec![Capability {
+        id: "lof-monitor".into(),
+        name: "LOF Monitor".into(),
+        description: "Fallback capability registry when capabilities.json is missing.".into(),
+        category: "finance".into(),
+        kind: "sidecar".into(),
+        service_id: Some("lof".into()),
+        entry_url: Some("/lof".into()),
+        enabled: true,
+        trigger_phrases: vec!["lof status".into()],
+        commands: vec![CapabilityCommand {
+            label: "logs".into(),
+            command: "journalctl -u lof-sidecar.service -f".into(),
+        }],
+        data_paths: Vec::new(),
+        tags: vec!["finance".into(), "sidecar".into()],
+        mcp_tools: Vec::new(),
+        notes: Some("Install /root/.nanobot/capabilities.json for the full registry.".into()),
+    }]
+}
+
 async fn capability_registry_snapshot(state: &AppState) -> CapabilityRegistryResponse {
-    let sidecars = sidecar_manager_snapshot(state).await;
+    let sidecars = sidecar_manager::snapshot(&state.http).await;
     let sidecar_by_id: HashMap<String, ManagedSidecarStatus> = sidecars
         .items
         .into_iter()
@@ -2238,315 +2128,6 @@ const DEFAULT_EVOLUTION_LOG: &str = r#"[
     "tags": ["evolution"]
   }
 ]"#;
-
-async fn load_managed_sidecars() -> Vec<ManagedSidecar> {
-    let path = std::env::var("SIDECAR_MANAGER_CONFIG")
-        .unwrap_or_else(|_| "/root/.nanobot/sidecars.json".to_string());
-    match tokio::fs::read_to_string(&path).await {
-        Ok(text) => serde_json::from_str::<Vec<ManagedSidecar>>(&text)
-            .unwrap_or_else(|_| default_managed_sidecars()),
-        Err(_) => default_managed_sidecars(),
-    }
-}
-
-fn default_managed_sidecars() -> Vec<ManagedSidecar> {
-    vec![ManagedSidecar {
-        id: "lof".into(),
-        name: "LOF Sidecar".into(),
-        description: "LOF data board and reports".into(),
-        port: Some(8093),
-        unit: Some("lof-sidecar.service".into()),
-        homepage_url: Some("/".into()),
-        check_url: Some("http://127.0.0.1:8093/health".into()),
-        check_kind: Some("http".into()),
-        public: true,
-        logs_command: "journalctl -u lof-sidecar.service -f".into(),
-        restart_command: "systemctl restart lof-sidecar.service".into(),
-    }]
-}
-
-async fn load_capabilities() -> Vec<Capability> {
-    let path = std::env::var("CAPABILITY_REGISTRY_CONFIG")
-        .unwrap_or_else(|_| "/root/.nanobot/capabilities.json".to_string());
-    match tokio::fs::read_to_string(&path).await {
-        Ok(text) => serde_json::from_str::<Vec<Capability>>(&text)
-            .unwrap_or_else(|_| default_capabilities()),
-        Err(_) => default_capabilities(),
-    }
-}
-
-fn default_capabilities() -> Vec<Capability> {
-    vec![Capability {
-        id: "lof-monitor".into(),
-        name: "LOF Monitor".into(),
-        description: "Fallback capability registry when capabilities.json is missing.".into(),
-        category: "finance".into(),
-        kind: "sidecar".into(),
-        service_id: Some("lof".into()),
-        entry_url: Some("/lof".into()),
-        enabled: true,
-        trigger_phrases: vec!["lof status".into()],
-        commands: vec![CapabilityCommand {
-            label: "logs".into(),
-            command: "journalctl -u lof-sidecar.service -f".into(),
-        }],
-        data_paths: Vec::new(),
-        tags: vec!["finance".into(), "sidecar".into()],
-        mcp_tools: Vec::new(),
-        notes: Some("Install /root/.nanobot/capabilities.json for the full registry.".into()),
-    }]
-}
-
-async fn check_managed_sidecar(client: &Client, cfg: ManagedSidecar) -> ManagedSidecarStatus {
-    let unit_status = check_systemd_unit(cfg.unit.as_deref()).await;
-    let active_since = check_systemd_active_since(cfg.unit.as_deref()).await;
-    let recent_errors =
-        check_systemd_recent_errors(cfg.unit.as_deref(), active_since.as_deref()).await;
-    let started = Instant::now();
-    let mut ok = false;
-    let mut check_status = "unknown".to_string();
-    let mut http_code = None;
-    let mut latency_ms = None;
-    let mut error = None;
-    let kind = cfg.check_kind.as_deref().unwrap_or("http");
-
-    if kind == "tcp" {
-        if let Some(port) = cfg.port {
-            match tokio::time::timeout(
-                Duration::from_secs(2),
-                TcpStream::connect(("127.0.0.1", port)),
-            )
-            .await
-            {
-                Ok(Ok(_)) => {
-                    ok = true;
-                    check_status = "tcp open".to_string();
-                    latency_ms = Some(started.elapsed().as_millis());
-                }
-                Ok(Err(e)) => {
-                    check_status = "tcp closed".to_string();
-                    error = Some(e.to_string());
-                    latency_ms = Some(started.elapsed().as_millis());
-                }
-                Err(_) => {
-                    check_status = "tcp timeout".to_string();
-                    error = Some("tcp check timed out".to_string());
-                    latency_ms = Some(started.elapsed().as_millis());
-                }
-            }
-        } else {
-            error = Some("missing port for tcp check".to_string());
-        }
-    } else if kind == "unit" {
-        ok = matches!(unit_status.as_deref(), Some("active"));
-        check_status = unit_status.clone().unwrap_or_else(|| "unknown".to_string());
-        latency_ms = Some(started.elapsed().as_millis());
-    } else if let Some(url) = cfg.check_url.as_deref() {
-        match tokio::time::timeout(Duration::from_secs(3), client.get(url).send()).await {
-            Ok(Ok(resp)) => {
-                let status = resp.status();
-                http_code = Some(status.as_u16());
-                ok = status.is_success();
-                check_status = format!("http {}", status.as_u16());
-                latency_ms = Some(started.elapsed().as_millis());
-            }
-            Ok(Err(e)) => {
-                check_status = "http error".to_string();
-                error = Some(e.to_string());
-                latency_ms = Some(started.elapsed().as_millis());
-            }
-            Err(_) => {
-                check_status = "http timeout".to_string();
-                error = Some("http check timed out".to_string());
-                latency_ms = Some(started.elapsed().as_millis());
-            }
-        }
-    } else if let Some(port) = cfg.port {
-        match tokio::time::timeout(
-            Duration::from_secs(2),
-            TcpStream::connect(("127.0.0.1", port)),
-        )
-        .await
-        {
-            Ok(Ok(_)) => {
-                ok = true;
-                check_status = "tcp open".to_string();
-                latency_ms = Some(started.elapsed().as_millis());
-            }
-            Ok(Err(e)) => {
-                check_status = "tcp closed".to_string();
-                error = Some(e.to_string());
-                latency_ms = Some(started.elapsed().as_millis());
-            }
-            Err(_) => {
-                check_status = "tcp timeout".to_string();
-                error = Some("tcp check timed out".to_string());
-                latency_ms = Some(started.elapsed().as_millis());
-            }
-        }
-    } else {
-        ok = matches!(unit_status.as_deref(), Some("active"));
-        check_status = unit_status
-            .clone()
-            .unwrap_or_else(|| "not configured".to_string());
-    }
-
-    if cfg.unit.as_deref().is_some_and(|u| !u.trim().is_empty())
-        && !matches!(unit_status.as_deref(), Some("active"))
-    {
-        ok = false;
-    }
-
-    ManagedSidecarStatus {
-        id: cfg.id,
-        name: cfg.name,
-        description: cfg.description,
-        port: cfg.port,
-        unit: cfg.unit,
-        homepage_url: cfg.homepage_url,
-        public: cfg.public,
-        ok,
-        check_status,
-        unit_status,
-        http_code,
-        latency_ms,
-        error,
-        active_since,
-        recent_errors,
-        logs_command: cfg.logs_command,
-        restart_command: cfg.restart_command,
-    }
-}
-
-async fn check_systemd_active_since(unit: Option<&str>) -> Option<String> {
-    let unit = unit?.trim();
-    if unit.is_empty() {
-        return None;
-    }
-    let output = tokio::time::timeout(
-        Duration::from_secs(2),
-        Command::new("systemctl")
-            .arg("show")
-            .arg(unit)
-            .arg("-p")
-            .arg("ActiveEnterTimestamp")
-            .arg("--value")
-            .output(),
-    )
-    .await;
-    match output {
-        Ok(Ok(out)) => {
-            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
-            }
-        }
-        _ => None,
-    }
-}
-
-fn journal_since_value(active_since: Option<&str>) -> Option<String> {
-    let text = active_since?.trim();
-    if text.is_empty() {
-        return None;
-    }
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    if parts.len() >= 3 && parts[1].chars().take(4).all(|c| c.is_ascii_digit()) {
-        let value = format!("{} {}", parts[1], parts[2]);
-        chrono::NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S")
-            .map(|dt| {
-                (dt + ChronoDuration::seconds(1))
-                    .format("%Y-%m-%d %H:%M:%S")
-                    .to_string()
-            })
-            .unwrap_or(value)
-            .into()
-    } else {
-        Some(text.to_string())
-    }
-}
-
-async fn check_systemd_recent_errors(
-    unit: Option<&str>,
-    active_since: Option<&str>,
-) -> Vec<String> {
-    let Some(unit) = unit.map(str::trim).filter(|u| !u.is_empty()) else {
-        return Vec::new();
-    };
-    let mut cmd = Command::new("journalctl");
-    cmd.arg("-u")
-        .arg(unit)
-        .arg("-p")
-        .arg("warning..alert")
-        .arg("--no-pager")
-        .arg("-n")
-        .arg("20");
-    if let Some(since) = journal_since_value(active_since) {
-        cmd.arg(format!("--since={since}"));
-    }
-    let output = tokio::time::timeout(Duration::from_secs(2), cmd.output()).await;
-    match output {
-        Ok(Ok(out)) => String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|line| {
-                let text = line.trim();
-                if text.is_empty()
-                    || text.contains("-- No entries --")
-                    || text.starts_with("-- Journal begins")
-                    || text.starts_with("Hint:")
-                {
-                    return false;
-                }
-                let lower = text.to_ascii_lowercase();
-                lower.contains("error")
-                    || lower.contains("warn")
-                    || lower.contains("failed")
-                    || lower.contains("timeout")
-                    || lower.contains("traceback")
-                    || lower.contains("panic")
-            })
-            .take(3)
-            .map(|line| {
-                let mut text = line.trim().to_string();
-                if text.chars().count() > 180 {
-                    text = text.chars().take(180).collect::<String>();
-                    text.push_str("...");
-                }
-                text
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-async fn check_systemd_unit(unit: Option<&str>) -> Option<String> {
-    let unit = unit?.trim();
-    if unit.is_empty() {
-        return None;
-    }
-    let output = tokio::time::timeout(
-        Duration::from_secs(2),
-        Command::new("systemctl")
-            .arg("is-active")
-            .arg(unit)
-            .output(),
-    )
-    .await;
-    match output {
-        Ok(Ok(out)) => {
-            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if text.is_empty() {
-                Some("unknown".to_string())
-            } else {
-                Some(text)
-            }
-        }
-        Ok(Err(e)) => Some(format!("error: {}", e)),
-        Err(_) => Some("timeout".to_string()),
-    }
-}
 
 async fn api_run(State(state): State<AppState>, Json(req): Json<RunRequest>) -> impl IntoResponse {
     let tag = req.tag.unwrap_or_else(|| "收盘".to_string());
