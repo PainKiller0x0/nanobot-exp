@@ -1,4 +1,4 @@
-from nanobot.agent import capability_reply, inbox_reply, memory_reply
+from nanobot.agent import capability_reply, inbox_reply, memory_client
 from nanobot.agent.direct_reply import build_direct_reply
 from nanobot.bus.events import InboundMessage
 
@@ -212,7 +212,7 @@ def test_remember_query_writes_local_memory_without_llm(monkeypatch) -> None:
         assert payload["category"] == "preference"
         return {"success": True, "id": 7}
 
-    monkeypatch.setattr(memory_reply, "post_json", fake_post)
+    monkeypatch.setattr(memory_client, "post_json", fake_post)
 
     out = build_direct_reply(_msg("记住 我喜欢 Rust sidecar"), model="test-model", start_time=0)
 
@@ -230,7 +230,7 @@ def test_memory_status_uses_reflexio_without_llm(monkeypatch) -> None:
             return [{"content": "网页尽量纯中文", "category": "preference"}]
         return default
 
-    monkeypatch.setattr(memory_reply, "get_json", fake_get)
+    monkeypatch.setattr(memory_client, "get_json", fake_get)
 
     out = build_direct_reply(_msg("记忆状态"), model="test-model", start_time=0)
 
@@ -245,7 +245,7 @@ def test_memory_search_uses_reflexio_without_llm(monkeypatch) -> None:
         assert payload["query"] == "Rust"
         return {"results": [{"id": 3, "content": "优先 Rust sidecar", "category": "preference", "created_at": "2026-05-03 10:00:00"}]}
 
-    monkeypatch.setattr(memory_reply, "post_json", fake_post)
+    monkeypatch.setattr(memory_client, "post_json", fake_post)
 
     out = build_direct_reply(_msg("查记忆 Rust"), model="test-model", start_time=0)
 

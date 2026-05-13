@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
-from nanobot.agent.direct_reply_common import (
-    compact_text as _compact,
-    get_json as _common_get_json,
-    post_json as _common_post_json,
-    short_text as _short,
-)
+from nanobot.agent import memory_client
+from nanobot.agent.direct_reply_common import compact_text as _compact
+from nanobot.agent.direct_reply_common import short_text as _short
 
-REFLEXIO_TIMEOUT = 0.8
 _SAVE_PATTERNS = (
     r"^\s*(?:帮我)?记住[：:，,\s]*(.+)$",
     r"^\s*(?:你)?记一下[：:，,\s]*(.+)$",
@@ -63,13 +58,11 @@ def remember_memory(content: str, user_id: str | None) -> str:
     content = _clean_content(content)
     if not content:
         return "没找到要记住的内容。你可以这样说：记住 我喜欢 Rust sidecar。"
-    payload = {
-        "user_id": user_id or "default_user",
-        "category": _guess_category(content),
-        "content": content,
-        "source": "nanobot-direct-reply",
-    }
-    data = post_json("/reflexio/api/memories", payload, {})
+    data = memory_client.save_memory(
+        content,
+        user_id=user_id,
+        category=_guess_category(content),
+    )
     if not data.get("success"):
         return "本地记忆写入失败：" + str(data.get("msg") or data.get("error") or "Reflexio 不可用")
     return "\n".join(
@@ -83,8 +76,7 @@ def remember_memory(content: str, user_id: str | None) -> str:
 
 
 def format_memory_status() -> str:
-    stats = get_json("/reflexio/api/stats", {})
-    recent = get_json("/reflexio/api/memories?limit=5", [])
+    stats, recent = memory_client.memory_status()
     lines = [
         "本地记忆状态（未调用 LLM）",
         f"本地记忆：{stats.get('total_memories', '-')} 条；最新：{stats.get('latest_memory_at') or '-'}",
@@ -106,8 +98,7 @@ def format_memory_status() -> str:
 
 def search_memory(query: str) -> str:
     query = _clean_content(query)
-    data = post_json("/reflexio/api/memory/search", {"query": query, "limit": 8}, {"results": []})
-    results = data.get("results") if isinstance(data, dict) else []
+    results = memory_client.search_memories(query, limit=8)
     lines = [f"本地记忆搜索：{query}（未调用 LLM）"]
     if not isinstance(results, list) or not results:
         lines.append("没搜到。可以先说：记住 ……")
@@ -120,14 +111,6 @@ def search_memory(query: str) -> str:
                 )
     lines.append("看板：http://150.158.121.88:8093/reflexio/")
     return "\n".join(lines)
-
-
-def get_json(path: str, default: Any) -> Any:
-    return _common_get_json(path, default, timeout=REFLEXIO_TIMEOUT)
-
-
-def post_json(path: str, payload: dict[str, Any], default: Any) -> Any:
-    return _common_post_json(path, payload, default, timeout=REFLEXIO_TIMEOUT)
 
 
 def _guess_category(content: str) -> str:

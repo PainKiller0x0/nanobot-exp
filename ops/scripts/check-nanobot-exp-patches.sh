@@ -27,6 +27,7 @@ check 'nanobot/agent/system_reply.py' 'format_memory_report' 'Agent direct syste
 check 'nanobot/agent/capability_registry.py' 'load_capabilities' 'Agent capability registry helper'
 check 'nanobot/agent/capability_snapshot.py' 'dashboard_snapshot' 'Agent capability dashboard snapshot helper'
 check 'nanobot/agent/inbox_tool.py' 'run_tool' 'Agent knowledge inbox tool runner'
+check 'nanobot/agent/memory_client.py' 'save_memory' 'Agent Reflexio memory client helper'
 check 'nanobot/channels/qq.py' 'nanobot.exp.qq' 'QQ downstream helper seam'
 check 'nanobot/exp/qq/streaming.py' 'should_stream_text' 'QQ streaming policy helper'
 check 'nanobot/exp/qq/stream_runtime.py' 'send_delta' 'QQ streaming runtime helper'
