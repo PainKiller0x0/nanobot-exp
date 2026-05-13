@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Any
 
+from nanobot.agent.capability_registry import (
+    enabled_capabilities,
+    group_by_category,
+    load_capabilities,
+)
 from nanobot.agent.direct_reply_common import (
     DASHBOARD_TIMEOUT,
     as_dict as _dict,
@@ -15,7 +18,6 @@ from nanobot.agent.direct_reply_common import (
     short_text as _short,
 )
 
-CAPABILITY_FILE = Path("/root/.nanobot/capabilities.json")
 DASHBOARD_ENDPOINTS = {
     "system": ("/api/system", {}),
     "sidecars": ("/api/sidecars", {}),
@@ -29,10 +31,8 @@ DASHBOARD_ENDPOINTS = {
 
 def format_capability_menu() -> str:
     items = load_capabilities()
-    enabled = [item for item in items if item.get("enabled", True)]
-    categories: dict[str, list[dict[str, Any]]] = {}
-    for item in enabled:
-        categories.setdefault(str(item.get("category") or "\u5176\u4ed6"), []).append(item)
+    enabled = enabled_capabilities(items)
+    categories = group_by_category(enabled)
 
     lines = [
         "\U0001f9ed Nanobot \u80fd\u529b\u83dc\u5355\uff08\u672a\u8c03\u7528 LLM\uff09",
@@ -142,15 +142,6 @@ def format_today_brief() -> str:
 
 def dashboard_json(path: str, default: Any) -> Any:
     return get_json(path, default, timeout=DASHBOARD_TIMEOUT)
-
-
-def load_capabilities() -> list[dict[str, Any]]:
-    path = Path(os.environ.get("CAPABILITY_REGISTRY_CONFIG", "") or CAPABILITY_FILE)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        data = []
-    return [item for item in data if isinstance(item, dict)]
 
 
 def _dashboard_snapshot() -> dict[str, dict[str, Any]]:

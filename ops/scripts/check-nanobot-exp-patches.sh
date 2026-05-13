@@ -24,6 +24,7 @@ check 'nanobot/exp/agent/warmup_runtime.py' 'schedule_external_llm_warmup' 'Agen
 check 'nanobot/exp/agent/obp_fallback.py' 'OBPFallbackClient' 'Agent OBP fallback helper'
 check 'nanobot/agent/direct_reply.py' 'system_reply.format_memory_report' 'Agent direct reply system seam'
 check 'nanobot/agent/system_reply.py' 'format_memory_report' 'Agent direct system reply helper'
+check 'nanobot/agent/capability_registry.py' 'load_capabilities' 'Agent capability registry helper'
 check 'nanobot/channels/qq.py' 'nanobot.exp.qq' 'QQ downstream helper seam'
 check 'nanobot/exp/qq/streaming.py' 'should_stream_text' 'QQ streaming policy helper'
 check 'nanobot/exp/qq/stream_runtime.py' 'send_delta' 'QQ streaming runtime helper'
