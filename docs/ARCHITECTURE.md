@@ -251,6 +251,7 @@ ops/sources/_shared/ops_common.py
 - Rust 内部 `system_metrics.rs` 负责内存、CPU、磁盘和 loadavg 读取，驾驶舱只消费 JSON。
 - Rust 内部 `pages.rs` 负责驾驶舱、内容工作台、知识收件箱、进化日志和服务矩阵页面 HTML，避免页面字符串继续压在 `main.rs`。
 - Rust 内部 `reverse_proxy.rs` 负责内部 sidecar 反代、统一导航壳注入和响应头透传。
+- Rust 内部 `lof_domain.rs` 负责 QDII 代码列表、HaoETF 解析、交易时段判断、溢价历史、套利报告和看板数据构造。
 - `nb-shell.js` 负责“壳”：导航、全局主题同步、反代 HTML 注入和统一视觉变量。
 - `nb-common.js` 负责“机制”：`esc`、`fmtTime`、`host`、`bindTheme`、`stat`、`shortList`、`copyText`、`copyFromButton`、`cmdHtml`。
 - 业务页面只组合数据、布局和文案，不再复制基础 escape、复制按钮、短列表、命令块和常规时间/host helper。
@@ -281,7 +282,8 @@ LOF 定时报告不是直接读缓存发送。Notify 任务调用 `qdii-monitor/
 - `paid_cleaner.rs` 保存付费文章清洗 payload、断句/合段规则、Markdown 组装和 cleaner 响应元信息。
 - `pages.rs` 保存 RSS 首页和付费文章清洗器页面 HTML，让 UI 调整不再挤进 route/crawler 主流程。
 - `settings.rs` 保存 LLM 设置、自动刷新设置、secret mask、兼容旧 JSON 字段和 `free_only` 成本策略。
-- `main.rs` 仍然承载 HTTP route、crawler、订阅 API 和鸭哥来源 adapter，是后续继续拆分的主要对象。
+- `yage.rs` 保存鸭哥 AI Kit 来源 adapter，包括 profile 抓取、文章正文解码、HTML 清理、每日/周记录 Entry 构造。
+- `main.rs` 仍然承载 HTTP route、通用 RSS crawler 和订阅 API，是后续继续拆分的主要对象。
 - 自动刷新链路只读 `LlmSettings::enabled()`，不要在 handler 或 crawler 里重新手写“是否允许付费模型”的判断。
 ### `notify-sidecar-rs`
 
@@ -405,8 +407,8 @@ QQ 回复 / dashboard 摘要
 
 主要技术债：
 
-- `lof-sidecar-rs` 仍然偏大，但服务管理、系统指标、页面 HTML 和反代已拆出；下一步重点是 LOF domain/cache/report 逻辑继续 deepening。
-- `wechat-rss-rs` 仍然偏大，虽然 DB、Markdown helper、paid cleaner、pages 和 settings 已有边界，但 crawler、订阅 API route handler 和鸭哥来源 adapter 仍主要挤在 `main.rs`。
+- `lof-sidecar-rs` 仍然偏大，但服务管理、系统指标、页面 HTML、反代和 LOF domain 已拆出；下一步重点是 OBP auth/session 和 dashboard/inbox 数据 API 继续 deepening。
+- `wechat-rss-rs` 仍然偏大，虽然 DB、Markdown helper、paid cleaner、pages、settings 和 `yage` adapter 已有边界，但通用 RSS crawler、订阅 API route handler 仍主要挤在 `main.rs`。
 - `ops/` 快照和 `/root/nanobot-ops` 线上工作副本可能漂移；现在已有 `sync-to-live.sh`、`check-architecture.sh` 和 `smoke-sidecars.py`，提交前必须跑。
 - `/obp/` 和未来 MCP 入口的认证边界要继续显式维护，不能为了方便把 admin 面裸露出去。
 - 部分 systemd unit 指向 `/root/.nanobot` 线上路径，这是设计选择，但恢复环境时必须先恢复 workspace 和 secrets。
@@ -416,8 +418,8 @@ QQ 回复 / dashboard 摘要
 建议下一步重构：
 
 1. Rust sidecar 的大块 HTML/CSS 如果继续增长，拆到 `static` 或 `include_str!` 文件；公共 JS 已有 `/assets/nb-shell.js` 和 `/assets/nb-common.js`，不要再复制基础导航、主题、复制、时间、host、短列表和命令块工具函数。
-2. `lof-sidecar-rs` 如果继续加功能，下一步拆 LOF domain/cache/report；service manager、system metrics、pages 和 reverse proxy 已经完成第一轮拆分。
-3. `wechat-rss-rs` 下一步优先拆 crawler、订阅/文章 route handler 和鸭哥来源 adapter；`paid_cleaner`、`pages` 与 `settings` 继续分别保留为文章格式化、页面和 settings/cost policy 入口。
+2. `lof-sidecar-rs` 如果继续加功能，下一步拆 OBP auth/session、dashboard history 和 inbox data API；service manager、system metrics、pages、reverse proxy 和 `lof_domain` 已经完成第一轮拆分。
+3. `wechat-rss-rs` 下一步优先拆通用 RSS crawler、订阅/文章 route handler；`paid_cleaner`、`pages`、`settings` 与 `yage` 继续分别保留为文章格式化、页面、settings/cost policy 和 Kit 来源 adapter 入口。
 4. `weather-expert/weather_check.py` 如果出现第二个天气/通勤脚本，再把节假日和未来时段选择抽进 `_shared`。
 5. 保持 `ops/scripts/check-architecture.sh`、`ops/scripts/smoke-sidecars.py` 和 `ops/scripts/sync-to-live.sh` 三件套，检查 registry/unit/seam、跑线上 smoke、同步 `/root/nanobot-ops`。
 6. 新个人自动化默认采用 `skill + sidecar API`，除非确实必须改 Nanobot core。
