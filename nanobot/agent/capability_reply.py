@@ -9,24 +9,17 @@ from nanobot.agent.capability_registry import (
     group_by_category,
     load_capabilities,
 )
+from nanobot.agent.capability_snapshot import (
+    capability_summary,
+    dashboard_json,
+    dashboard_snapshot,
+)
 from nanobot.agent.direct_reply_common import (
-    DASHBOARD_TIMEOUT,
     as_dict as _dict,
     as_list as _list,
-    get_json,
     items_from as _items,
     short_text as _short,
 )
-
-DASHBOARD_ENDPOINTS = {
-    "system": ("/api/system", {}),
-    "sidecars": ("/api/sidecars", {}),
-    "caps": ("/api/capabilities", {}),
-    "notify": ("/api/notify-jobs", {}),
-    "articles": ("/rss/api/entries?days=1&limit=5", {"items": []}),
-    "lof": ("/api/status", {}),
-    "evolution": ("/api/evolution", {"items": []}),
-}
 
 
 def format_capability_menu() -> str:
@@ -59,7 +52,7 @@ def format_capability_menu() -> str:
 def format_capability_status() -> str:
     caps = _dict(dashboard_json("/api/capabilities", {}))
     sidecars = _dict(dashboard_json("/api/sidecars", {}))
-    cap_summary = _cap_summary(caps)
+    cap_summary = capability_summary(caps)
     side_summary = _dict(sidecars.get("summary"))
     bad_caps = _bad_names(_items(caps))
     bad_sidecars = _bad_names(_items(sidecars))
@@ -108,7 +101,7 @@ def format_evolution_brief() -> str:
 
 
 def format_today_brief() -> str:
-    data = _dashboard_snapshot()
+    data = dashboard_snapshot(fetcher=dashboard_json)
     mem = _dict(data["system"].get("memory"))
     side_summary = _dict(data["sidecars"].get("summary"))
     cap_summary = _dict(data["caps"].get("summary"))
@@ -138,28 +131,6 @@ def format_today_brief() -> str:
         for item in _attention_items(data["sidecars"], errors, high_lof, article_items)[:8]
     )
     return "\n".join(lines)
-
-
-def dashboard_json(path: str, default: Any) -> Any:
-    return get_json(path, default, timeout=DASHBOARD_TIMEOUT)
-
-
-def _dashboard_snapshot() -> dict[str, dict[str, Any]]:
-    return {
-        name: _dict(dashboard_json(path, default))
-        for name, (path, default) in DASHBOARD_ENDPOINTS.items()
-    }
-
-
-def _cap_summary(caps: dict[str, Any]) -> dict[str, Any]:
-    if summary := _dict(caps.get("summary")):
-        return summary
-    items = load_capabilities()
-    return {
-        "total": len(items),
-        "enabled": sum(1 for item in items if item.get("enabled", True)),
-        "healthy": "-",
-    }
 
 
 def _attention_items(
