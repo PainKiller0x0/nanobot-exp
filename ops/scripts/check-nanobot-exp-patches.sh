@@ -48,5 +48,7 @@ check 'nanobot/exp/qq/signed_delivery.py' 'prepare_outbound_content' 'QQ signed 
 check 'nanobot/exp/qq/rss_sidecar.py' 'run_client_json' 'QQ RSS sidecar rust adapter'
 check 'nanobot/exp/qq/rss_sidecar.py' 'ack_wechat_delivery' 'QQ RSS sidecar ACK adapter'
 check 'ops/sources/wechat-rss-rs/src/qq_rss_api.rs' 'wechat_ack' 'RSS sidecar WeChat ACK API'
+check 'ops/sources/wechat-rss-rs/src/qq_article_format.rs' 'format_article_push_body' 'RSS sidecar QQ article formatter'
+check 'ops/sources/wechat-rss-rs/src/qq_extractive_qa.rs' 'extractive_answer' 'RSS sidecar extractive QA helper'
 check 'ops/sources/wechat-rss-rs/src/qq_rss_api.rs' 'yage_ack' 'RSS sidecar Yage ACK API'
 exit "$fail"

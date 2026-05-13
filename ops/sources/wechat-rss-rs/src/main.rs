@@ -22,6 +22,8 @@ mod db;
 mod markdown;
 mod pages;
 mod paid_cleaner;
+mod qq_article_format;
+mod qq_extractive_qa;
 mod qq_rss_api;
 mod settings;
 mod yage;
