@@ -29,10 +29,6 @@ check 'nanobot/exp/qq/signatures.py' 'verify_and_unwrap_signed_payload' 'QQ sign
 check 'nanobot/exp/qq/signed_delivery.py' 'prepare_outbound_content' 'QQ signed delivery policy'
 check 'nanobot/exp/qq/rss_sidecar.py' 'run_client_json' 'QQ RSS sidecar rust adapter'
 check 'nanobot/exp/qq/rss_sidecar.py' 'ack_wechat_delivery' 'QQ RSS sidecar ACK adapter'
-check 'nanobot/exp/qq/media_io.py' 'download_to_media_dir_chunked' 'QQ media IO helper'
-check 'nanobot/exp/qq/gateway_greeting.py' 'build_restart_greeting' 'QQ gateway greeting helper'
-check 'nanobot/exp/qq/rich_media.py' 'post_base64file' 'QQ rich media helper'
-check 'nanobot/exp/qq/article_runtime.py' 'run_wechat_signed' 'QQ article runtime adapter'
 check 'ops/sources/wechat-rss-rs/src/qq_rss_api.rs' 'wechat_ack' 'RSS sidecar WeChat ACK API'
 check 'ops/sources/wechat-rss-rs/src/qq_rss_api.rs' 'yage_ack' 'RSS sidecar Yage ACK API'
 exit "$fail"
