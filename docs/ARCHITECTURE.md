@@ -196,9 +196,6 @@ Nanobot core 不应该负责：
   - `media_io.py`：QQ 附件命名、下载、读取的媒体 IO Module。
   - `gateway_greeting.py`：gateway 重启一次性问候。
   - `rich_media.py`：QQ base64 文件上传与 msg_type=7 投递 Adapter。
-  - `outbound_runtime.py`：QQ 出站消息策略，负责媒体 fallback、签名防篡改、流式优先和文本分片。
-  - `text_transport.py`：QQ 文本/流式 HTTP 传输 Adapter，负责 payload、route、timeout 和被动回复重试。
-  - `inbound_runtime.py`：QQ 入站身份解析和附件内容拼接。
   短句“内存”查询必须走 `system` fast path，避免让 LLM 猜系统状态。
 - RSS 推送链路：`wechat-rss-rs` 暴露 `/api/latest`、`/api/ask`、`/api/push/wechat-signed`、`/api/push/wechat-recover`、`/api/push/wechat-ack`、`/api/push/yage-signed`、`/api/push/yage-ack`。QQ 正常路径优先通过 Rust HTTP API 获取文章 JSON、签名 payload，并在 QQ 发送成功后通过 Rust API 推进 WeChat/鸭哥已投递缓存；旧 Python skill 脚本只作为 Rust API 不可达时的 fallback。这个 seam 的 Interface 是“文章查询/签名推送/投递确认”，不要让 QQ channel 重新关心 RSS 数据库、Markdown 清洗或脚本缓存细节。
 - Gateway heartbeat：`gateway.heartbeat.deliveryChannel` / `deliveryChatId` 用来固定原生 heartbeat 投递目标，避免“最近活跃渠道”把自省报告发到 WeChat。

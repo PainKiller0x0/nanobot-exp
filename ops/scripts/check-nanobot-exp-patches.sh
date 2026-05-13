@@ -33,9 +33,6 @@ check 'nanobot/exp/qq/media_io.py' 'download_to_media_dir_chunked' 'QQ media IO 
 check 'nanobot/exp/qq/gateway_greeting.py' 'build_restart_greeting' 'QQ gateway greeting helper'
 check 'nanobot/exp/qq/rich_media.py' 'post_base64file' 'QQ rich media helper'
 check 'nanobot/exp/qq/article_runtime.py' 'run_wechat_signed' 'QQ article runtime adapter'
-check 'nanobot/exp/qq/outbound_runtime.py' 'send_outbound' 'QQ outbound runtime helper'
-check 'nanobot/exp/qq/text_transport.py' 'post_text_payload' 'QQ text transport helper'
-check 'nanobot/exp/qq/inbound_runtime.py' 'resolve_chat_context' 'QQ inbound runtime helper'
 check 'ops/sources/wechat-rss-rs/src/qq_rss_api.rs' 'wechat_ack' 'RSS sidecar WeChat ACK API'
 check 'ops/sources/wechat-rss-rs/src/qq_rss_api.rs' 'yage_ack' 'RSS sidecar Yage ACK API'
 exit "$fail"
