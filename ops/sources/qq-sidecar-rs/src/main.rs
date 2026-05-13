@@ -1,4 +1,8 @@
-use axum::{extract::State, routing::{get, post}, Json, Router};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use hex;
 use reqwest::Client;
 use ring::digest::{Context, SHA256};
@@ -223,4 +227,63 @@ async fn verify_handler(Json(payload): Json<VerifyReq>) -> Json<VerifyRes> {
         body: Some(body.to_string()),
         error: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Json;
+
+    fn sha256_hex(body: &str) -> String {
+        let mut ctx = Context::new(&SHA256);
+        ctx.update(body.as_bytes());
+        hex::encode(ctx.finish().as_ref())
+    }
+
+    #[tokio::test]
+    async fn verify_accepts_plain_text_without_signature() {
+        let Json(res) = verify_handler(Json(VerifyReq {
+            content: "  hello\r\n".to_string(),
+        }))
+        .await;
+
+        assert!(res.success);
+        assert_eq!(res.body.as_deref(), Some("hello"));
+        assert!(res.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn verify_accepts_valid_signed_payload() {
+        let body = "line one\nline two";
+        let digest = sha256_hex(body);
+        let Json(res) = verify_handler(Json(VerifyReq {
+            content: format!("NBRAW1-SHA256:{digest}\n{body}"),
+        }))
+        .await;
+
+        assert!(res.success);
+        assert_eq!(res.body.as_deref(), Some(body));
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_misplaced_signature_prefix() {
+        let Json(res) = verify_handler(Json(VerifyReq {
+            content: "prefix NBRAW1-SHA256:abc\nbody".to_string(),
+        }))
+        .await;
+
+        assert!(!res.success);
+        assert_eq!(res.error.as_deref(), Some("Prefix not at start"));
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_hash_mismatch() {
+        let Json(res) = verify_handler(Json(VerifyReq {
+            content: "NBRAW1-SHA256:deadbeef\nbody".to_string(),
+        }))
+        .await;
+
+        assert!(!res.success);
+        assert!(res.error.unwrap_or_default().contains("Hash mismatch"));
+    }
 }

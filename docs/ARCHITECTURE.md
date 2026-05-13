@@ -110,17 +110,22 @@ nanobot-exp/
 ```
 
 线上还有 `/root/nanobot-ops`，这是实际运维工作副本，`/usr/local/sbin/deploy-sidecar` 默认从这里构建和部署。
-GitHub 里的 `ops/` 是它的脱敏快照。
+GitHub 里的 `ops/` 是它的脱敏快照，也是代码源头；不要直接把长期修改留在 `/root/nanobot-ops`。
 
 ## 部署模型
 
-部署链路保持简单：
+部署链路保持简单，但必须先同步：
 
 ```text
-修改 /root/nanobot-ops 源码
+修改 /root/nanobot/ops
         |
         v
-deploy-sidecar <target>
+ops/scripts/sync-to-live.sh --check      # 检查 /root/nanobot-ops 是否漂移
+        |
+        +-- 有漂移：ops/scripts/sync-to-live.sh --apply
+        |
+        v
+deploy-sidecar <target>                  # 默认再次做 sync guard
         |
         +-- Rust sidecar: cargo build --release + install 到 /usr/local/bin
         +-- RSS sidecar: podman build + restart local image
@@ -129,9 +134,13 @@ deploy-sidecar <target>
 systemd restart + health check
 ```
 
+`deploy-sidecar` 默认会执行 `/root/nanobot/ops/scripts/sync-to-live.sh --check`。如果确实只想看状态，可用 `deploy-sidecar all --status`；如果必须临时跳过漂移保护，使用 `--skip-sync-check` 或 `NANOBOT_OPS_SKIP_SYNC_CHECK=1`，但这应该只用于救火。
+
 常用命令：
 
 ```bash
+/root/nanobot/ops/scripts/sync-to-live.sh --check
+/root/nanobot/ops/scripts/sync-to-live.sh --apply
 deploy-sidecar all --status
 deploy-sidecar lof
 deploy-sidecar trend

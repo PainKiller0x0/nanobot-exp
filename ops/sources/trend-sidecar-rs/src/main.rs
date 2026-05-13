@@ -141,8 +141,8 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/root/.nanobot/data/trend-sidecar/history"));
     let _ = tokio::fs::create_dir_all(&history_dir).await;
-    let api_url = std::env::var("TREND_NEWSNOW_API_URL")
-        .unwrap_or_else(|_| DEFAULT_API_URL.to_string());
+    let api_url =
+        std::env::var("TREND_NEWSNOW_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
     let refresh_secs: u64 = std::env::var("TREND_REFRESH_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -150,7 +150,9 @@ async fn main() {
 
     let http = Client::builder()
         .timeout(Duration::from_secs(14))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121 Safari/537.36")
+        .user_agent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121 Safari/537.36",
+        )
         .build()
         .expect("build reqwest client");
 
@@ -265,7 +267,10 @@ async fn api_sources(State(state): State<AppState>) -> impl IntoResponse {
     Json(json!({"ok": true, "items": state.sources}))
 }
 
-async fn api_latest(State(state): State<AppState>, Query(q): Query<LatestQuery>) -> impl IntoResponse {
+async fn api_latest(
+    State(state): State<AppState>,
+    Query(q): Query<LatestQuery>,
+) -> impl IntoResponse {
     let store = load_store(&state).await;
     let mut items = store.items;
     if let Some(source) = q.source.as_deref().filter(|v| !v.trim().is_empty()) {
@@ -280,7 +285,10 @@ async fn api_latest(State(state): State<AppState>, Query(q): Query<LatestQuery>)
     Json(json!({"ok": true, "items": items, "updated_at": store.updated_at}))
 }
 
-async fn api_search(State(state): State<AppState>, Query(q): Query<SearchQuery>) -> impl IntoResponse {
+async fn api_search(
+    State(state): State<AppState>,
+    Query(q): Query<SearchQuery>,
+) -> impl IntoResponse {
     let store = load_store(&state).await;
     let mut items = filter_items(store.items, &q.q);
     sort_items(&mut items);
@@ -299,7 +307,10 @@ async fn api_daily_report(
     Query(q): Query<DailyReportQuery>,
 ) -> impl IntoResponse {
     let store = load_store(&state).await;
-    Json(build_daily_report(&store, q.limit.unwrap_or(8).clamp(3, 15)))
+    Json(build_daily_report(
+        &store,
+        q.limit.unwrap_or(8).clamp(3, 15),
+    ))
 }
 
 async fn api_history(
@@ -309,14 +320,19 @@ async fn api_history(
     Json(history_payload(&state, q.date, q.limit.unwrap_or(30).clamp(5, 120)).await)
 }
 
-async fn api_topic(State(state): State<AppState>, AxumPath(keyword): AxumPath<String>) -> impl IntoResponse {
+async fn api_topic(
+    State(state): State<AppState>,
+    AxumPath(keyword): AxumPath<String>,
+) -> impl IntoResponse {
     let store = load_store(&state).await;
     Json(topic_payload(&store, &keyword))
 }
 
 async fn api_refresh(State(state): State<AppState>) -> impl IntoResponse {
     match refresh_store(&state).await {
-        Ok(store) => Json(json!({"ok": true, "updated_at": store.updated_at, "items": store.items.len(), "errors": store.last_errors})),
+        Ok(store) => Json(
+            json!({"ok": true, "updated_at": store.updated_at, "items": store.items.len(), "errors": store.last_errors}),
+        ),
         Err(err) => Json(json!({"ok": false, "error": err})),
     }
 }
@@ -325,13 +341,19 @@ async fn api_mcp_tools() -> impl IntoResponse {
     Json(json!({"ok": true, "tools": tool_specs()}))
 }
 
-async fn api_mcp_call(State(state): State<AppState>, Json(req): Json<McpCallRequest>) -> impl IntoResponse {
+async fn api_mcp_call(
+    State(state): State<AppState>,
+    Json(req): Json<McpCallRequest>,
+) -> impl IntoResponse {
     let name = req.tool.or(req.name).unwrap_or_default();
     let args = req.arguments.unwrap_or_else(|| json!({}));
     Json(call_tool(&state, &name, args).await)
 }
 
-async fn mcp_jsonrpc(State(state): State<AppState>, Json(req): Json<JsonRpcRequest>) -> impl IntoResponse {
+async fn mcp_jsonrpc(
+    State(state): State<AppState>,
+    Json(req): Json<JsonRpcRequest>,
+) -> impl IntoResponse {
     let id = req.id.clone().unwrap_or(Value::Null);
     let result = match req.method.as_str() {
         "initialize" => json!({
@@ -342,8 +364,14 @@ async fn mcp_jsonrpc(State(state): State<AppState>, Json(req): Json<JsonRpcReque
         "tools/list" => json!({"tools": tool_specs()}),
         "tools/call" => {
             let params = req.params.unwrap_or_else(|| json!({}));
-            let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
-            let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             let value = call_tool(&state, name, args).await;
             json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())}]})
         }
@@ -355,7 +383,10 @@ async fn mcp_jsonrpc(State(state): State<AppState>, Json(req): Json<JsonRpcReque
                 .into_response();
         }
     };
-    Json(json!({"jsonrpc": req.jsonrpc.unwrap_or_else(|| "2.0".into()), "id": id, "result": result})).into_response()
+    Json(
+        json!({"jsonrpc": req.jsonrpc.unwrap_or_else(|| "2.0".into()), "id": id, "result": result}),
+    )
+    .into_response()
 }
 
 async fn call_tool(state: &AppState, name: &str, args: Value) -> Value {
@@ -373,7 +404,11 @@ async fn call_tool(state: &AppState, name: &str, args: Value) -> Value {
             json!({"ok": true, "items": items})
         }
         "search_news" => {
-            let query = args.get("query").or_else(|| args.get("q")).and_then(Value::as_str).unwrap_or("");
+            let query = args
+                .get("query")
+                .or_else(|| args.get("q"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
             let mut items = filter_items(store.items, query);
             sort_items(&mut items);
             items.truncate(100);
@@ -381,7 +416,11 @@ async fn call_tool(state: &AppState, name: &str, args: Value) -> Value {
         }
         "get_trending_topics" => build_brief(&store),
         "analyze_topic_trend" => {
-            let keyword = args.get("keyword").or_else(|| args.get("topic")).and_then(Value::as_str).unwrap_or("");
+            let keyword = args
+                .get("keyword")
+                .or_else(|| args.get("topic"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
             topic_payload(&store, keyword)
         }
         "generate_summary_report" => build_report(&store),
@@ -393,13 +432,41 @@ async fn call_tool(state: &AppState, name: &str, args: Value) -> Value {
 
 fn tool_specs() -> Vec<Value> {
     vec![
-        tool("get_latest_news", "获取最新热榜新闻，可按 source 过滤。", json!({"type":"object","properties":{"limit":{"type":"integer"},"source":{"type":"string"}}})),
-        tool("search_news", "在本地已缓存的热榜新闻中搜索关键词。", json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})),
-        tool("get_trending_topics", "生成当前热点主题聚合与跨平台摘要。", json!({"type":"object","properties":{}})),
-        tool("analyze_topic_trend", "分析某个关键词/话题的跨平台出现次数、最佳排名和样本新闻。", json!({"type":"object","properties":{"keyword":{"type":"string"}},"required":["keyword"]})),
-        tool("generate_summary_report", "生成适合 Nanobot/LLM 继续分析的结构化热点简报。", json!({"type":"object","properties":{}})),
-        tool("get_system_status", "查看 trend sidecar 数据状态、刷新时间和错误。", json!({"type":"object","properties":{}})),
-        tool("list_trend_sources", "列出已启用热榜来源。", json!({"type":"object","properties":{}})),
+        tool(
+            "get_latest_news",
+            "获取最新热榜新闻，可按 source 过滤。",
+            json!({"type":"object","properties":{"limit":{"type":"integer"},"source":{"type":"string"}}}),
+        ),
+        tool(
+            "search_news",
+            "在本地已缓存的热榜新闻中搜索关键词。",
+            json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
+        ),
+        tool(
+            "get_trending_topics",
+            "生成当前热点主题聚合与跨平台摘要。",
+            json!({"type":"object","properties":{}}),
+        ),
+        tool(
+            "analyze_topic_trend",
+            "分析某个关键词/话题的跨平台出现次数、最佳排名和样本新闻。",
+            json!({"type":"object","properties":{"keyword":{"type":"string"}},"required":["keyword"]}),
+        ),
+        tool(
+            "generate_summary_report",
+            "生成适合 Nanobot/LLM 继续分析的结构化热点简报。",
+            json!({"type":"object","properties":{}}),
+        ),
+        tool(
+            "get_system_status",
+            "查看 trend sidecar 数据状态、刷新时间和错误。",
+            json!({"type":"object","properties":{}}),
+        ),
+        tool(
+            "list_trend_sources",
+            "列出已启用热榜来源。",
+            json!({"type":"object","properties":{}}),
+        ),
     ]
 }
 
@@ -424,8 +491,11 @@ async fn refresh_store(state: &AppState) -> Result<TrendStore, String> {
     let _guard = state.refresh_lock.lock().await;
     let now = Utc::now();
     let old = load_store(state).await;
-    let mut by_id: HashMap<String, TrendItem> =
-        old.items.into_iter().map(|item| (item.id.clone(), item)).collect();
+    let mut by_id: HashMap<String, TrendItem> = old
+        .items
+        .into_iter()
+        .map(|item| (item.id.clone(), item))
+        .collect();
     let mut errors = Vec::new();
 
     for source in &state.sources {
@@ -484,7 +554,9 @@ async fn refresh_store(state: &AppState) -> Result<TrendStore, String> {
     }
 
     let mut items: Vec<TrendItem> = by_id.into_values().collect();
-    items.retain(|item| now.signed_duration_since(item.last_seen_at).num_hours() <= MAX_ACTIVE_AGE_HOURS);
+    items.retain(|item| {
+        now.signed_duration_since(item.last_seen_at).num_hours() <= MAX_ACTIVE_AGE_HOURS
+    });
     sort_items(&mut items);
     items.truncate(MAX_TOTAL_ITEMS);
 
@@ -548,13 +620,14 @@ async fn save_store(state: &AppState, store: &TrendStore) -> Result<(), String> 
     }
     let tmp = state.state_file.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
-    tokio::fs::write(&tmp, text).await.map_err(|e| e.to_string())?;
+    tokio::fs::write(&tmp, text)
+        .await
+        .map_err(|e| e.to_string())?;
     tokio::fs::rename(&tmp, &state.state_file)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-
 
 async fn save_daily_history(state: &AppState, store: &TrendStore) -> Result<(), String> {
     tokio::fs::create_dir_all(&state.history_dir)
@@ -574,8 +647,12 @@ async fn save_daily_history(state: &AppState, store: &TrendStore) -> Result<(), 
     });
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
-    tokio::fs::write(&tmp, text).await.map_err(|e| e.to_string())?;
-    tokio::fs::rename(&tmp, &path).await.map_err(|e| e.to_string())?;
+    tokio::fs::write(&tmp, text)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::rename(&tmp, &path)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -597,7 +674,9 @@ async fn history_payload(state: &AppState, date: Option<String>, limit: usize) -
                 value["days"] = json!(days);
                 value
             }
-            Err(err) => json!({"ok": false, "days": days, "date": selected, "error": err.to_string()}),
+            Err(err) => {
+                json!({"ok": false, "days": days, "date": selected, "error": err.to_string()})
+            }
         },
         Err(err) => json!({"ok": false, "days": days, "date": selected, "error": err.to_string()}),
     }
@@ -605,7 +684,9 @@ async fn history_payload(state: &AppState, date: Option<String>, limit: usize) -
 
 async fn list_history_days(dir: &Path) -> Vec<String> {
     let mut days = Vec::new();
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else { return days; };
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return days;
+    };
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name().to_string_lossy().to_string();
         if let Some(day) = name.strip_suffix(".json") {
@@ -624,7 +705,9 @@ fn valid_history_date(date: &str) -> bool {
     b.len() == 10
         && b[4] == b'-'
         && b[7] == b'-'
-        && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
 fn build_brief(store: &TrendStore) -> Value {
@@ -660,7 +743,10 @@ fn build_brief(store: &TrendStore) -> Value {
 fn topic_payload(store: &TrendStore, keyword: &str) -> Value {
     let mut matches = filter_items(store.items.clone(), keyword);
     sort_items(&mut matches);
-    let platforms: HashSet<_> = matches.iter().map(|item| item.source_name.clone()).collect();
+    let platforms: HashSet<_> = matches
+        .iter()
+        .map(|item| item.source_name.clone())
+        .collect();
     let best_rank = matches.iter().map(|item| item.best_rank).min().unwrap_or(0);
     let total_seen: u32 = matches.iter().map(|item| item.seen_count).sum();
     let first_seen = matches.iter().map(|item| item.first_seen_at).min();
@@ -688,9 +774,17 @@ fn build_daily_report(store: &TrendStore, limit: usize) -> Value {
         .unwrap_or_else(|| "未知".to_string());
     let mut lines = Vec::new();
     lines.push(format!("📰 Trend Radar 每日新闻简报（{}）", updated));
-    lines.push(format!("数据：{} 条缓存，{} 个源异常", store.items.len(), store.last_errors.len()));
+    lines.push(format!(
+        "数据：{} 条缓存，{} 个源异常",
+        store.items.len(),
+        store.last_errors.len()
+    ));
     lines.push("".to_string());
-    let report_pool: Vec<_> = items.iter().filter(|item| is_report_candidate(item)).cloned().collect();
+    let report_pool: Vec<_> = items
+        .iter()
+        .filter(|item| is_report_candidate(item))
+        .cloned()
+        .collect();
     let report_items = if report_pool.len() >= limit {
         diverse_items(&report_pool, limit)
     } else {
@@ -698,10 +792,7 @@ fn build_daily_report(store: &TrendStore, limit: usize) -> Value {
     };
     for (idx, item) in report_items.iter().enumerate() {
         lines.push(format!("{}. {}", idx + 1, item.title));
-        lines.push(format!(
-            "   简要：{}",
-            readable_summary(item)
-        ));
+        lines.push(format!("   简要：{}", readable_summary(item)));
         let link = if item.url.is_empty() {
             item.mobile_url.as_str()
         } else {
@@ -725,13 +816,19 @@ fn build_daily_report(store: &TrendStore, limit: usize) -> Value {
 fn build_report(store: &TrendStore) -> Value {
     let brief = build_brief(store);
     let mut lines = Vec::new();
-    lines.push(format!("热点雷达简报：{} 条缓存，更新时间 {:?}", store.items.len(), store.updated_at));
+    lines.push(format!(
+        "热点雷达简报：{} 条缓存，更新时间 {:?}",
+        store.items.len(),
+        store.updated_at
+    ));
     if let Some(items) = brief.get("top_items").and_then(Value::as_array) {
         lines.push("核心热点：".into());
         for item in items.iter().take(8) {
             lines.push(format!(
                 "- [{}] {}",
-                item.get("source_name").and_then(Value::as_str).unwrap_or("-"),
+                item.get("source_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-"),
                 item.get("title").and_then(Value::as_str).unwrap_or("-")
             ));
         }
@@ -828,7 +925,9 @@ fn recent_items(items: &[TrendItem]) -> Vec<TrendItem> {
     if recent.len() < 12 {
         recent = items
             .iter()
-            .filter(|item| now.signed_duration_since(item.last_seen_at).num_hours() <= MAX_ACTIVE_AGE_HOURS)
+            .filter(|item| {
+                now.signed_duration_since(item.last_seen_at).num_hours() <= MAX_ACTIVE_AGE_HOURS
+            })
             .cloned()
             .collect();
     }
@@ -882,7 +981,9 @@ fn news_summary(raw: &NewsNowItem, title: &str) -> String {
 }
 
 fn collect_summary_parts(value: Option<&Value>, out: &mut Vec<String>) {
-    let Some(value) = value else { return; };
+    let Some(value) = value else {
+        return;
+    };
     match value {
         Value::String(s) => out.push(s.clone()),
         Value::Object(map) => {
@@ -897,7 +998,7 @@ fn collect_summary_parts(value: Option<&Value>, out: &mut Vec<String>) {
                 collect_summary_parts(Some(v), out);
             }
         }
-        Value::Number(_) => {},
+        Value::Number(_) => {}
         _ => {}
     }
 }
@@ -948,11 +1049,15 @@ fn readable_summary(item: &TrendItem) -> String {
 }
 
 fn shanghai_date(now: DateTime<Utc>) -> String {
-    (now + chrono::Duration::hours(8)).format("%Y-%m-%d").to_string()
+    (now + chrono::Duration::hours(8))
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 fn shanghai_time_text(dt: DateTime<Utc>) -> String {
-    (dt + chrono::Duration::hours(8)).format("%Y-%m-%d %H:%M").to_string()
+    (dt + chrono::Duration::hours(8))
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
 }
 
 fn stable_id(source: &str, title: &str) -> String {
@@ -972,13 +1077,74 @@ fn score_item(weight: f64, rank: usize, title: &str) -> f64 {
 
 fn classify_tags(title: &str) -> Vec<String> {
     let rules: [(&str, &[&str]); 10] = [
-        ("AI", &["ai", "人工智能", "大模型", "openai", "chatgpt", "机器人", "芯片", "算力"]),
-        ("财经", &["a股", "港股", "美股", "基金", "降息", "央行", "财报", "成交额", "关税", "汇率"]),
-        ("科技", &["手机", "芯片", "新能源", "汽车", "特斯拉", "比亚迪", "华为", "苹果"]),
-        ("国际", &["美国", "欧洲", "日本", "韩国", "俄罗斯", "乌克兰", "中东", "土耳其"]),
-        ("社会", &["警方", "法院", "官方", "通报", "调查", "事故", "偷税", "网红"]),
-        ("政策", &["国安", "监管", "政策", "发布", "部门", "税", "海关"]),
-        ("娱乐", &["明星", "电影", "综艺", "恋综", "花少", "演唱会", "粉丝"]),
+        (
+            "AI",
+            &[
+                "ai",
+                "人工智能",
+                "大模型",
+                "openai",
+                "chatgpt",
+                "机器人",
+                "芯片",
+                "算力",
+            ],
+        ),
+        (
+            "财经",
+            &[
+                "a股",
+                "港股",
+                "美股",
+                "基金",
+                "降息",
+                "央行",
+                "财报",
+                "成交额",
+                "关税",
+                "汇率",
+            ],
+        ),
+        (
+            "科技",
+            &[
+                "手机",
+                "芯片",
+                "新能源",
+                "汽车",
+                "特斯拉",
+                "比亚迪",
+                "华为",
+                "苹果",
+            ],
+        ),
+        (
+            "国际",
+            &[
+                "美国",
+                "欧洲",
+                "日本",
+                "韩国",
+                "俄罗斯",
+                "乌克兰",
+                "中东",
+                "土耳其",
+            ],
+        ),
+        (
+            "社会",
+            &[
+                "警方", "法院", "官方", "通报", "调查", "事故", "偷税", "网红",
+            ],
+        ),
+        (
+            "政策",
+            &["国安", "监管", "政策", "发布", "部门", "税", "海关"],
+        ),
+        (
+            "娱乐",
+            &["明星", "电影", "综艺", "恋综", "花少", "演唱会", "粉丝"],
+        ),
         ("体育", &["nba", "足球", "比赛", "冠军", "球队"]),
         ("健康", &["医院", "医生", "疾病", "药", "医保", "食品"]),
         ("教育", &["学校", "大学", "高考", "考研", "学生", "教师"]),
@@ -986,7 +1152,10 @@ fn classify_tags(title: &str) -> Vec<String> {
     let lower = title.to_lowercase();
     let mut tags = Vec::new();
     for (tag, needles) in rules {
-        if needles.iter().any(|needle| lower.contains(&needle.to_lowercase())) {
+        if needles
+            .iter()
+            .any(|needle| lower.contains(&needle.to_lowercase()))
+        {
             tags.push(tag.to_string());
         }
     }
@@ -1048,3 +1217,122 @@ load().catch(e=>document.getElementById('updated').textContent=e.message);setInt
 </script>
 </body>
 </html>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn item(
+        id: &str,
+        source_id: &str,
+        source_name: &str,
+        rank: usize,
+        title: &str,
+        tags: Vec<&str>,
+        score: f64,
+    ) -> TrendItem {
+        let now = Utc.with_ymd_and_hms(2026, 5, 13, 8, 0, 0).unwrap();
+        TrendItem {
+            id: id.to_string(),
+            source_id: source_id.to_string(),
+            source_name: source_name.to_string(),
+            rank,
+            title: title.to_string(),
+            summary: String::new(),
+            url: format!("https://example.com/{id}"),
+            mobile_url: String::new(),
+            first_seen_at: now,
+            last_seen_at: now,
+            seen_count: 1,
+            best_rank: rank,
+            score,
+            tags: tags.into_iter().map(str::to_string).collect(),
+        }
+    }
+
+    #[test]
+    fn classifies_ai_and_defaults_non_matching_titles() {
+        assert!(classify_tags("chatgpt model release").contains(&"AI".to_string()));
+        let tags = classify_tags("local topic");
+        assert_eq!(tags.len(), 1);
+        assert!(!tags.contains(&"AI".to_string()));
+    }
+
+    #[test]
+    fn filter_items_matches_title_source_and_tags() {
+        let items = vec![
+            item(
+                "1",
+                "weibo",
+                "weibo",
+                1,
+                "OpenAI new model",
+                vec!["AI"],
+                80.0,
+            ),
+            item("2", "cls", "cls", 2, "market close", vec!["finance"], 70.0),
+        ];
+
+        assert_eq!(filter_items(items.clone(), "openai").len(), 1);
+        assert_eq!(filter_items(items.clone(), "cls").len(), 1);
+        assert_eq!(filter_items(items, "finance").len(), 1);
+    }
+
+    #[test]
+    fn diverse_items_caps_each_source_before_fill() {
+        let items = vec![
+            item("a1", "a", "A", 1, "topic one", vec!["AI"], 90.0),
+            item("a2", "a", "A", 2, "topic two", vec!["AI"], 89.0),
+            item("a3", "a", "A", 3, "topic three", vec!["AI"], 88.0),
+            item("b1", "b", "B", 4, "topic four", vec!["finance"], 70.0),
+        ];
+
+        let selected = diverse_items(&items, 3);
+        assert_eq!(selected.iter().filter(|x| x.source_id == "a").count(), 2);
+        assert_eq!(selected.iter().filter(|x| x.source_id == "b").count(), 1);
+    }
+
+    #[test]
+    fn report_candidate_filters_noise() {
+        assert!(!is_report_candidate(&item(
+            "1",
+            "weibo",
+            "weibo",
+            1,
+            "celebrity reality show gossip topic",
+            vec!["\u{5a31}\u{4e50}"],
+            80.0
+        )));
+        assert!(!is_report_candidate(&item(
+            "2",
+            "weibo",
+            "weibo",
+            1,
+            "short",
+            vec!["misc"],
+            80.0
+        )));
+        assert!(is_report_candidate(&item(
+            "3",
+            "cls",
+            "cls",
+            1,
+            "AI industry chain reports important progress",
+            vec!["AI"],
+            80.0
+        )));
+    }
+
+    #[test]
+    fn stable_id_is_deterministic_and_source_scoped() {
+        assert_eq!(
+            stable_id("weibo", "same title"),
+            stable_id("weibo", "same title")
+        );
+        assert_ne!(
+            stable_id("weibo", "same title"),
+            stable_id("zhihu", "same title")
+        );
+    }
+}

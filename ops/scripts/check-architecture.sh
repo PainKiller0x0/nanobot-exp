@@ -147,6 +147,21 @@ for path in [
 ]:
     require_file(path, "architecture module seam")
 
+
+sync_script = ops / "scripts" / "sync-to-live.sh"
+deploy_script = ops / "scripts" / "deploy-sidecar.sh"
+require_file(sync_script, "live ops sync script")
+require_file(deploy_script, "sidecar deploy script")
+if sync_script.exists():
+    sync_text = sync_script.read_text(encoding="utf-8", errors="replace")
+    for token in ["--check", "--apply", "rsync", "/root/nanobot-ops"]:
+        if token not in sync_text:
+            errors.append(f"ops/scripts/sync-to-live.sh missing {token}")
+if deploy_script.exists():
+    deploy_text = deploy_script.read_text(encoding="utf-8", errors="replace")
+    if "sync-to-live.sh" not in deploy_text or "--skip-sync-check" not in deploy_text:
+        errors.append("ops/scripts/deploy-sidecar.sh must guard /root/nanobot-ops drift")
+
 for unit in units:
     path = ops / "systemd" / unit
     text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""

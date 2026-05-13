@@ -33,3 +33,43 @@ pub fn embedding_enabled(api_key: &str, endpoint: &str, model: &str) -> bool {
         && !api_key.trim().is_empty()
         && (env_bool("REFLEXIO_ALLOW_PAID_EMBEDDING", false) || is_free_embedding(endpoint, model))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifies_free_model_backends() {
+        assert!(is_free_llm(FREE_LLM_BASE_URL, FREE_LLM_MODEL));
+        assert!(!is_free_llm("https://api.deepseek.com", "deepseek-v4-pro"));
+        assert!(is_free_embedding(
+            FREE_EMBEDDING_ENDPOINT,
+            FREE_EMBEDDING_MODEL
+        ));
+        assert!(!is_free_embedding(
+            "https://paid.example.com",
+            "paid-embedding"
+        ));
+    }
+
+    #[test]
+    fn default_policy_disables_paid_backends() {
+        assert!(llm_enabled("key", FREE_LLM_BASE_URL, FREE_LLM_MODEL));
+        assert!(!llm_enabled(
+            "key",
+            "https://api.deepseek.com",
+            "deepseek-v4-pro"
+        ));
+        assert!(!llm_enabled("", FREE_LLM_BASE_URL, FREE_LLM_MODEL));
+        assert!(embedding_enabled(
+            "key",
+            FREE_EMBEDDING_ENDPOINT,
+            FREE_EMBEDDING_MODEL
+        ));
+        assert!(!embedding_enabled(
+            "key",
+            "https://paid.example.com",
+            "paid-embedding"
+        ));
+    }
+}

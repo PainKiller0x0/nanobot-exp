@@ -1262,3 +1262,99 @@ mod anyhow_like {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn shanghai_dt(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+    ) -> chrono::DateTime<FixedOffset> {
+        FixedOffset::east_opt(TZ_SHANGHAI_OFFSET)
+            .unwrap()
+            .with_ymd_and_hms(year, month, day, hour, minute, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn broad_workday_schedule_skips_real_holiday() {
+        let mut holidays = HolidayCalendar::default();
+        holidays.days.insert(
+            "2026-05-01".to_string(),
+            HolidayInfo {
+                holiday: true,
+                adjusted_workday: false,
+            },
+        );
+        let friday_holiday = shanghai_dt(2026, 5, 1, 6, 45);
+
+        assert!(!schedule_matches_at(
+            "45 6 * * 1-5",
+            &friday_holiday,
+            &holidays
+        ));
+        assert!(schedule_matches_at(
+            "45 6 * * *",
+            &friday_holiday,
+            &holidays
+        ));
+    }
+
+    #[test]
+    fn broad_workday_schedule_runs_on_adjusted_weekend_workday() {
+        let mut holidays = HolidayCalendar::default();
+        holidays.days.insert(
+            "2026-05-09".to_string(),
+            HolidayInfo {
+                holiday: false,
+                adjusted_workday: true,
+            },
+        );
+        let adjusted_saturday = shanghai_dt(2026, 5, 9, 18, 40);
+
+        assert!(schedule_matches_at(
+            "40 18 * * 1-5",
+            &adjusted_saturday,
+            &holidays
+        ));
+        assert!(!schedule_matches_at(
+            "40 18 * * 6-7",
+            &adjusted_saturday,
+            &holidays
+        ));
+    }
+
+    #[test]
+    fn strips_wechat_ack_marker_and_returns_ids() {
+        let body = "hello\n<!-- NBACK_WECHAT sub:12 entry:34 -->\nworld";
+        let (cleaned, ack) = strip_wechat_ack_marker(body);
+
+        assert_eq!(cleaned, "hello\n\nworld");
+        assert_eq!(ack, Some((12, 34)));
+    }
+
+    #[test]
+    fn yage_url_date_comparison_prevents_old_ack() {
+        assert!(is_same_or_newer_yage_url(
+            "https://yage-ai.kit.com/posts/2026-05-12-a",
+            "https://yage-ai.kit.com/posts/2026-05-13-b"
+        ));
+        assert!(!is_same_or_newer_yage_url(
+            "https://yage-ai.kit.com/posts/2026-05-13-b",
+            "https://yage-ai.kit.com/posts/2026-05-12-a"
+        ));
+    }
+
+    #[test]
+    fn split_message_keeps_chunks_within_limit() {
+        let chunks = split_message("abcd\nefgh\nijklmnop", 5);
+
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 5));
+        assert_eq!(chunks, vec!["abcd", "efgh", "ijklm", "nop"]);
+    }
+}

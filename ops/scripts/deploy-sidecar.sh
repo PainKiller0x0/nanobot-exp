@@ -8,6 +8,7 @@ DRY_RUN=0
 SKIP_BUILD=0
 SKIP_RESTART=0
 STATUS_ONLY=0
+SKIP_SYNC_CHECK=${NANOBOT_OPS_SKIP_SYNC_CHECK:-0}
 
 declare -a TARGETS=()
 
@@ -30,6 +31,8 @@ Options:
   --no-build     Install/restart using existing release artifact or image
   --no-restart   Build/install only, do not restart service
   --dry-run      Print commands without running them
+  --skip-sync-check
+                 Skip /root/nanobot -> /root/nanobot-ops drift guard
   -h, --help     Show this help
 
 Examples:
@@ -42,6 +45,22 @@ USAGE
 
 log() { printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
+
+check_live_sync() {
+  if [[ "$SKIP_SYNC_CHECK" == "1" || "$STATUS_ONLY" -eq 1 || "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ "$REPO" != "/root/nanobot-ops" ]]; then
+    return 0
+  fi
+  local guard="/root/nanobot/ops/scripts/sync-to-live.sh"
+  if [[ ! -x "$guard" ]]; then
+    echo "warning: missing live sync guard: $guard" >&2
+    return 0
+  fi
+  "$guard" --check
+}
+
 run() {
   echo "+ $*"
   if [[ "$DRY_RUN" -eq 0 ]]; then
@@ -166,6 +185,7 @@ while [[ $# -gt 0 ]]; do
     --no-build) SKIP_BUILD=1 ;;
     --no-restart) SKIP_RESTART=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --skip-sync-check) SKIP_SYNC_CHECK=1 ;;
     -h|--help) usage; exit 0 ;;
     all) TARGETS=(lof notify qq reflexio obp trend rss) ;;
     lof|notify|qq|reflexio|obp|trend|rss) TARGETS+=("$1") ;;
@@ -175,6 +195,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ ${#TARGETS[@]} -gt 0 ]] || { usage >&2; exit 2; }
+
+check_live_sync
 
 for target in "${TARGETS[@]}"; do
   deploy_one "$target"

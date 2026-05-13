@@ -3,14 +3,19 @@ set -euo pipefail
 
 SRC=${NANOBOT_OPS_SRC:-/root/nanobot/ops}
 DST=${NANOBOT_OPS_LIVE:-/root/nanobot-ops}
-APPLY=0
+MODE=dry-run
 
 usage() {
   cat <<'USAGE'
-Usage: sync-to-live.sh [--apply] [--src PATH] [--dst PATH]
+Usage: sync-to-live.sh [--check|--apply] [--src PATH] [--dst PATH]
 
 Synchronize the repository ops snapshot into the live ops worktree used by
 /usr/local/sbin/deploy-sidecar. Default mode is dry-run.
+
+Modes:
+  default     Show itemized changes without writing.
+  --check     Exit 0 only when live ops is already in sync.
+  --apply     Write changes, then verify live ops is in sync.
 
 Safety rules:
 - default source must be /root/nanobot/ops
@@ -22,7 +27,8 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --apply) APPLY=1 ;;
+    --apply) MODE=apply ;;
+    --check) MODE=check ;;
     --src) SRC=${2:?missing --src value}; shift ;;
     --dst) DST=${2:?missing --dst value}; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -46,10 +52,14 @@ if [[ ! -d "$SRC" ]]; then
   echo "missing source: $SRC" >&2
   exit 1
 fi
+if ! command -v rsync >/dev/null 2>&1; then
+  echo "missing dependency: rsync" >&2
+  exit 1
+fi
 
 mkdir -p "$DST"
 
-rsync_args=(
+base_rsync_args=(
   -a
   --delete
   --exclude '.git/'
@@ -66,17 +76,61 @@ rsync_args=(
   --exclude 'Dockerfile.local-refresh'
   --exclude '*.log'
 )
-if [[ "$APPLY" -eq 0 ]]; then
-  rsync_args+=(--dry-run --itemize-changes)
-  echo "dry-run: pass --apply to write changes"
-else
-  echo "apply: syncing $SRC -> $DST"
-fi
 
-for dir in bin sbin config docs scripts sources systemd; do
-  [[ -d "$SRC/$dir" ]] || continue
-  mkdir -p "$DST/$dir"
-  rsync "${rsync_args[@]}" "$SRC/$dir/" "$DST/$dir/"
-done
+dirs=(bin sbin config docs scripts sources systemd)
 
-echo "done"
+run_rsync() {
+  local dry_flag=${1:-0}
+  local -a args=("${base_rsync_args[@]}")
+  if [[ "$dry_flag" -eq 1 ]]; then
+    args+=(--dry-run --itemize-changes)
+  fi
+  for dir in "${dirs[@]}"; do
+    [[ -d "$SRC/$dir" ]] || continue
+    mkdir -p "$DST/$dir"
+    rsync "${args[@]}" "$SRC/$dir/" "$DST/$dir/"
+  done
+}
+
+collect_drift() {
+  run_rsync 1 | sed '/^$/d'
+}
+
+case "$MODE" in
+  dry-run)
+    echo "dry-run: $SRC -> $DST"
+    echo "pass --apply to write changes, or --check to use this as a guard"
+    drift=$(collect_drift)
+    if [[ -n "$drift" ]]; then
+      printf '%s\n' "$drift"
+      echo "drift: detected"
+    else
+      echo "drift: none"
+    fi
+    ;;
+  check)
+    drift=$(collect_drift)
+    if [[ -n "$drift" ]]; then
+      echo "live ops drift detected: $SRC -> $DST" >&2
+      printf '%s\n' "$drift" | sed -n '1,120p' >&2
+      echo "run: /root/nanobot/ops/scripts/sync-to-live.sh --apply" >&2
+      exit 1
+    fi
+    echo "live ops in sync: $DST"
+    ;;
+  apply)
+    echo "apply: syncing $SRC -> $DST"
+    run_rsync 0
+    drift=$(collect_drift)
+    if [[ -n "$drift" ]]; then
+      echo "sync verification failed; live ops still differs" >&2
+      printf '%s\n' "$drift" | sed -n '1,120p' >&2
+      exit 1
+    fi
+    echo "live ops in sync: $DST"
+    ;;
+  *)
+    echo "internal error: unknown mode $MODE" >&2
+    exit 2
+    ;;
+esac

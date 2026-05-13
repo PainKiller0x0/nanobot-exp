@@ -313,3 +313,39 @@ fn memory_from_row(row: &rusqlite::Row<'_>) -> Result<MemoryRecord> {
         created_at: row.get(5)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_round_trip_and_literal_search() -> Result<()> {
+        let db = DbStore::new(":memory:")?;
+        db.save_memory("user-a", "note", "alpha_needle", "test")?;
+        db.save_memory("user-a", "note", "alphaXneedle", "test")?;
+
+        assert_eq!(db.count_memories()?, 2);
+        let literal_matches = db.search_memories("alpha_", 10)?;
+        assert_eq!(literal_matches.len(), 1);
+        assert_eq!(literal_matches[0].content, "alpha_needle");
+
+        let recent = db.search_memories("", 10)?;
+        assert_eq!(recent.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn similar_search_orders_by_score_and_threshold() -> Result<()> {
+        let db = DbStore::new(":memory:")?;
+        let fact_id = db.save_fact("user-a", "close fact")?;
+        let interaction_id = db.save_interaction("user-a", None, "far interaction")?;
+        db.update_fact_embedding(fact_id, &[1.0, 0.0])?;
+        db.update_interaction_embedding(interaction_id, &[0.0, 1.0])?;
+
+        let results = db.search_similar(&[1.0, 0.0], 5, 0.5)?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, "fact");
+        assert_eq!(results[0].content, "close fact");
+        Ok(())
+    }
+}
