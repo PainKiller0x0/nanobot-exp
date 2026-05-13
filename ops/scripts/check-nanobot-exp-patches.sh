@@ -21,6 +21,7 @@ check 'ops/sources/hermes-check/hermes_check.py' 'SIDECAR_STATUS_API' 'HERMES si
 check 'ops/sources/qdii-monitor/send_qq.py' 'run_fresh_report' 'LOF refresh-before-send wrapper'
 check 'nanobot/channels/qq.py' 'nanobot.exp.qq' 'QQ downstream helper seam'
 check 'nanobot/exp/qq/streaming.py' 'should_stream_text' 'QQ streaming policy helper'
+check 'nanobot/exp/qq/stream_runtime.py' 'send_delta' 'QQ streaming runtime helper'
 check 'nanobot/exp/qq/article_requests.py' 'parse_yage_selector' 'QQ article request helper'
 check 'nanobot/exp/qq/local_commands.py' 'run_personal_ops_command' 'QQ local command runner'
 check 'nanobot/exp/qq/fast_paths.py' 'match_personal_ops_command' 'QQ fast path helper'
