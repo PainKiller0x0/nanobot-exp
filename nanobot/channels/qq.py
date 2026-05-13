@@ -20,15 +20,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
-import mimetypes
 import os
-import re
 from collections import deque
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 import aiohttp
 from loguru import logger
@@ -39,14 +35,16 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
 from nanobot.exp.qq import article_requests as qq_article_requests
+from nanobot.exp.qq import article_runtime as qq_article_runtime
 from nanobot.exp.qq import fast_paths as qq_fast_paths
+from nanobot.exp.qq import gateway_greeting as qq_gateway_greeting
 from nanobot.exp.qq import local_commands as qq_local_commands
+from nanobot.exp.qq import media_io as qq_media_io
+from nanobot.exp.qq import rich_media as qq_rich_media
 from nanobot.exp.qq import signatures as qq_signatures
 from nanobot.exp.qq import signed_delivery as qq_signed_delivery
-from nanobot.exp.qq import rss_sidecar as qq_rss_sidecar
 from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.exp.qq import stream_runtime as qq_stream_runtime
-from nanobot.security.network import validate_url_target
 from nanobot.utils.helpers import split_message
 
 try:
@@ -71,64 +69,14 @@ if TYPE_CHECKING:
 
 # QQ rich media file_type: 1=image, 4=file
 # (2=voice, 3=video are restricted; we only use image vs file)
-QQ_FILE_TYPE_IMAGE = 1
-QQ_FILE_TYPE_FILE = 4
+QQ_FILE_TYPE_IMAGE = qq_media_io.QQ_FILE_TYPE_IMAGE
+QQ_FILE_TYPE_FILE = qq_media_io.QQ_FILE_TYPE_FILE
 
-_IMAGE_EXTS = {
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".bmp",
-    ".webp",
-    ".tif",
-    ".tiff",
-    ".ico",
-    ".svg",
-}
-
-# Replace unsafe characters with "_", keep Chinese and common safe punctuation.
-_SAFE_NAME_RE = re.compile(r"[^\w.\-()\[\]（）【】\u4e00-\u9fff]+", re.UNICODE)
-
-
-def _sanitize_filename(name: str) -> str:
-    """Sanitize filename to avoid traversal and problematic chars."""
-    name = (name or "").strip()
-    name = Path(name).name
-    name = _SAFE_NAME_RE.sub("_", name).strip("._ ")
-    return name
-
-
-def _is_image_name(name: str) -> bool:
-    return Path(name).suffix.lower() in _IMAGE_EXTS
-
-
-def _parse_qq_timestamp(ts: str | None) -> datetime | None:
-    """Parse QQ API timestamp string to UTC datetime.
-
-    QQ returns timestamps as Unix epoch in seconds (or ms), e.g. '1743890400'.
-    """
-    if not ts:
-        return None
-    try:
-        # Try as numeric string (seconds or milliseconds)
-        value = int(ts)
-        # If value looks like milliseconds ( > 1e10 for year 1970+ ),
-        # divide by 1000
-        if value > 10**10:
-            value //= 1000
-        return datetime.fromtimestamp(value, tz=timezone.utc)
-    except (ValueError, OSError):
-        return None
-
-
-def _guess_send_file_type(filename: str) -> int:
-    """Conservative send type: images -> 1, else -> 4."""
-    ext = Path(filename).suffix.lower()
-    mime, _ = mimetypes.guess_type(filename)
-    if ext in _IMAGE_EXTS or (mime and mime.startswith("image/")):
-        return QQ_FILE_TYPE_IMAGE
-    return QQ_FILE_TYPE_FILE
+# Backward-compatible helper exports used by tests and local callers.
+_sanitize_filename = qq_media_io.sanitize_filename
+_is_image_name = qq_media_io.is_image_name
+_parse_qq_timestamp = qq_media_io.parse_qq_timestamp
+_guess_send_file_type = qq_media_io.guess_send_file_type
 
 
 def _strip_silent_marker(text: str) -> str:
@@ -282,83 +230,31 @@ class QQChannel(BaseChannel):
 
     async def _check_greeting_trigger(self) -> None:
         """Check for gateway restart greeting trigger and send a greeting."""
-        from pathlib import Path
-        flag_file = Path("/root/.nanobot/workspace/lof_monitor/.gateway_restart_flag")
+        flag_file = qq_gateway_greeting.DEFAULT_RESTART_FLAG_PATH
         logger.debug("check_greeting: flag exists={}", flag_file.exists())
-        if not flag_file.exists():
+        content = qq_gateway_greeting.build_restart_greeting(flag_path=flag_file)
+        if not content:
             return
-        try:
-            flag_file.unlink()
-        except OSError:
-            pass
-        # 判断时间段
-        from datetime import datetime
-        h = datetime.now().hour
-        if 5 <= h < 12:
-            greeting = "早安 ☀️"
-        elif 12 <= h < 18:
-            greeting = "下午好 🌤️"
-        elif 18 <= h < 23:
-            greeting = "晚上好 🌙"
-        else:
-            greeting = "夜深了，早点休息 🌛"
-        from nanobot.bus.events import OutboundMessage
-        logger.info("check_greeting: sending greeting '{}'", greeting)
-        await self.bus.publish_outbound(OutboundMessage(
-            channel="qq", chat_id="965E0CA5AB52FBFC537A2E68A7349B9E",
-            content=f"gateway 已上线 · {greeting}",
-        ))
+
+        logger.info("check_greeting: sending greeting '{}'", content)
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="qq",
+                chat_id="965E0CA5AB52FBFC537A2E68A7349B9E",
+                content=content,
+            )
+        )
 
     def _extract_wechat_question(self, content: str) -> str | None:
         return qq_article_requests.extract_wechat_question(content)
 
     async def _run_sidecar_json(self, args: list[str], timeout_sec: float = 30.0) -> dict[str, Any] | None:
-        rust_payload = await qq_rss_sidecar.run_client_json(
+        return await qq_article_runtime.run_sidecar_json(
             self._http,
             args,
             timeout_sec=timeout_sec,
             logger=logger,
         )
-        if rust_payload is not None:
-            return rust_payload
-
-        cmd = [
-            "python3",
-            "/root/.nanobot/workspace/skills/wechat-rss-sidecar/client.py",
-            *args,
-        ]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-        except TimeoutError:
-            logger.warning("qq wechat guard timeout: {}", " ".join(cmd))
-            return None
-        except Exception as e:
-            logger.warning("qq wechat guard exec failed: {} err={}", " ".join(cmd), e)
-            return None
-
-        out = (stdout or b"").decode("utf-8", errors="ignore").strip()
-        err = (stderr or b"").decode("utf-8", errors="ignore").strip()
-        if proc.returncode != 0:
-            logger.warning(
-                "qq wechat guard non-zero: rc={} cmd={} err={}",
-                proc.returncode,
-                " ".join(cmd),
-                err,
-            )
-            return None
-        if not out:
-            logger.warning("qq wechat guard empty output: {}", " ".join(cmd))
-            return None
-        try:
-            return json.loads(out)
-        except Exception:
-            logger.warning("qq wechat guard invalid json: cmd={} out_head={}", " ".join(cmd), out[:200])
-            return None
 
     async def _run_yage_signed(
         self,
@@ -369,7 +265,7 @@ class QQChannel(BaseChannel):
         force_latest: bool = False,
     ) -> str | None:
         """Run yage checker with selector and return raw stdout."""
-        rust_payload = await qq_rss_sidecar.yage_signed(
+        return await qq_article_runtime.run_yage_signed(
             self._http,
             timeout_sec=timeout_sec,
             nth=nth,
@@ -377,38 +273,6 @@ class QQChannel(BaseChannel):
             force_latest=force_latest,
             logger=logger,
         )
-        if rust_payload is not None:
-            return rust_payload
-
-        args: list[str] = []
-        if force_latest:
-            args.append("--latest")
-        if nth and nth > 1:
-            args.extend(["--nth", str(nth)])
-        if target_date:
-            args.extend(["--date", target_date])
-        arg_str = " ".join(args).strip()
-        cmd = "cd /root/.nanobot/workspace/skills/news-curator && python3 yage_check.py"
-        if arg_str:
-            cmd = f"{cmd} {arg_str}"
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-            if proc.returncode != 0:
-                logger.warning(
-                    "yage latest script failed rc={} err={}",
-                    proc.returncode,
-                    (stderr or b"").decode("utf-8", "ignore")[:500],
-                )
-                return None
-            return (stdout or b"").decode("utf-8", "ignore")
-        except Exception as e:
-            logger.warning("yage latest script execution failed: {}", e)
-            return None
 
     async def _run_wechat_signed(
         self,
@@ -418,44 +282,13 @@ class QQChannel(BaseChannel):
         force: bool = True,
     ) -> str | None:
         """Run wechat_push script and return raw stdout."""
-        if subscription_id <= 0:
-            return None
-        rust_payload = await qq_rss_sidecar.wechat_signed(
+        return await qq_article_runtime.run_wechat_signed(
             self._http,
             subscription_id,
             timeout_sec=timeout_sec,
             force=force,
             logger=logger,
         )
-        if rust_payload is not None:
-            return rust_payload
-
-        cmd = (
-            "cd /root/.nanobot/workspace/skills/wechat-rss-sidecar "
-            "&& WECHAT_RSS_BASE_URL=http://wechat-rss-sidecar:8091 "
-            f"python3 wechat_push.py --subscription-id {subscription_id}"
-        )
-        if force:
-            cmd += " --force"
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-            if proc.returncode != 0:
-                logger.warning(
-                    "wechat signed script failed rc={} sub={} err={}",
-                    proc.returncode,
-                    subscription_id,
-                    (stderr or b"").decode("utf-8", "ignore")[:500],
-                )
-                return None
-            return (stdout or b"").decode("utf-8", "ignore")
-        except Exception as e:
-            logger.warning("wechat signed script execution failed sub={} err={}", subscription_id, e)
-            return None
 
     @staticmethod
     def _cn_num_to_int(text: str) -> int | None:
@@ -1012,22 +845,14 @@ class QQChannel(BaseChannel):
                 return False
 
             self._msg_seq += 1
-            if is_group:
-                await self._client.api.post_group_message(
-                    group_openid=chat_id,
-                    msg_type=7,
-                    msg_id=msg_id,
-                    msg_seq=self._msg_seq,
-                    media=media_obj,
-                )
-            else:
-                await self._client.api.post_c2c_message(
-                    openid=chat_id,
-                    msg_type=7,
-                    msg_id=msg_id,
-                    msg_seq=self._msg_seq,
-                    media=media_obj,
-                )
+            await qq_rich_media.post_media_message(
+                self._client.api,
+                chat_id=chat_id,
+                is_group=is_group,
+                msg_id=msg_id,
+                msg_seq=self._msg_seq,
+                media_obj=media_obj,
+            )
 
             logger.info("QQ media sent: {}", filename)
             return True
@@ -1040,56 +865,9 @@ class QQChannel(BaseChannel):
 
     async def _read_media_bytes(self, media_ref: str) -> tuple[bytes | None, str | None]:
         """Read bytes from http(s) or local file path; return (data, filename)."""
-        media_ref = (media_ref or "").strip()
-        if not media_ref:
-            return None, None
-
-        # Local file: plain path or file:// URI
-        if not media_ref.startswith("http://") and not media_ref.startswith("https://"):
-            try:
-                if media_ref.startswith("file://"):
-                    parsed = urlparse(media_ref)
-                    # Windows: path in netloc; Unix: path in path
-                    raw = parsed.path or parsed.netloc
-                    local_path = Path(unquote(raw))
-                else:
-                    local_path = Path(os.path.expanduser(media_ref))
-
-                if not local_path.is_file():
-                    logger.warning("QQ outbound media file not found: {}", str(local_path))
-                    return None, None
-
-                data = await asyncio.to_thread(local_path.read_bytes)
-                return data, local_path.name
-            except Exception as e:
-                logger.warning("QQ outbound media read error ref={} err={}", media_ref, e)
-                return None, None
-
-        # Remote URL
-        ok, err = validate_url_target(media_ref)
-        if not ok:
-            logger.warning("QQ outbound media URL validation failed url={} err={}", media_ref, err)
-            return None, None
-
-        if not self._http:
+        if qq_media_io.is_remote_media_ref(media_ref) and not self._http:
             self._http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120))
-        try:
-            async with self._http.get(media_ref, allow_redirects=True) as resp:
-                if resp.status >= 400:
-                    logger.warning(
-                        "QQ outbound media download failed status={} url={}",
-                        resp.status,
-                        media_ref,
-                    )
-                    return None, None
-                data = await resp.read()
-                if not data:
-                    return None, None
-                filename = os.path.basename(urlparse(media_ref).path) or "file.bin"
-                return data, filename
-        except Exception as e:
-            logger.warning("QQ outbound media download error url={} err={}", media_ref, e)
-            return None, None
+        return await qq_media_io.read_media_bytes(self._http, media_ref, logger=logger)
 
     # https://github.com/tencent-connect/botpy/issues/198
     # https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/send-receive/rich-media.html
@@ -1105,28 +883,16 @@ class QQChannel(BaseChannel):
         """Upload base64-encoded file and return Media object."""
         if not self._client:
             raise RuntimeError("QQ client not initialized")
-
-        if is_group:
-            endpoint = "/v2/groups/{group_openid}/files"
-            id_key = "group_openid"
-        else:
-            endpoint = "/v2/users/{openid}/files"
-            id_key = "openid"
-
-        payload = {
-            id_key: chat_id,
-            "file_type": file_type,
-            "file_data": file_data,
-            "srv_send_msg": srv_send_msg,
-        }
-        if file_type != QQ_FILE_TYPE_IMAGE and file_name:
-            payload["file_name"] = file_name
-
-        route = Route("POST", endpoint, **{id_key: chat_id})
-        result = await self._client.api._http.request(route, json=payload)
-        if isinstance(result, dict) and "file_info" in result:
-            return {"file_info": result["file_info"]}
-        return result
+        return await qq_rich_media.post_base64file(
+            self._client.api._http,
+            Route,
+            chat_id=chat_id,
+            is_group=is_group,
+            file_type=file_type,
+            file_data=file_data,
+            file_name=file_name,
+            srv_send_msg=srv_send_msg,
+        )
 
 
     def _match_personal_ops_command(self, content: str) -> str | None:
@@ -1297,38 +1063,12 @@ class QQChannel(BaseChannel):
         self,
         attachments: list[BaseMessage._Attachments],
     ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
-        """Extract, download (chunked), and format attachments for agent consumption."""
-        media_paths: list[str] = []
-        recv_lines: list[str] = []
-        att_meta: list[dict[str, Any]] = []
-
-        if not attachments:
-            return media_paths, recv_lines, att_meta
-
-        for att in attachments:
-            url, filename, ctype = att.url, att.filename, att.content_type
-
-            logger.info("Downloading file from QQ: {}", filename or url)
-            local_path = await self._download_to_media_dir_chunked(url, filename_hint=filename)
-
-            att_meta.append(
-                {
-                    "url": url,
-                    "filename": filename,
-                    "content_type": ctype,
-                    "saved_path": local_path,
-                }
-            )
-
-            if local_path:
-                media_paths.append(local_path)
-                shown_name = filename or os.path.basename(local_path)
-                recv_lines.append(f"- {shown_name}\n  saved: {local_path}")
-            else:
-                shown_name = filename or url
-                recv_lines.append(f"- {shown_name}\n  saved: [download failed]")
-
-        return media_paths, recv_lines, att_meta
+        """Extract, download, and format attachments for agent consumption."""
+        return await qq_media_io.handle_attachments(
+            attachments,
+            self._download_to_media_dir_chunked,
+            logger=logger,
+        )
 
     async def _download_to_media_dir_chunked(
         self,
@@ -1336,48 +1076,17 @@ class QQChannel(BaseChannel):
         filename_hint: str = "",
     ) -> str | None:
         """Download an inbound attachment using QQ-Sidecar-RS."""
-
-        ts = int(time.time() * 1000)
-        safe = _sanitize_filename(filename_hint)
-        ext = Path(urlparse(url).path).suffix
-        if not ext:
-            ext = Path(filename_hint).suffix
-        if not ext:
-            ext = ".bin"
-
-        if safe:
-            if not Path(safe).suffix:
-                safe = safe + ext
-            filename = safe
-        else:
-            filename = f"qq_file_{ts}{ext}"
-
-        target = self._media_root / filename
-        if target.exists():
-            target = self._media_root / f"{target.stem}_{ts}{target.suffix}"
-
-        max_bytes = max(1024 * 1024, int(getattr(self.config, "download_max_bytes", 0) or (200 * 1024 * 1024)))
-
+        max_bytes = max(
+            1024 * 1024,
+            int(getattr(self.config, "download_max_bytes", 0) or (200 * 1024 * 1024)),
+        )
         if not self._http:
-            import aiohttp
             self._http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120))
-
-        try:
-            async with self._http.post(
-                "http://172.17.0.1:8092/download",
-                json={
-                    "url": url,
-                    "target_path": str(target),
-                    "max_bytes": max_bytes
-                }
-            ) as resp:
-                data = await resp.json()
-                if data.get("success"):
-                    logger.info("QQ file saved via sidecar: {}", str(target))
-                    return str(target)
-                else:
-                    logger.error("QQ sidecar download error: {}", data.get("error"))
-                    return None
-        except Exception as e:
-            logger.error("QQ sidecar download request error: {}", e)
-            return None
+        return await qq_media_io.download_to_media_dir_chunked(
+            self._http,
+            self._media_root,
+            url,
+            filename_hint=filename_hint,
+            max_bytes=max_bytes,
+            logger=logger,
+        )

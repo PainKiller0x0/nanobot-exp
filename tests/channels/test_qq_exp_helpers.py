@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 from nanobot.exp.qq.fast_paths import match_knowledge_inbox_command, match_personal_ops_command
+from nanobot.exp.qq.gateway_greeting import build_restart_greeting, greeting_for_hour
 from nanobot.exp.qq.signatures import (
     extract_signed_digest,
     extract_wechat_ack_marker,
@@ -21,6 +23,16 @@ def test_fast_path_memory_is_deterministic() -> None:
     assert match_personal_ops_command("内存怎么样") == "system"
     assert match_personal_ops_command("我想知道你能做什么") == "menu"
     assert match_personal_ops_command("帮助") == "menu"
+
+
+def test_gateway_greeting_is_one_shot(tmp_path) -> None:
+    flag = tmp_path / "restart.flag"
+    flag.write_text("1", encoding="utf-8")
+
+    assert greeting_for_hour(9) == "早安 ☀️"
+    assert build_restart_greeting(now=datetime(2026, 5, 13, 21, 0), flag_path=flag) == "gateway 已上线 · 晚上好 🌙"
+    assert not flag.exists()
+    assert build_restart_greeting(now=datetime(2026, 5, 13, 21, 0), flag_path=flag) is None
 
 
 def test_knowledge_inbox_does_not_steal_wechat_discussion() -> None:
