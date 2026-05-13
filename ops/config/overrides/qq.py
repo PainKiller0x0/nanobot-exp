@@ -39,9 +39,8 @@ from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
 from nanobot.exp.qq import article_handlers as qq_article_handlers
 from nanobot.exp.qq import article_runtime as qq_article_runtime
-from nanobot.exp.qq import fast_paths as qq_fast_paths
 from nanobot.exp.qq import gateway_greeting as qq_gateway_greeting
-from nanobot.exp.qq import local_commands as qq_local_commands
+from nanobot.exp.qq import local_handlers as qq_local_handlers
 from nanobot.exp.qq import signatures as qq_signatures
 from nanobot.exp.qq import signed_delivery as qq_signed_delivery
 from nanobot.exp.qq import streaming as qq_streaming
@@ -902,12 +901,6 @@ class QQChannel(BaseChannel):
         return result
 
 
-    def _match_personal_ops_command(self, content: str) -> str | None:
-        return qq_fast_paths.match_personal_ops_command(content)
-
-    async def _run_personal_ops_command(self, command: str) -> str:
-        return await qq_local_commands.run_personal_ops_command(command)
-
     async def _try_handle_personal_ops_query(
         self,
         *,
@@ -916,28 +909,15 @@ class QQChannel(BaseChannel):
         message_id: str,
         content: str,
     ) -> bool:
-        command = self._match_personal_ops_command(content)
-        if not command:
-            return False
-
-        reply = await self._run_personal_ops_command(command)
-        max_len = max(200, int(getattr(self.config, "text_chunk_max_len", 1200) or 1200))
-        for chunk in split_message(reply, max_len):
-            if chunk.strip():
-                await self._send_text_only(
-                    chat_id=chat_id,
-                    is_group=is_group,
-                    msg_id=message_id,
-                    content=chunk,
-                )
-        logger.info("QQ personal ops fast path handled command={} message_id={}", command, message_id)
-        return True
-
-    def _match_knowledge_inbox_command(self, content: str) -> list[str] | None:
-        return qq_fast_paths.match_knowledge_inbox_command(content)
-
-    async def _run_knowledge_inbox_command(self, args: list[str]) -> str:
-        return await qq_local_commands.run_knowledge_inbox_command(args)
+        return await qq_local_handlers.try_handle_personal_ops_query(
+            chat_id=chat_id,
+            is_group=is_group,
+            message_id=message_id,
+            content=content,
+            text_chunk_max_len=getattr(self.config, "text_chunk_max_len", 1200),
+            send_text_only=self._send_text_only,
+            logger=logger,
+        )
 
     async def _try_handle_knowledge_inbox_query(
         self,
@@ -947,22 +927,15 @@ class QQChannel(BaseChannel):
         message_id: str,
         content: str,
     ) -> bool:
-        args = self._match_knowledge_inbox_command(content)
-        if not args:
-            return False
-
-        reply = await self._run_knowledge_inbox_command(args)
-        max_len = max(200, int(getattr(self.config, "text_chunk_max_len", 1200) or 1200))
-        for chunk in split_message(reply, max_len):
-            if chunk.strip():
-                await self._send_text_only(
-                    chat_id=chat_id,
-                    is_group=is_group,
-                    msg_id=message_id,
-                    content=chunk,
-                )
-        logger.info("QQ knowledge inbox fast path handled args={} message_id={}", args, message_id)
-        return True
+        return await qq_local_handlers.try_handle_knowledge_inbox_query(
+            chat_id=chat_id,
+            is_group=is_group,
+            message_id=message_id,
+            content=content,
+            text_chunk_max_len=getattr(self.config, "text_chunk_max_len", 1200),
+            send_text_only=self._send_text_only,
+            logger=logger,
+        )
 
 
     # ---------------------------

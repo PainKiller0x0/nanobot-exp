@@ -27,6 +27,7 @@ check 'nanobot/exp/qq/article_handlers.py' 'try_handle_wechat_grounded' 'QQ arti
 check 'nanobot/exp/qq/article_runtime.py' 'run_wechat_signed' 'QQ article runtime adapter'
 check 'nanobot/exp/qq/gateway_greeting.py' 'build_restart_greeting' 'QQ gateway greeting helper'
 check 'nanobot/exp/qq/local_commands.py' 'run_personal_ops_command' 'QQ local command runner'
+check 'nanobot/exp/qq/local_handlers.py' 'try_handle_personal_ops_query' 'QQ local command handler'
 check 'nanobot/exp/qq/fast_paths.py' 'match_personal_ops_command' 'QQ fast path helper'
 check 'nanobot/exp/qq/signatures.py' 'verify_and_unwrap_signed_payload' 'QQ signed payload helper'
 check 'nanobot/exp/qq/signed_delivery.py' 'prepare_outbound_content' 'QQ signed delivery policy'
