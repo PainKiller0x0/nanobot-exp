@@ -183,7 +183,7 @@ Nanobot core 不应该负责：
 
 当前仍然必须承认的 `nanobot-exp` 本体/运行时补丁：
 
-- QQ channel：`ops/config/overrides/qq.py` 是线上 QQ 通道覆盖实现，容器启动时由 `/root/.nanobot/overrides/apply_overrides.py` 覆盖到 `/app/nanobot/channels/qq.py`。它包含签名校验、长文本发送、媒体、fast path 和 sidecar 下载等线上能力。短句“内存”查询必须走 `system` fast path，避免让 LLM 猜系统状态。
+- QQ channel：`ops/config/overrides/qq.py` 是线上 QQ 通道胶水覆盖实现，容器启动时由 `/root/.nanobot/overrides/apply_overrides.py` 覆盖到 `/app/nanobot/channels/qq.py`。QQ 文件应尽量保留上游 botpy 适配结构；nanobot-exp 自定义策略放在 `nanobot/exp/qq/`，目前包括 `streaming.py`（流式策略）、`fast_paths.py`（本地快捷指令匹配）和 `signatures.py`（签名/ACK 解析）。短句“内存”查询必须走 `system` fast path，避免让 LLM 猜系统状态。
 - Gateway heartbeat：`gateway.heartbeat.deliveryChannel` / `deliveryChatId` 用来固定原生 heartbeat 投递目标，避免“最近活跃渠道”把自省报告发到 WeChat。
 - 上游同步后必须跑 `ops/scripts/check-nanobot-exp-patches.sh /root/nanobot`，至少确认 heartbeat 投递、HERMES manager check、LOF refresh-before-send 这些补丁还在。
 - 若怀疑 core drift，先看 `git diff official/main...HEAD -- nanobot/`，再判断要不要把逻辑继续 sidecar 化。

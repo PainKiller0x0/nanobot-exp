@@ -25,7 +25,6 @@ import mimetypes
 import os
 import re
 import time
-import urllib.request
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,6 +39,9 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
+from nanobot.exp.qq import fast_paths as qq_fast_paths
+from nanobot.exp.qq import signatures as qq_signatures
+from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.security.network import validate_url_target
 from nanobot.utils.helpers import split_message
 
@@ -143,20 +145,8 @@ _CN_NUM_MAP = {
     "\u5341": 10,
     "\u4e24": 2,
 }
-_SIGNED_PAYLOAD_PREFIX = "NBRAW1-SHA256:"
-_SIGNED_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_SILENT_MARKER = "(NOOUTPUTKEEP_SILENT)"
-_SILENT_MARKER_ALT = "(NO_OUTPUT_KEEP_SILENT)"
-_SILENT_MARKER_RE = re.compile(r"[（(]\s*NO_?OUTPUT_?KEEP_?SILENT\s*[)）]", re.IGNORECASE)
-_YAGE_ARTICLE_RE = re.compile(r"^\s*\[\u9e2d\u54e5 AI \u624b\u8bb0\]", re.MULTILINE)
 _YAGE_CACHE_FILE = "/root/.nanobot/workspace/skills/news-curator/yage_cache.json"
-_YAGE_URL_IN_LINK_RE = re.compile(r"\((https?://yage-ai\.kit\.com/posts/[^)\s]+)\)")
-_YAGE_URL_BARE_RE = re.compile(r"https?://yage-ai\.kit\.com/posts/[^\s)\]]+")
-_YAGE_DATE_IN_URL_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
 _WECHAT_CACHE_FILE = "/root/.nanobot/workspace/skills/wechat-rss-sidecar/wechat_push_cache.json"
-_WECHAT_ACK_MARKER_RE = re.compile(r"<!--\s*NBACK_WECHAT\s+sub:(\d+)\s+entry:(\d+)\s*-->")
-_GENERIC_URL_RE = re.compile(r"https?://[^\s<>\]）)\"']+")
-_INBOX_SPECIAL_HOSTS = ("mp.weixin.qq.com", "yage-ai.kit.com", "jintiankansha.me")
 
 
 def _sanitize_filename(name: str) -> str:
@@ -200,12 +190,7 @@ def _guess_send_file_type(filename: str) -> int:
 
 
 def _strip_silent_marker(text: str) -> str:
-    cleaned = text or ""
-    cleaned = _SILENT_MARKER_RE.sub("", cleaned)
-    cleaned = cleaned.replace(_SILENT_MARKER, "").replace(_SILENT_MARKER_ALT, "")
-    return cleaned.strip()
-
-
+    return qq_signatures.strip_silent_marker(text)
 def _make_bot_class(channel: QQChannel) -> type[botpy.Client]:
     """Create a botpy Client subclass bound to the given channel."""
     intents = botpy.Intents(public_messages=True, direct_message=True)
@@ -287,11 +272,7 @@ class QQChannel(BaseChannel):
 
     @property
     def supports_streaming(self) -> bool:
-        return bool(
-            getattr(self.config, "stream_enabled", False)
-            and self.config.msg_format == "markdown"
-        )
-
+        return qq_streaming.supports_streaming(self.config)
     def __init__(self, config: Any, bus: MessageBus):
         if isinstance(config, dict):
             config = QQConfig.model_validate(config)
@@ -769,68 +750,22 @@ class QQChannel(BaseChannel):
     # Outbound (send)
     # ---------------------------
 
+
     def _requires_signed_payload(self, content: str) -> bool:
-        """Detect high-risk article payloads that must be signed raw output."""
-        text = (content or "").strip()
-        if not text:
-            return False
-        if _YAGE_ARTICLE_RE.search(text):
-            return True
-        if "yage-ai.kit.com/posts/" in text:
-            return True
-        return False
+        return qq_signatures.requires_signed_payload(content)
 
     def _verify_and_unwrap_signed_payload(self, content: str) -> str | None:
-        """Verify signed payload and return body using QQ-Sidecar-RS."""
-        try:
-            req = urllib.request.Request("http://172.17.0.1:8092/verify", data=json.dumps({"content": content}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if data.get("success"):
-                    return data.get("body")
-                return None
-        except Exception as e:
-            logger.error(f"QQ sidecar verify error: {e}")
-            return None
+        return qq_signatures.verify_and_unwrap_signed_payload(content, logger=logger)
+
     def _extract_yage_source_url(self, body: str) -> str | None:
-        """Extract yage source URL from signed payload body."""
-        text = (body or "").strip()
-        if not text:
-            return None
-        m = _YAGE_URL_IN_LINK_RE.search(text)
-        if m:
-            return m.group(1).strip()
-        m = _YAGE_URL_BARE_RE.search(text)
-        if m:
-            return m.group(0).strip()
-        return None
+        return qq_signatures.extract_yage_source_url(body)
 
     @staticmethod
     def _extract_date_from_url(url: str) -> datetime | None:
-        m = _YAGE_DATE_IN_URL_RE.search(url or "")
-        if not m:
-            return None
-        try:
-            return datetime.strptime(m.group(1), "%Y-%m-%d")
-        except Exception:
-            return None
+        return qq_signatures.extract_date_from_url(url)
 
     def _should_ack_yage_url(self, previous_url: str, candidate_url: str) -> bool:
-        """Only advance cache when candidate is same/newer, never roll back."""
-        prev = (previous_url or "").strip()
-        cand = (candidate_url or "").strip()
-        if not cand:
-            return False
-        if not prev:
-            return True
-        if prev == cand:
-            return False
-        prev_dt = self._extract_date_from_url(prev)
-        cand_dt = self._extract_date_from_url(cand)
-        if prev_dt and cand_dt:
-            return cand_dt >= prev_dt
-        # Fallback: if date parsing fails, avoid regressing unknown state.
-        return False
+        return qq_signatures.should_ack_yage_url(previous_url, candidate_url)
 
     async def _ack_yage_delivery(self, body: str, chat_id: str) -> None:
         """Update yage cache only after QQ send has succeeded."""
@@ -872,35 +807,11 @@ class QQChannel(BaseChannel):
             logger.warning("QQ yage delivery ack failed chat_id={} err={}", chat_id, e)
 
     def _extract_wechat_ack_marker(self, body: str) -> tuple[str, tuple[int, int] | None]:
-        """Strip internal wechat ACK marker from body and return ack tuple."""
-        text = body or ""
-        m = _WECHAT_ACK_MARKER_RE.search(text)
-        if not m:
-            return text, None
-        sub_id = int(m.group(1))
-        entry_id = int(m.group(2))
-        cleaned = _WECHAT_ACK_MARKER_RE.sub("", text).strip()
-        return cleaned, (sub_id, entry_id)
-
+        return qq_signatures.extract_wechat_ack_marker(body)
     def _extract_wechat_subscription_id(self, content: str) -> int | None:
-        """Extract wechat subscription id from internal ACK marker."""
-        text = content or ""
-        m = _WECHAT_ACK_MARKER_RE.search(text)
-        if not m:
-            return None
-        try:
-            sub_id = int(m.group(1))
-            return sub_id if sub_id > 0 else None
-        except Exception:
-            return None
-
+        return qq_signatures.extract_wechat_subscription_id(content)
     def _extract_signed_digest(self, content: str) -> str | None:
-        text = (content or "").strip()
-        m = re.match(r"^NBRAW1-SHA256:([0-9a-fA-F]{64})", text)
-        if not m:
-            return None
-        return m.group(1).lower()
-
+        return qq_signatures.extract_signed_digest(content)
     async def _recover_wechat_signed_by_digest(
         self, expected_digest: str, timeout_sec: float = 45.0
     ) -> tuple[str | None, int | None]:
@@ -929,7 +840,7 @@ class QQChannel(BaseChannel):
 
         for sid in candidate_ids:
             recovered_raw = await self._run_wechat_signed(sid, timeout_sec=timeout_sec, force=True)
-            if not recovered_raw or not recovered_raw.startswith(_SIGNED_PAYLOAD_PREFIX):
+            if not recovered_raw or not recovered_raw.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
                 continue
             got_digest = self._extract_signed_digest(recovered_raw) or ""
             if got_digest == expected_digest:
@@ -1019,7 +930,7 @@ class QQChannel(BaseChannel):
                 if not msg.content:
                     logger.info("QQ outbound suppressed by silent marker chat_id={}", msg.chat_id)
                     return
-            is_signed_payload = msg.content.startswith(_SIGNED_PAYLOAD_PREFIX)
+            is_signed_payload = msg.content.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX)
             requires_signature = self._requires_signed_payload(msg.content)
             if requires_signature and not is_signed_payload:
                 logger.warning(
@@ -1044,7 +955,7 @@ class QQChannel(BaseChannel):
                     sub_id = self._extract_wechat_subscription_id(msg.content)
                     if sub_id is not None:
                         recovered_wechat = await self._run_wechat_signed(sub_id, timeout_sec=45.0, force=True)
-                        if recovered_wechat and recovered_wechat.startswith(_SIGNED_PAYLOAD_PREFIX):
+                        if recovered_wechat and recovered_wechat.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
                             recovered_body = self._verify_and_unwrap_signed_payload(recovered_wechat)
                             if recovered_body and recovered_body.strip():
                                 logger.warning(
@@ -1061,7 +972,7 @@ class QQChannel(BaseChannel):
                             expected_digest,
                             timeout_sec=45.0,
                         )
-                        if recovered_wechat and recovered_wechat.startswith(_SIGNED_PAYLOAD_PREFIX):
+                        if recovered_wechat and recovered_wechat.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
                             recovered_body = self._verify_and_unwrap_signed_payload(recovered_wechat)
                             if recovered_body and recovered_body.strip():
                                 logger.warning(
@@ -1074,7 +985,7 @@ class QQChannel(BaseChannel):
                     # 2) Yage signed payload recovery (legacy path)
                     if safe_content is None:
                         recovered = await self._run_yage_signed(timeout_sec=45.0, force_latest=True)
-                        if recovered and recovered.startswith(_SIGNED_PAYLOAD_PREFIX):
+                        if recovered and recovered.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
                             recovered_body = self._verify_and_unwrap_signed_payload(recovered)
                             if recovered_body and recovered_body.strip():
                                 logger.warning(
@@ -1237,51 +1148,16 @@ class QQChannel(BaseChannel):
         is_signed_payload: bool,
         content: str,
     ) -> bool:
-        if not getattr(self.config, "stream_enabled", False):
-            return False
-        if self.config.msg_format != "markdown":
-            return False
-        if is_signed_payload:
-            return False
-        if getattr(self.config, "stream_requires_msg_id", True) and not msg_id:
-            return False
-        text_len = len(content.strip())
-        min_chars = max(1, int(getattr(self.config, "stream_min_chars", 120) or 120))
-        max_chars = max(min_chars, int(getattr(self.config, "stream_max_chars", 5000) or 5000))
-        return min_chars <= text_len <= max_chars
-
+        return qq_streaming.should_stream_text(
+            self.config,
+            msg_id=msg_id,
+            is_signed_payload=is_signed_payload,
+            content=content,
+        )
     def _stream_delta_flush_policy(self, *, first_frame_sent: bool) -> tuple[int, float]:
-        threshold_key = "stream_delta_flush_chars" if first_frame_sent else "stream_first_flush_chars"
-        threshold_floor = 20 if first_frame_sent else 1
-        threshold_default = 120 if first_frame_sent else 24
-        threshold = max(threshold_floor, int(getattr(self.config, threshold_key, threshold_default) or threshold_default))
-        interval = float(getattr(self.config, "stream_delta_flush_interval_sec", 0.35) or 0.0)
-        return threshold, max(0.0, interval)
-
+        return qq_streaming.delta_flush_policy(self.config, first_frame_sent=first_frame_sent)
     def _split_stream_chunks(self, text: str) -> list[str]:
-        """Split markdown for QQ stream append frames, preserving line endings."""
-        max_chars = max(20, int(getattr(self.config, "stream_chunk_chars", 180) or 180))
-        chunks: list[str] = []
-        current = ""
-        for line in text.splitlines(keepends=True):
-            if len(line) > max_chars:
-                if current:
-                    chunks.append(current if current.endswith("\n") else f"{current}\n")
-                    current = ""
-                for i in range(0, len(line), max_chars):
-                    piece = line[i : i + max_chars]
-                    chunks.append(piece if piece.endswith("\n") else f"{piece}\n")
-                continue
-            if len(current) + len(line) <= max_chars:
-                current += line
-            else:
-                if current:
-                    chunks.append(current if current.endswith("\n") else f"{current}\n")
-                current = line
-        if current:
-            chunks.append(current if current.endswith("\n") else f"{current}\n")
-        return chunks or [text if text.endswith("\n") else f"{text}\n"]
-
+        return qq_streaming.split_stream_chunks(self.config, text)
     async def _send_stream_frame(
         self,
         *,
@@ -1754,31 +1630,7 @@ class QQChannel(BaseChannel):
 
 
     def _match_personal_ops_command(self, content: str) -> str | None:
-        """Map short ops questions to deterministic local dashboard commands."""
-        text = (content or "").strip().lower()
-        compact = re.sub(r"[\s，。！？!?、:：；;,.]+", "", text)
-        if not compact:
-            return None
-
-        if any(k in compact for k in ("今天有什么要看", "今天看什么", "今日摘要", "今天摘要")):
-            return "today"
-        if any(k in compact for k in ("你能做什么", "能力列表", "能力菜单", "菜单", "帮助")) and len(compact) <= 16:
-            return "menu"
-        if "内存" in compact and len(compact) <= 24:
-            return "system"
-        if any(k in compact for k in ("系统状态", "服务状态", "服务健康", "服务还活着", "健康检查", "服务器状态")):
-            return "system"
-        if any(k in compact for k in ("定时任务", "cron", "任务状态", "任务报错", "哪些任务在跑")):
-            return "tasks"
-        if any(k in compact for k in ("今天先看什么", "先看什么")) and not any(k in compact for k in ("收件箱", "待读", "稍后看")):
-            return "decision"
-        if any(k in compact for k in ("今天怎么安排", "有什么建议", "决策建议", "下一步做什么", "现在该干嘛")):
-            return "decision"
-        if any(k in compact for k in ("鸭哥", "微信文章", "rss文章", "今天文章", "文章有哪些", "文章更新")):
-            return "articles"
-        if any(k in compact for k in ("lof", "qdii", "基金溢价", "溢价机会", "套利机会")):
-            return "lof"
-        return None
+        return qq_fast_paths.match_personal_ops_command(content)
 
     async def _run_personal_ops_command(self, command: str) -> str:
         """Run the personal ops script without involving the LLM."""
@@ -1833,60 +1685,7 @@ class QQChannel(BaseChannel):
         return True
 
     def _match_knowledge_inbox_command(self, content: str) -> list[str] | None:
-        """Map link/inbox prompts to the local knowledge inbox script."""
-        text = (content or "").strip()
-        compact = re.sub(r"[\s，。！？!?、:：；;,.]+", "", text.lower())
-        if not compact:
-            return None
-
-        urls = [u.rstrip("。.,，、；;!！?？") for u in _GENERIC_URL_RE.findall(text)]
-        if not urls:
-            if any(k in compact for k in ("待读简报", "收件箱简报", "稍后看简报", "收件箱今天先看什么", "待读先看什么")):
-                return ["brief", "--limit", "8"]
-            if any(k in compact for k in ("收件箱", "待读列表", "链接清单", "稍后看清单")):
-                return ["list", "--limit", "8"]
-            return None
-
-        url = urls[0]
-        host = urlparse(url).netloc.lower()
-        explicit_inbox = any(
-            k in compact
-            for k in (
-                "收一下",
-                "存一下",
-                "加入收件箱",
-                "放收件箱",
-                "放到收件箱",
-                "稍后看",
-                "待读",
-                "链接收件箱",
-            )
-        )
-        decision = any(
-            k in compact
-            for k in (
-                "值得看",
-                "值不值得",
-                "要不要看",
-                "要不要读",
-                "该不该看",
-                "帮我判断",
-                "帮我看看",
-                "决策",
-            )
-        )
-        only_url = text == url or text.strip(" \t\r\n。.,，、；;!！?？") == url
-
-        # WeChat/Yage links have dedicated handlers. Do not steal them unless the
-        # user explicitly asks to put the link into the generic inbox.
-        if any(special in host for special in _INBOX_SPECIAL_HOSTS) and not (explicit_inbox or only_url):
-            return None
-        if decision:
-            question = _GENERIC_URL_RE.sub("", text).strip()
-            return ["decide", url, "--question", question[:180] or "这个值得看吗"]
-        if explicit_inbox or only_url:
-            return ["capture", url]
-        return None
+        return qq_fast_paths.match_knowledge_inbox_command(content)
 
     async def _run_knowledge_inbox_command(self, args: list[str]) -> str:
         """Run the knowledge inbox script without involving the LLM."""

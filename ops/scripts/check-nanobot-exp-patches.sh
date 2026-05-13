@@ -19,5 +19,9 @@ check 'nanobot/config/schema.py' 'delivery_chat_id: str | None = None' 'heartbea
 check 'nanobot/cli/commands.py' 'hb_cfg.delivery_channel' 'heartbeat fixed target routing'
 check 'ops/sources/hermes-check/hermes_check.py' 'SIDECAR_STATUS_API' 'HERMES sidecar manager health check'
 check 'ops/sources/qdii-monitor/send_qq.py' 'run_fresh_report' 'LOF refresh-before-send wrapper'
+check 'nanobot/channels/qq.py' 'nanobot.exp.qq' 'QQ downstream helper seam'
+check 'nanobot/exp/qq/streaming.py' 'should_stream_text' 'QQ streaming policy helper'
+check 'nanobot/exp/qq/fast_paths.py' 'match_personal_ops_command' 'QQ fast path helper'
+check 'nanobot/exp/qq/signatures.py' 'verify_and_unwrap_signed_payload' 'QQ signed payload helper'
 
 exit "$fail"
