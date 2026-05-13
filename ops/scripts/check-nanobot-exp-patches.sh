@@ -19,6 +19,8 @@ check 'nanobot/config/schema.py' 'delivery_chat_id: str | None = None' 'heartbea
 check 'nanobot/cli/commands.py' 'hb_cfg.delivery_channel' 'heartbeat fixed target routing'
 check 'ops/sources/hermes-check/hermes_check.py' 'SIDECAR_STATUS_API' 'HERMES sidecar manager health check'
 check 'ops/sources/qdii-monitor/send_qq.py' 'run_fresh_report' 'LOF refresh-before-send wrapper'
+check 'nanobot/agent/loop.py' 'warmup_runtime' 'Agent loop warmup helper seam'
+check 'nanobot/exp/agent/warmup_runtime.py' 'schedule_external_llm_warmup' 'Agent warmup runtime helper'
 check 'nanobot/channels/qq.py' 'nanobot.exp.qq' 'QQ downstream helper seam'
 check 'nanobot/exp/qq/streaming.py' 'should_stream_text' 'QQ streaming policy helper'
 check 'nanobot/exp/qq/stream_runtime.py' 'send_delta' 'QQ streaming runtime helper'

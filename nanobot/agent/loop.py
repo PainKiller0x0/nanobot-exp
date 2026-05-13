@@ -6,7 +6,6 @@ import asyncio
 import dataclasses
 import json
 import os
-import sys
 import time
 import uuid
 from contextlib import AsyncExitStack, nullcontext
@@ -21,6 +20,7 @@ from nanobot.agent.direct_reply import build_direct_reply
 from nanobot.agent.hook import AgentHook, AgentHookContext, CompositeHook
 from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
+from nanobot.exp.agent import warmup_runtime as exp_warmup_runtime
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.ask import (
@@ -698,89 +698,21 @@ class AgentLoop:
             logger.error("LLM returned error: {}", (result.final_content or "")[:200])
         return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
 
-    @staticmethod
-    def _env_flag(name: str, default: str = "0") -> bool:
-        return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
     def _schedule_external_llm_warmup(self) -> None:
         """Warm the LLM in a child process so startup and health stay responsive."""
-        if self._external_warmup_started or not self._env_flag("NANOBOT_LLM_WARMUP"):
-            return
-        self._external_warmup_started = True
-
-        async def _warm() -> None:
-            try:
-                delay = float(os.environ.get("NANOBOT_LLM_WARMUP_DELAY_S", "10") or "0")
-            except ValueError:
-                delay = 10.0
-            if delay > 0:
-                await asyncio.sleep(delay)
-
-            limit = os.environ.get("NANOBOT_LLM_WARMUP_SESSIONS", "1")
-            timeout_raw = os.environ.get("NANOBOT_LLM_WARMUP_TIMEOUT_S", "120")
-            try:
-                timeout_s = float(timeout_raw)
-            except ValueError:
-                timeout_s = 120.0
-            logger.info("Starting external LLM warmup (sessions={}, timeout={}s)", limit, timeout_s)
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-m",
-                    "nanobot.agent.warmup",
-                    "--limit",
-                    str(limit),
-                    "--timeout",
-                    str(timeout_s),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                try:
-                    stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(),
-                        timeout=max(timeout_s + 30, 60),
-                    )
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
-                    logger.warning("External LLM warmup timed out")
-                    return
-                out = (stdout or b"").decode("utf-8", "replace").strip()
-                err = (stderr or b"").decode("utf-8", "replace").strip()
-                if proc.returncode == 0:
-                    logger.info("External LLM warmup completed: {}", out[-500:] if out else "ok")
-                else:
-                    logger.warning(
-                        "External LLM warmup failed rc={}: {} {}",
-                        proc.returncode,
-                        out[-500:],
-                        err[-500:],
-                    )
-            except Exception as exc:
-                logger.warning("External LLM warmup launch failed: {}", exc)
-
-        self._schedule_background(_warm())
+        self._external_warmup_started = exp_warmup_runtime.schedule_external_llm_warmup(
+            already_started=self._external_warmup_started,
+            schedule_background=self._schedule_background,
+            logger=logger,
+        )
 
     def _schedule_tokenizer_warmup(self) -> None:
         """Warm tiktoken in this process without blocking channel heartbeats."""
-        if self._tokenizer_warmup_started:
-            return
-        self._tokenizer_warmup_started = True
-
-        def _load() -> None:
-            import tiktoken
-
-            tiktoken.get_encoding("cl100k_base").encode("nanobot warmup")
-
-        async def _warm() -> None:
-            try:
-                started = time.perf_counter()
-                await asyncio.to_thread(_load)
-                logger.info("Tokenizer warmup completed in {}ms", self._elapsed_ms(started))
-            except Exception:
-                logger.debug("Tokenizer warmup failed", exc_info=True)
-
-        self._schedule_background(_warm())
+        self._tokenizer_warmup_started = exp_warmup_runtime.schedule_tokenizer_warmup(
+            already_started=self._tokenizer_warmup_started,
+            schedule_background=self._schedule_background,
+            logger=logger,
+        )
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
