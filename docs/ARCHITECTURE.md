@@ -2,6 +2,25 @@
 
 本文档描述 `nanobot-exp` 当前线上实现。它不是愿景文档，而是为了后续改动时能快速判断边界、风险和回滚方式。
 
+## 个人副驾驶层
+
+Nanobot-exp keeps personal assistant features in `ops/sources/personal-ops-assistant`
+instead of adding more resident services. The layer is intentionally script-first:
+`copilot.py` composes the existing dashboard APIs, OBP stats, RSS metadata, LOF board
+state, notify jobs and a tiny JSONL decision log under
+`/root/.nanobot/data/personal-ops-assistant/`.
+
+Design rules:
+
+- Default to read-only summaries for QQ: daily brief, reading triage, anomaly radar,
+  cost guard, decision log, night wrap-up and weekly self-review.
+- Mutating actions must remain explicit, for example `refresh-lof --yes` or the
+  existing `refresh-rss --yes`.
+- No extra always-on process is introduced; this keeps memory stable and preserves the
+  sidecar-first architecture.
+- Skills and capability registry point to `copilot.py`; the older `ops_summary.py`
+  remains as a compatibility layer for existing commands.
+
 ## 目标
 
 `nanobot-exp` 是基于上游 `HKUDS/nanobot` 的个人线上 fork。核心规则是：

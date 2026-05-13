@@ -22,9 +22,23 @@ def match_personal_ops_command(content: str) -> str | None:
     compact = _compact(content)
     if not compact:
         return None
+    if _GENERIC_URL_RE.search(content or ""):
+        return None
 
-    if any(k in compact for k in ("今天有什么要看", "今天看什么", "今日摘要", "今天摘要")):
+    if any(k in compact for k in ("今天有什么要看", "今天看什么", "今日摘要", "今天摘要", "今日简报", "早报")):
         return "today"
+    if any(k in compact for k in ("文章怎么读", "哪篇值得看", "文章优先级", "阅读消化")):
+        return "reading"
+    if any(k in compact for k in ("有没有异常", "异常雷达", "服务哪里不对", "哪里不对劲")):
+        return "anomalies"
+    if any(k in compact for k in ("obp花了多少钱", "模型成本", "成本怎么样", "按来源消耗", "花了多少钱")):
+        return "cost"
+    if any(k in compact for k in ("睡前总结", "今天收束", "收束一下", "睡前收束")):
+        return "night"
+    if any(k in compact for k in ("本周总结", "自省周报", "进化了什么", "本周复盘")):
+        return "weekly"
+    if any(k in compact for k in ("决策日志", "最近决策", "记录的决策")):
+        return "decision-log"
     if (
         any(k in compact for k in ("你能做什么", "能力列表", "能力菜单", "菜单", "帮助"))
         and len(compact) <= 16

@@ -72,31 +72,74 @@
   },
   {
     "id": "decision-assistant",
-    "name": "个人决策助手",
-    "description": "聚合系统、文章、LOF、任务数据，回答“今天先看什么 / 下一步做什么”。",
-    "category": "决策",
+    "name": "个人副驾驶",
+    "description": "聚合系统、文章、LOF、定时任务、OBP 成本和决策日志，回答今日情报、阅读优先级、异常雷达、睡前收束等问题。",
+    "category": "个人运营",
     "kind": "skill",
     "service_id": "lof",
     "entry_url": "/",
     "enabled": true,
     "trigger_phrases": [
+      "今天有什么要看",
+      "今日简报",
       "今天先看什么",
       "今天怎么安排",
-      "有什么建议"
+      "有什么建议",
+      "文章怎么读",
+      "哪篇值得看",
+      "有没有异常",
+      "异常雷达",
+      "服务哪里不对",
+      "obp花了多少钱",
+      "模型成本",
+      "按来源消耗",
+      "睡前总结",
+      "本周总结",
+      "决策日志",
+      "记一条决策",
+      "观点对撞",
+      "你能做什么"
     ],
     "commands": [
       {
-        "label": "生成决策摘要",
-        "command": "python /root/.nanobot/workspace/skills/personal-ops-assistant/ops_summary.py decision"
+        "label": "个人副驾驶菜单",
+        "command": "python /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py menu"
+      },
+      {
+        "label": "今日情报官",
+        "command": "python /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py today"
+      },
+      {
+        "label": "阅读消化器",
+        "command": "python /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py reading"
+      },
+      {
+        "label": "异常雷达",
+        "command": "python /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py anomalies"
+      },
+      {
+        "label": "成本守门员",
+        "command": "python /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py cost"
+      },
+      {
+        "label": "睡前收束",
+        "command": "python /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py night"
+      },
+      {
+        "label": "自省周报",
+        "command": "python /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py weekly"
       }
     ],
     "data_paths": [
       "/root/.nanobot/data/personal-ops-assistant"
     ],
     "tags": [
-      "decision",
-      "dashboard",
-      "summary"
+      "personal-copilot",
+      "brief",
+      "anomaly",
+      "cost",
+      "decision-log",
+      "dashboard"
     ],
     "mcp_tools": [],
     "notes": "更像 Hermes 的 user-facing routine，不应该散落在多个脚本里。"

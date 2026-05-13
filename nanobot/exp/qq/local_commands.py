@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Sequence
 
-PERSONAL_OPS_SCRIPT = Path("/root/.nanobot/workspace/skills/personal-ops-assistant/ops_summary.py")
+PERSONAL_OPS_SCRIPT = Path("/root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py")
 KNOWLEDGE_INBOX_SCRIPT = Path("/root/.nanobot/workspace/skills/knowledge-inbox/inbox.py")
 
 

@@ -23,6 +23,24 @@
       "timezone": "Asia/Shanghai",
       "command": "python3 /root/.nanobot/workspace/skills/qdii-monitor/send_qq.py 早市",
       "timeout_secs": 180
+    },
+    {
+      "id": "personal-night-brief",
+      "name": "个人副驾驶：睡前收束",
+      "enabled": false,
+      "schedule": "35 23 * * *",
+      "timezone": "Asia/Shanghai",
+      "command": "python3 /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py night",
+      "timeout_secs": 30
+    },
+    {
+      "id": "personal-weekly-review",
+      "name": "个人副驾驶：自省周报",
+      "enabled": false,
+      "schedule": "30 22 * * 0",
+      "timezone": "Asia/Shanghai",
+      "command": "python3 /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py weekly",
+      "timeout_secs": 30
     }
   ]
 }
