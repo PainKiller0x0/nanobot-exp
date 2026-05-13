@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import mimetypes
 import os
 import re
@@ -39,11 +38,12 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
 from nanobot.exp.qq import article_requests as qq_article_requests
+from nanobot.exp.qq import article_runtime as qq_article_runtime
 from nanobot.exp.qq import fast_paths as qq_fast_paths
+from nanobot.exp.qq import gateway_greeting as qq_gateway_greeting
 from nanobot.exp.qq import local_commands as qq_local_commands
 from nanobot.exp.qq import signatures as qq_signatures
 from nanobot.exp.qq import signed_delivery as qq_signed_delivery
-from nanobot.exp.qq import rss_sidecar as qq_rss_sidecar
 from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.exp.qq import stream_runtime as qq_stream_runtime
 from nanobot.security.network import validate_url_target
@@ -282,83 +282,30 @@ class QQChannel(BaseChannel):
 
     async def _check_greeting_trigger(self) -> None:
         """Check for gateway restart greeting trigger and send a greeting."""
-        from pathlib import Path
-        flag_file = Path("/root/.nanobot/workspace/lof_monitor/.gateway_restart_flag")
+        flag_file = qq_gateway_greeting.DEFAULT_RESTART_FLAG_PATH
         logger.debug("check_greeting: flag exists={}", flag_file.exists())
-        if not flag_file.exists():
+        content = qq_gateway_greeting.build_restart_greeting(flag_path=flag_file)
+        if not content:
             return
-        try:
-            flag_file.unlink()
-        except OSError:
-            pass
-        # 判断时间段
-        from datetime import datetime
-        h = datetime.now().hour
-        if 5 <= h < 12:
-            greeting = "早安 ☀️"
-        elif 12 <= h < 18:
-            greeting = "下午好 🌤️"
-        elif 18 <= h < 23:
-            greeting = "晚上好 🌙"
-        else:
-            greeting = "夜深了，早点休息 🌛"
-        from nanobot.bus.events import OutboundMessage
-        logger.info("check_greeting: sending greeting '{}'", greeting)
-        await self.bus.publish_outbound(OutboundMessage(
-            channel="qq", chat_id="965E0CA5AB52FBFC537A2E68A7349B9E",
-            content=f"gateway 已上线 · {greeting}",
-        ))
+        logger.info("check_greeting: sending greeting '{}'", content)
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel="qq",
+                chat_id="965E0CA5AB52FBFC537A2E68A7349B9E",
+                content=content,
+            )
+        )
 
     def _extract_wechat_question(self, content: str) -> str | None:
         return qq_article_requests.extract_wechat_question(content)
 
     async def _run_sidecar_json(self, args: list[str], timeout_sec: float = 30.0) -> dict[str, Any] | None:
-        rust_payload = await qq_rss_sidecar.run_client_json(
+        return await qq_article_runtime.run_sidecar_json(
             self._http,
             args,
             timeout_sec=timeout_sec,
             logger=logger,
         )
-        if rust_payload is not None:
-            return rust_payload
-
-        cmd = [
-            "python3",
-            "/root/.nanobot/workspace/skills/wechat-rss-sidecar/client.py",
-            *args,
-        ]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-        except TimeoutError:
-            logger.warning("qq wechat guard timeout: {}", " ".join(cmd))
-            return None
-        except Exception as e:
-            logger.warning("qq wechat guard exec failed: {} err={}", " ".join(cmd), e)
-            return None
-
-        out = (stdout or b"").decode("utf-8", errors="ignore").strip()
-        err = (stderr or b"").decode("utf-8", errors="ignore").strip()
-        if proc.returncode != 0:
-            logger.warning(
-                "qq wechat guard non-zero: rc={} cmd={} err={}",
-                proc.returncode,
-                " ".join(cmd),
-                err,
-            )
-            return None
-        if not out:
-            logger.warning("qq wechat guard empty output: {}", " ".join(cmd))
-            return None
-        try:
-            return json.loads(out)
-        except Exception:
-            logger.warning("qq wechat guard invalid json: cmd={} out_head={}", " ".join(cmd), out[:200])
-            return None
 
     async def _run_yage_signed(
         self,
@@ -369,7 +316,7 @@ class QQChannel(BaseChannel):
         force_latest: bool = False,
     ) -> str | None:
         """Run yage checker with selector and return raw stdout."""
-        rust_payload = await qq_rss_sidecar.yage_signed(
+        return await qq_article_runtime.run_yage_signed(
             self._http,
             timeout_sec=timeout_sec,
             nth=nth,
@@ -377,38 +324,6 @@ class QQChannel(BaseChannel):
             force_latest=force_latest,
             logger=logger,
         )
-        if rust_payload is not None:
-            return rust_payload
-
-        args: list[str] = []
-        if force_latest:
-            args.append("--latest")
-        if nth and nth > 1:
-            args.extend(["--nth", str(nth)])
-        if target_date:
-            args.extend(["--date", target_date])
-        arg_str = " ".join(args).strip()
-        cmd = "cd /root/.nanobot/workspace/skills/news-curator && python3 yage_check.py"
-        if arg_str:
-            cmd = f"{cmd} {arg_str}"
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-            if proc.returncode != 0:
-                logger.warning(
-                    "yage latest script failed rc={} err={}",
-                    proc.returncode,
-                    (stderr or b"").decode("utf-8", "ignore")[:500],
-                )
-                return None
-            return (stdout or b"").decode("utf-8", "ignore")
-        except Exception as e:
-            logger.warning("yage latest script execution failed: {}", e)
-            return None
 
     async def _run_wechat_signed(
         self,
@@ -418,44 +333,13 @@ class QQChannel(BaseChannel):
         force: bool = True,
     ) -> str | None:
         """Run wechat_push script and return raw stdout."""
-        if subscription_id <= 0:
-            return None
-        rust_payload = await qq_rss_sidecar.wechat_signed(
+        return await qq_article_runtime.run_wechat_signed(
             self._http,
             subscription_id,
             timeout_sec=timeout_sec,
             force=force,
             logger=logger,
         )
-        if rust_payload is not None:
-            return rust_payload
-
-        cmd = (
-            "cd /root/.nanobot/workspace/skills/wechat-rss-sidecar "
-            "&& WECHAT_RSS_BASE_URL=http://wechat-rss-sidecar:8091 "
-            f"python3 wechat_push.py --subscription-id {subscription_id}"
-        )
-        if force:
-            cmd += " --force"
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-            if proc.returncode != 0:
-                logger.warning(
-                    "wechat signed script failed rc={} sub={} err={}",
-                    proc.returncode,
-                    subscription_id,
-                    (stderr or b"").decode("utf-8", "ignore")[:500],
-                )
-                return None
-            return (stdout or b"").decode("utf-8", "ignore")
-        except Exception as e:
-            logger.warning("wechat signed script execution failed sub={} err={}", subscription_id, e)
-            return None
 
     @staticmethod
     def _cn_num_to_int(text: str) -> int | None:
