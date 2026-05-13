@@ -111,6 +111,7 @@ nanobot-exp/
 
 线上还有 `/root/nanobot-ops`，这是实际运维工作副本，`/usr/local/sbin/deploy-sidecar` 默认从这里构建和部署。
 GitHub 里的 `ops/` 是它的脱敏快照，也是代码源头；不要直接把长期修改留在 `/root/nanobot-ops`。
+`/root/nanobot-ops` 不保留 `.git`，避免旧 Git 基线制造误导性的 dirty 状态；判断 live 是否干净只用 `sync-to-live.sh --check`。
 
 ## 部署模型
 
