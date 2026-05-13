@@ -271,20 +271,38 @@ def render_anomalies(data: dict[str, Any]) -> str:
     return "\n".join(["🚨 个人异常雷达", f"扫描时间：{now_shanghai().strftime('%Y-%m-%d %H:%M')}", *[f"- {row}" for row in findings[:10]]])
 
 
+def fmt_tokens(bucket: Any) -> str:
+    if not isinstance(bucket, dict):
+        return "0 tokens"
+    return f"{int(bucket.get('total_tokens') or 0):,} tokens"
+
+
 def render_cost() -> str:
     stats = load_obp_stats()
     if not isinstance(stats, dict) or not stats:
         return "💰 成本守门员\nOBP 统计暂不可读。建议检查 /obp 管理页或 admin stats 接口。"
-    month_row, month = month_stats(stats)
+    paid_stats = stats.get("paid") if isinstance(stats.get("paid"), dict) else {}
+    free_stats = stats.get("free") if isinstance(stats.get("free"), dict) else {}
+    paid_month, month = month_stats(paid_stats or stats)
+    free_month, _ = month_stats(free_stats)
+    total_month, _ = month_stats(stats)
     day = now_shanghai().strftime("%Y-%m-%d")
-    by_day = stats.get("by_day") or {}
-    day_row = by_day.get(day, {}) if isinstance(by_day, dict) else {}
+    paid_day_map = paid_stats.get("by_day") if isinstance(paid_stats, dict) else {}
+    paid_day = paid_day_map.get(day, {}) if isinstance(paid_day_map, dict) else {}
+    total_day_map = stats.get("by_day") if isinstance(stats, dict) else {}
+    total_day = total_day_map.get(day, {}) if isinstance(total_day_map, dict) else {}
+    day_label = "付费今天"
+    if metric_count(paid_day) == 0 and metric_cost(total_day) > 0:
+        paid_day = total_day
+        day_label = "今天付费估算"
     lines = [
-        "💰 成本守门员",
-        f"本月（{month}）：{metric_count(month_row)} 次，约 {money(metric_cost(month_row))}",
-        f"今天：{metric_count(day_row)} 次，约 {money(metric_cost(day_row))}",
+        "💰 成本守门员（默认付费账）",
+        f"付费本月（{month}）：{metric_count(paid_month)} 次，{fmt_tokens(paid_month)}，约 {money(metric_cost(paid_month))}",
+        f"{day_label}：{metric_count(paid_day)} 次，约 {money(metric_cost(paid_day))}",
+        f"免费本月：{metric_count(free_month)} 次，{fmt_tokens(free_month)}，约 {money(metric_cost(free_month))}",
+        f"总账本月：{metric_count(total_month)} 次，{fmt_tokens(total_month)}，约 {money(metric_cost(total_month))}",
     ]
-    source_month = stats.get("by_source_month") or {}
+    source_month = paid_stats.get("by_source_month") if isinstance(paid_stats, dict) else {}
     source_rows: list[tuple[str, dict[str, Any]]] = []
     if isinstance(source_month, dict):
         for source, periods in source_month.items():
@@ -293,15 +311,24 @@ def render_cost() -> str:
                 source_rows.append((str(source), row))
     source_rows.sort(key=lambda item: metric_cost(item[1]), reverse=True)
     if source_rows:
-        lines.append("按来源（本月）：")
+        lines.append("付费来源（本月）：")
         for source, row in source_rows[:6]:
-            lines.append(f"- {source}：{metric_count(row)} 次，{money(metric_cost(row))}")
-    by_model = stats.get("by_model") or {}
+            lines.append(f"- {source}：{metric_count(row)} 次，{fmt_tokens(row)}，{money(metric_cost(row))}")
+    by_model = paid_stats.get("by_model") if isinstance(paid_stats, dict) else {}
     model_rows = sorted(by_model.items(), key=lambda item: metric_cost(item[1]) if isinstance(item[1], dict) else 0, reverse=True) if isinstance(by_model, dict) else []
     if model_rows:
-        lines.append("模型消耗 TOP：")
+        lines.append("付费模型 TOP：")
         for model, row in model_rows[:5]:
-            lines.append(f"- {model}：{metric_count(row)} 次，{money(metric_cost(row))}")
+            lines.append(f"- {model}：{metric_count(row)} 次，{fmt_tokens(row)}，{money(metric_cost(row))}")
+    free_models = free_stats.get("by_model") if isinstance(free_stats, dict) else {}
+    if isinstance(free_models, dict) and free_models:
+        rows = [
+            f"{name} {fmt_tokens(row)}"
+            for name, row in list(free_models.items())[:4]
+            if isinstance(row, dict)
+        ]
+        if rows:
+            lines.append("免费模型：" + "、".join(rows))
     return "\n".join(lines)
 
 

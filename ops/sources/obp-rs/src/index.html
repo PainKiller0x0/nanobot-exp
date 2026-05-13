@@ -59,9 +59,14 @@
           <div class="flex flex-wrap justify-between gap-3 mb-3">
             <div>
               <h2 class="font-black text-lg">来源消耗（本月）</h2>
-              <p class="text-xs text-slate-500 mt-1">已把历史记录回填到 default-nanobot；广州接入后会显示为 guangzhou-nanobot。</p>
+              <p class="text-xs text-slate-500 mt-1" x-text="'当前口径：' + ledgerLabel + '。已把历史记录回填到 default-nanobot；广州接入后会显示为 guangzhou-nanobot。'"></p>
             </div>
-            <span class="badge" x-text="sourceMonthList.length + ' 个来源'"></span>
+            <div class="flex flex-wrap items-center gap-2">
+              <template x-for="mode in ledgerModes" :key="mode.id">
+                <button @click="ledgerMode=mode.id" class="btn" :class="ledgerMode===mode.id?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':''" x-text="mode.label"></button>
+              </template>
+              <span class="badge" x-text="sourceMonthList.length + ' 个来源'"></span>
+            </div>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
             <template x-for="item in sourceMonthList" :key="item.name">
@@ -130,15 +135,27 @@
 
       <aside class="xl:col-span-4 space-y-4">
         <section class="panel p-4">
-          <h2 class="font-black text-lg mb-3">成本账本</h2>
+          <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+            <div>
+              <h2 class="font-black text-lg">成本账本</h2>
+              <p class="text-xs text-slate-500 mt-1" x-text="'默认看付费账；LongCat 等免费模型单独归到免费账。当前：' + ledgerLabel"></p>
+            </div>
+            <div class="flex gap-1">
+              <template x-for="mode in ledgerModes" :key="mode.id">
+                <button @click="ledgerMode=mode.id" class="btn" :class="ledgerMode===mode.id?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':''" x-text="mode.label"></button>
+              </template>
+            </div>
+          </div>
           <div class="grid grid-cols-2 gap-2 text-sm">
-            <div class="subcard"><div class="k">本月请求</div><div class="v" x-text="month.requests||0"></div></div>
-            <div class="subcard"><div class="k">本月成本</div><div class="v text-amber-600" x-text="money(month.cost_cny)"></div></div>
-            <div class="subcard"><div class="k">缓存命中</div><div class="v" x-text="fmt(month.cached_tokens)"></div></div>
-            <div class="subcard"><div class="k">未命中输入</div><div class="v" x-text="fmt(month.uncached_prompt_tokens)"></div></div>
+            <div class="subcard"><div class="k" x-text="ledgerLabel + '请求'"></div><div class="v" x-text="ledgerBucket.requests||0"></div></div>
+            <div class="subcard"><div class="k" x-text="ledgerLabel + '成本'"></div><div class="v text-amber-600" x-text="money(ledgerBucket.cost_cny)"></div></div>
+            <div class="subcard"><div class="k">缓存命中</div><div class="v" x-text="fmt(ledgerBucket.cached_tokens)"></div></div>
+            <div class="subcard"><div class="k">未命中输入</div><div class="v" x-text="fmt(ledgerBucket.uncached_prompt_tokens)"></div></div>
+            <div class="subcard"><div class="k">输入 Token</div><div class="v" x-text="fmt(ledgerBucket.prompt_tokens)"></div></div>
+            <div class="subcard"><div class="k">输出 Token</div><div class="v" x-text="fmt(ledgerBucket.completion_tokens)"></div></div>
           </div>
           <div class="mt-4 h-3 rounded-full bg-stone-200 dark:bg-slate-800 overflow-hidden"><div class="h-full bg-gradient-to-r from-emerald-500 to-amber-500" :style="'width:'+budgetPct+'%'"></div></div>
-          <div class="text-xs text-slate-500 mt-2" x-text="'预算进度：' + budgetPct + '% / 熔断 ' + money(router.monthly_hard_limit_rmb)"></div>
+          <div class="text-xs text-slate-500 mt-2" x-text="'付费预算进度：' + budgetPct + '% / 熔断 ' + money(router.monthly_hard_limit_rmb)"></div>
         </section>
         <section class="panel p-4">
           <div class="flex items-start justify-between gap-3">
@@ -275,7 +292,7 @@
   <script>
     function detectBase(){const path=location.pathname.replace(/\/+/g,'/');const hit=path.match(/^(.*?\/obp)(?:\/|$)/);return hit?hit[1].replace(/(\/obp)+$/,'/obp'):''}
     function joinPath(base,path){const joined=(String(base||'').replace(/\/+$/,'')+'/'+String(path||'').replace(/^\/+/,'')).replace(/\/+/g,'/');return joined.replace(/(\/obp)(?:\/obp)+/g,'$1')}
-    function app(){return{dark:localStorage.obp_theme==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
+    function app(){return{dark:localStorage.obp_theme==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,ledgerMode:'paid',lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
       get apiUrl(){return location.origin + joinPath(this.base,'/v1')},
       get chatUrl(){return location.origin + joinPath(this.base,'/v1/chat/completions')},
       get anthropicUrl(){return location.origin + joinPath(this.base,'/anthropic/v1/messages')},
@@ -286,16 +303,26 @@
       get monthKey(){return this.dayKey.slice(0,7)},
       get today(){return this.stats.by_day?.[this.dayKey]||{}},
       get month(){return this.stats.by_month?.[this.monthKey]||{}},
+      get ledgerModes(){return[{id:'paid',label:'付费'},{id:'free',label:'免费'},{id:'total',label:'总账'}]},
+      get ledgerLabel(){return (this.ledgerModes.find(m=>m.id===this.ledgerMode)||this.ledgerModes[0]).label},
+      get activeLedgerStats(){return this.ledgerMode==='total'?this.stats:(this.stats[this.ledgerMode]||{})},
+      get paidMonth(){return this.stats.paid?.by_month?.[this.monthKey]||this.stats.paid?.total||this.month},
+      get ledgerBucket(){
+        if(this.ledgerMode==='total')return this.month;
+        const root=this.activeLedgerStats||{};
+        return root.by_month?.[this.monthKey]||root.total||{};
+      },
       get sourceMonthList(){
-        const byMonth=this.stats.by_source_month||{};
-        const byTotal=this.stats.by_source||{};
+        const root=this.activeLedgerStats||{};
+        const byMonth=root.by_source_month||{};
+        const byTotal=root.by_source||{};
         const names=[...new Set([...Object.keys(byMonth),...Object.keys(byTotal)])];
         return names.map(name=>({name,...(byMonth[name]?.[this.monthKey]||byTotal[name]||{})}))
           .filter(item=>(item.requests||0)>0||(item.total_tokens||0)>0||(item.cost_cny||0)>0)
           .sort((a,b)=>(b.cost_cny||0)-(a.cost_cny||0)||((b.requests||0)-(a.requests||0))||a.name.localeCompare(b.name));
       },
       get successRate(){const t=this.stats.total?.requests||0;return t?Math.round((this.stats.total.success||0)*1000/t)/10+'%':'-'},
-      get budgetPct(){const hard=Number(this.router.monthly_hard_limit_rmb||0);return hard?Math.min(100,Math.round((Number(this.month.cost_cny||0)/hard)*100)):0},
+      get budgetPct(){const hard=Number(this.router.monthly_hard_limit_rmb||0);return hard?Math.min(100,Math.round((Number(this.paidMonth.cost_cny||0)/hard)*100)):0},
       get groupNames(){return [...new Set((this.channels||[]).map(c=>c.group).filter(Boolean))]},
       init(){this.refresh();this._unlockScroll=this.$watch(() => this.showExternal||this.showChannels||this.showForm||this.showAuth, locked => this.lockBodyScroll(locked));setInterval(()=>this.refresh(),5000)},
       async api(path, options={}){const prefixes=[this.base,''].filter((v,i,a)=>a.indexOf(v)===i);let last;for(const prefix of prefixes){const r=await fetch(joinPath(prefix,path),{credentials:'include',cache:'no-store',...options});last=r;if(r.status!==404||!prefix)return r}return last},

@@ -20,6 +20,7 @@ Design rules:
   sidecar-first architecture.
 - Skills and capability registry point to `copilot.py`; the older `ops_summary.py`
   remains as a compatibility layer for existing commands.
+- OBP stats expose `paid` and `free` ledgers in addition to the legacy total fields; UI and QQ cost summaries default to the paid ledger so free LongCat traffic does not distort wallet-facing numbers.
 
 ## 目标
 
