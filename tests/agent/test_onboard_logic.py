@@ -4,12 +4,10 @@ These tests focus on the business logic behind the onboard wizard,
 without testing the interactive UI components.
 """
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import pytest
 from pydantic import BaseModel, Field
 
 from nanobot.cli import onboard as onboard_wizard
@@ -24,7 +22,6 @@ from nanobot.cli.onboard import (
     _get_field_type_info,
     _get_constraint_hint,
     _input_text,
-    _validate_field_constraint,
     run_onboard,
 )
 from nanobot.config.schema import Config
@@ -833,7 +830,6 @@ class TestMainMenuUpdate:
 
     def test_main_menu_dispatch_includes_channel_common(self):
         """Main menu dispatch should route [H] to Channel Common."""
-        from nanobot.cli.onboard import run_onboard
 
         # We verify by checking the dispatch table is set up correctly
         # The menu items are defined inline in run_onboard, so we test

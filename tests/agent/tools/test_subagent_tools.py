@@ -58,7 +58,6 @@ async def test_subagent_exec_tool_receives_allowed_env_keys(tmp_path):
 async def test_drain_pending_blocks_while_subagents_running(tmp_path):
     """_drain_pending should block when no messages are available but sub-agents are still running."""
     from nanobot.agent.loop import AgentLoop
-    from nanobot.agent.subagent import SubagentManager
     from nanobot.bus.events import InboundMessage
     from nanobot.bus.queue import MessageBus
     from nanobot.session.manager import Session
@@ -73,9 +72,7 @@ async def test_drain_pending_blocks_while_subagents_running(tmp_path):
     session = Session(key="test:drain-block")
     injection_callback = None
 
-    # Capture the injection_callback that _run_agent_loop creates
-    original_run = loop.runner.run
-
+    # Capture the injection_callback that _run_agent_loop creates.
     async def fake_runner_run(spec):
         nonlocal injection_callback
         injection_callback = spec.injection_callback
