@@ -14,6 +14,7 @@ from loguru import logger
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.tools.ask import AskUserInterrupt
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.exp.agent.obp_fallback import OBPFallbackClient
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.utils.helpers import (
     build_assistant_message,
@@ -99,8 +100,7 @@ class AgentRunner:
 
     def __init__(self, provider: LLMProvider):
         self.provider = provider
-        self._obp_fallback_provider: LLMProvider | None = None
-        self._obp_fallback_key: tuple[str, str, str] | None = None
+        self._obp_fallback = OBPFallbackClient()
 
     @staticmethod
     def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
@@ -599,94 +599,13 @@ class AgentRunner:
             "connection timed out",
         ))
 
-    @staticmethod
-    def _float_env(name: str, default: float) -> float:
-        raw = os.environ.get(name, "").strip()
-        if not raw:
-            return default
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            return default
-        return value
-
-    @staticmethod
-    def _int_env(name: str, default: int) -> int:
-        raw = os.environ.get(name, "").strip()
-        if not raw:
-            return default
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return default
-        return value
-
-    def _get_obp_fallback_provider(self) -> tuple[LLMProvider, str] | None:
-        base = os.environ.get("NANOBOT_OBP_FALLBACK_BASE", "").strip()
-        if not base:
-            return None
-        model = os.environ.get("NANOBOT_OBP_FALLBACK_MODEL", "LongCat-Flash-Chat").strip()
-        api_key = (
-            os.environ.get("NANOBOT_OBP_FALLBACK_API_KEY", "").strip()
-            or os.environ.get("OBP_PROXY_TOKEN", "").strip()
-            or "no-key"
-        )
-        key = (base, model, api_key)
-        if self._obp_fallback_provider is None or self._obp_fallback_key != key:
-            from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-
-            self._obp_fallback_provider = OpenAICompatProvider(
-                api_key=api_key,
-                api_base=base,
-                default_model=model,
-            )
-            self._obp_fallback_key = key
-        return self._obp_fallback_provider, model
-
     async def _request_obp_fallback(
         self,
         primary_kwargs: dict[str, Any],
         *,
         reason: str,
     ) -> LLMResponse | None:
-        fallback = self._get_obp_fallback_provider()
-        if fallback is None:
-            return None
-        provider, model = fallback
-        fallback_kwargs = dict(primary_kwargs)
-        fallback_kwargs["model"] = model
-        fallback_kwargs["retry_mode"] = "standard"
-        fallback_kwargs["tools"] = None
-        fallback_kwargs.pop("tool_choice", None)
-        fallback_kwargs.pop("reasoning_effort", None)
-        fallback_kwargs.pop("on_retry_wait", None)
-
-        max_tokens_cap = max(1, self._int_env("NANOBOT_OBP_FALLBACK_MAX_TOKENS", 1024))
-        try:
-            requested_max = int(fallback_kwargs.get("max_tokens") or max_tokens_cap)
-        except (TypeError, ValueError):
-            requested_max = max_tokens_cap
-        fallback_kwargs["max_tokens"] = max(1, min(requested_max, max_tokens_cap))
-
-        timeout_s = self._float_env("NANOBOT_OBP_FALLBACK_TIMEOUT_S", 35.0)
-        logger.warning("Primary LLM {}; using OBP fallback model={}", reason, model)
-        try:
-            response = await asyncio.wait_for(
-                provider.chat_with_retry(**fallback_kwargs),
-                timeout=max(1.0, timeout_s),
-            )
-        except asyncio.TimeoutError:
-            logger.warning("OBP fallback timed out after {}s", timeout_s)
-            return None
-        except Exception as exc:
-            logger.warning("OBP fallback failed: {}: {}", type(exc).__name__, exc)
-            return None
-
-        if response.finish_reason == "error":
-            logger.warning("OBP fallback returned error: {}", (response.content or "")[:160])
-            return None
-        logger.info("OBP fallback succeeded model={}", model)
-        return response
+        return await self._obp_fallback.request(primary_kwargs, reason=reason, logger=logger)
 
     async def _request_model(
         self,
