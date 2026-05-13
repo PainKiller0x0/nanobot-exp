@@ -37,7 +37,7 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
-from nanobot.exp.qq import article_requests as qq_article_requests
+from nanobot.exp.qq import article_handlers as qq_article_handlers
 from nanobot.exp.qq import article_runtime as qq_article_runtime
 from nanobot.exp.qq import fast_paths as qq_fast_paths
 from nanobot.exp.qq import gateway_greeting as qq_gateway_greeting
@@ -296,9 +296,6 @@ class QQChannel(BaseChannel):
             )
         )
 
-    def _extract_wechat_question(self, content: str) -> str | None:
-        return qq_article_requests.extract_wechat_question(content)
-
     async def _run_sidecar_json(self, args: list[str], timeout_sec: float = 30.0) -> dict[str, Any] | None:
         return await qq_article_runtime.run_sidecar_json(
             self._http,
@@ -341,139 +338,31 @@ class QQChannel(BaseChannel):
             logger=logger,
         )
 
-    @staticmethod
-    def _cn_num_to_int(text: str) -> int | None:
-        return qq_article_requests.cn_num_to_int(text)
-
-    def _parse_yage_selector(self, content: str) -> tuple[int | None, str | None]:
-        return qq_article_requests.parse_yage_selector(content)
-
-    def _extract_yage_request(self, content: str) -> bool:
-        return qq_article_requests.is_yage_request(content)
-
     async def _try_handle_yage_raw(
         self,
         chat_id: str,
         content: str,
         message_id: str | None,
     ) -> bool:
-        if not self._extract_yage_request(content):
-            return False
-        nth, target_date = self._parse_yage_selector(content)
-        raw = await self._run_yage_signed(
-            timeout_sec=45.0,
-            nth=nth,
-            target_date=target_date,
-            force_latest=bool((nth is None and target_date is None) or (nth == 1 and not target_date)),
+        return await qq_article_handlers.try_handle_yage_raw(
+            chat_id=chat_id,
+            content=content,
+            message_id=message_id,
+            run_yage_signed=self._run_yage_signed,
+            publish_outbound=self.bus.publish_outbound,
+            logger=logger,
         )
-        if raw is None:
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel="qq",
-                    chat_id=chat_id,
-                    content="鸭哥文章抓取失败，请稍后重试。",
-                    metadata={"message_id": message_id},
-                )
-            )
-            return True
-        if not raw.strip():
-            not_found_hint = ""
-            if target_date:
-                not_found_hint = f" (date={target_date})"
-            elif nth and nth > 1:
-                not_found_hint = f" (nth={nth})"
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel="qq",
-                    chat_id=chat_id,
-                    content=f"当前未抓取到匹配的鸭哥文章内容{not_found_hint}。",
-                    metadata={"message_id": message_id},
-                )
-            )
-            return True
-        await self.bus.publish_outbound(
-            OutboundMessage(
-                channel="qq",
-                chat_id=chat_id,
-                content=raw,
-                metadata={"message_id": message_id},
-            )
-        )
-        logger.info("QQ yage raw handler sent signed latest article chat_id={}", chat_id)
-        return True
-
-    def _is_wechat_title_query(self, content: str) -> bool:
-        return qq_article_requests.is_wechat_title_query(content)
 
     async def _try_handle_wechat_grounded(self, user_id: str, chat_id: str, content: str, message_id: str) -> bool:
-        if not self.is_allowed(user_id):
-            return False
-
-        title_query = self._is_wechat_title_query(content)
-        question = self._extract_wechat_question(content)
-        if not title_query and not question:
-            return False
-
-        if title_query and not question:
-            latest = await self._run_sidecar_json(["latest", "--days", "7", "--limit", "50"])
-            if not latest or latest.get("status") in {"empty", "error"}:
-                reply = "已核验原文：未找到可用文章（NOT_FOUND_IN_ARTICLE）"
-            else:
-                reply = (
-                    f"\u6700\u65b0\u6587\u7ae0\uff1a{latest.get('title') or ''}\n"
-                    f"entry_id: {latest.get('entry_id') or 0}\n"
-                    f"published_at: {latest.get('published_at') or ''}\n"
-                    f"link: {latest.get('link') or ''}"
-                )
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel="qq",
-                    chat_id=chat_id,
-                    content=reply,
-                    metadata={"message_id": message_id},
-                )
-            )
-            return True
-
-        ask = await self._run_sidecar_json(
-            ["ask", "--question", question or content, "--days", "7", "--limit", "50"]
+        return await qq_article_handlers.try_handle_wechat_grounded(
+            user_id=user_id,
+            chat_id=chat_id,
+            content=content,
+            message_id=message_id,
+            is_allowed=self.is_allowed,
+            run_sidecar_json=self._run_sidecar_json,
+            publish_outbound=self.bus.publish_outbound,
         )
-        if not ask:
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel="qq",
-                    chat_id=chat_id,
-                    content="已核验原文：未命中问题答案（NOT_FOUND_IN_ARTICLE）",
-                    metadata={"message_id": message_id},
-                )
-            )
-            return True
-
-        status = str(ask.get("status") or "").lower()
-        if status != "ok":
-            reply = (
-                "已核验原文：未命中问题答案（NOT_FOUND_IN_ARTICLE）\n"
-                f"entry_id: {ask.get('entry_id') or 0}\n"
-                f"published_at: {ask.get('published_at') or ''}\n"
-                f"link: {ask.get('link') or ''}"
-            )
-        else:
-            answer = str(ask.get("answer") or "").strip()
-            reply = (
-                f"entry_id: {ask.get('entry_id') or 0}\n"
-                f"published_at: {ask.get('published_at') or ''}\n"
-                f"link: {ask.get('link') or ''}\n\n"
-                f"{answer or 'NOT_FOUND_IN_ARTICLE'}"
-            )
-        await self.bus.publish_outbound(
-            OutboundMessage(
-                channel="qq",
-                chat_id=chat_id,
-                content=reply,
-                metadata={"message_id": message_id},
-            )
-        )
-        return True
 
     async def stop(self) -> None:
         """Stop bot and cleanup resources."""
