@@ -18,3 +18,4 @@ scraper = "0.26.0"
 html2md = "0.2.15"
 chrono = { version = "0.4.44", features = ["serde"] }
 regex = "1.12.2"
+ring = "0.17.14"

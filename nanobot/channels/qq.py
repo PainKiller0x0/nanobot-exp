@@ -41,6 +41,7 @@ from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
 from nanobot.exp.qq import fast_paths as qq_fast_paths
 from nanobot.exp.qq import signatures as qq_signatures
+from nanobot.exp.qq import rss_sidecar as qq_rss_sidecar
 from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.security.network import validate_url_target
 from nanobot.utils.helpers import split_message
@@ -392,6 +393,15 @@ class QQChannel(BaseChannel):
         return None
 
     async def _run_sidecar_json(self, args: list[str], timeout_sec: float = 30.0) -> dict[str, Any] | None:
+        rust_payload = await qq_rss_sidecar.run_client_json(
+            self._http,
+            args,
+            timeout_sec=timeout_sec,
+            logger=logger,
+        )
+        if rust_payload is not None:
+            return rust_payload
+
         cmd = [
             "python3",
             "/root/.nanobot/workspace/skills/wechat-rss-sidecar/client.py",
@@ -439,6 +449,17 @@ class QQChannel(BaseChannel):
         force_latest: bool = False,
     ) -> str | None:
         """Run yage checker with selector and return raw stdout."""
+        rust_payload = await qq_rss_sidecar.yage_signed(
+            self._http,
+            timeout_sec=timeout_sec,
+            nth=nth,
+            target_date=target_date,
+            force_latest=force_latest,
+            logger=logger,
+        )
+        if rust_payload is not None:
+            return rust_payload
+
         args: list[str] = []
         if force_latest:
             args.append("--latest")
@@ -479,6 +500,16 @@ class QQChannel(BaseChannel):
         """Run wechat_push script and return raw stdout."""
         if subscription_id <= 0:
             return None
+        rust_payload = await qq_rss_sidecar.wechat_signed(
+            self._http,
+            subscription_id,
+            timeout_sec=timeout_sec,
+            force=force,
+            logger=logger,
+        )
+        if rust_payload is not None:
+            return rust_payload
+
         cmd = (
             "cd /root/.nanobot/workspace/skills/wechat-rss-sidecar "
             "&& WECHAT_RSS_BASE_URL=http://wechat-rss-sidecar:8091 "

@@ -2488,6 +2488,7 @@ dependencies = [
  "html2md",
  "regex",
  "reqwest",
+ "ring",
  "rss",
  "rusqlite",
  "scraper",

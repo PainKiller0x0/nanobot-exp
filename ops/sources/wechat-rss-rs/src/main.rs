@@ -22,6 +22,7 @@ mod db;
 mod markdown;
 mod pages;
 mod paid_cleaner;
+mod qq_rss_api;
 mod settings;
 mod yage;
 
@@ -1789,6 +1790,10 @@ async fn main() {
         .route("/api/settings/auto-refresh", post(set_auto_refresh))
         .route("/api/articles/{id}", get(get_article))
         .route("/api/articles/{id}/markdown", get(get_article_markdown))
+        .route("/api/latest", get(qq_rss_api::latest))
+        .route("/api/ask", get(qq_rss_api::ask))
+        .route("/api/push/wechat-signed", get(qq_rss_api::wechat_signed))
+        .route("/api/push/yage-signed", get(qq_rss_api::yage_signed))
         .route("/api/clean-markdown", post(clean_markdown))
         .route("/api/clean-markdown/refine", post(refine_clean_markdown))
         .route("/api/refresh-all", post(refresh_all))
