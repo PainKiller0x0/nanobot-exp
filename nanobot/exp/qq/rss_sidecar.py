@@ -156,4 +156,76 @@ async def yage_signed(
     return str(payload.get("signed_payload") or "")
 
 
-__all__ = ["run_client_json", "wechat_signed", "yage_signed"]
+async def recover_wechat_by_digest(
+    session: aiohttp.ClientSession | None,
+    digest: str,
+    *,
+    timeout_sec: float = 45.0,
+    logger: Any | None = None,
+) -> tuple[str | None, int | None]:
+    expected = (digest or "").strip()
+    if not expected:
+        return None, None
+    payload = await _get_json(
+        session,
+        "/api/push/wechat-recover",
+        {"digest": expected},
+        timeout_sec=timeout_sec,
+        logger=logger,
+    )
+    if payload is None or str(payload.get("status") or "").lower() == "empty":
+        return None, None
+    signed_payload = str(payload.get("signed_payload") or "")
+    try:
+        subscription_id = int(payload.get("subscription_id") or 0)
+    except (TypeError, ValueError):
+        subscription_id = 0
+    return signed_payload or None, subscription_id or None
+
+
+async def ack_wechat_delivery(
+    session: aiohttp.ClientSession | None,
+    subscription_id: int,
+    entry_id: int,
+    *,
+    timeout_sec: float = 10.0,
+    logger: Any | None = None,
+) -> dict[str, Any] | None:
+    if subscription_id < 0 or entry_id <= 0:
+        return None
+    return await _get_json(
+        session,
+        "/api/push/wechat-ack",
+        {"subscription_id": subscription_id, "entry_id": entry_id},
+        timeout_sec=timeout_sec,
+        logger=logger,
+    )
+
+
+async def ack_yage_delivery(
+    session: aiohttp.ClientSession | None,
+    source_url: str,
+    *,
+    timeout_sec: float = 10.0,
+    logger: Any | None = None,
+) -> dict[str, Any] | None:
+    source_url = (source_url or "").strip()
+    if not source_url:
+        return None
+    return await _get_json(
+        session,
+        "/api/push/yage-ack",
+        {"url": source_url},
+        timeout_sec=timeout_sec,
+        logger=logger,
+    )
+
+
+__all__ = [
+    "ack_wechat_delivery",
+    "ack_yage_delivery",
+    "recover_wechat_by_digest",
+    "run_client_json",
+    "wechat_signed",
+    "yage_signed",
+]

@@ -37,6 +37,7 @@ pub(crate) struct RssActionQuery {
     nth: Option<i64>,
     date: Option<String>,
     url: Option<String>,
+    digest: Option<String>,
 }
 
 fn positive(value: Option<i64>, default: i64, minimum: i64) -> i64 {
@@ -666,10 +667,14 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-fn sign_nbraw_sha256(body: &str) -> String {
+fn sha256_hex(body: &str) -> String {
     let mut ctx = Context::new(&SHA256);
     ctx.update(body.as_bytes());
-    let digest = hex_lower(ctx.finish().as_ref());
+    hex_lower(ctx.finish().as_ref())
+}
+
+fn sign_nbraw_sha256(body: &str) -> String {
+    let digest = sha256_hex(body);
     format!("{SIGNED_PREFIX}{digest}\n\n{body}")
 }
 
@@ -680,22 +685,65 @@ fn read_json_file(path: &str) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-pub(crate) async fn wechat_signed(
-    State(st): State<Arc<AppState>>,
-    Query(q): Query<RssActionQuery>,
-) -> Json<Value> {
+fn write_json_file_atomic(path: &str, value: &Value) -> Result<(), String> {
+    let tmp = format!("{path}.tmp");
+    let data = serde_json::to_vec(value).map_err(|e| e.to_string())?;
+    fs::write(&tmp, data).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+fn wechat_candidate_subscription_ids() -> Vec<i64> {
+    let mut ids = Vec::<i64>::new();
+    if let Some(obj) = read_json_file(WECHAT_CACHE_FILE).as_object() {
+        for key in obj.keys() {
+            if let Some(raw) = key.strip_prefix("sub:") {
+                if let Ok(id) = raw.parse::<i64>() {
+                    if id > 0 && !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+    }
+    for id in [1_i64, 2, 3] {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+fn should_ack_yage_url(previous_url: &str, candidate_url: &str) -> bool {
+    let prev = previous_url.trim();
+    let cand = candidate_url.trim();
+    if cand.is_empty() {
+        return false;
+    }
+    if prev.is_empty() {
+        return true;
+    }
+    if prev == cand {
+        return false;
+    }
+    let prev_dt = extract_date_in_url(prev);
+    let cand_dt = extract_date_in_url(cand);
+    if !prev_dt.is_empty() && !cand_dt.is_empty() {
+        return cand_dt >= prev_dt;
+    }
+    false
+}
+
+async fn build_wechat_signed_value(st: Arc<AppState>, q: RssActionQuery) -> Value {
     let article = latest_value(st, q.clone()).await;
     if article.get("status").and_then(|v| v.as_str()) != Some("ok") {
-        return Json(
-            json!({"status":"empty","reason":article.get("reason").and_then(|v| v.as_str()).unwrap_or("LATEST_NOT_AVAILABLE")}),
-        );
+        return json!({"status":"empty","reason":article.get("reason").and_then(|v| v.as_str()).unwrap_or("LATEST_NOT_AVAILABLE")});
     }
     let entry_id = article
         .get("entry_id")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
     if entry_id <= 0 {
-        return Json(json!({"status":"empty","reason":"INVALID_ENTRY_ID"}));
+        return json!({"status":"empty","reason":"INVALID_ENTRY_ID"});
     }
     let subscription_id = q.subscription_id.unwrap_or(0).max(0);
     let cache_key = format!("sub:{subscription_id}");
@@ -705,29 +753,120 @@ pub(crate) async fn wechat_signed(
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
     if !force && cached == entry_id {
-        return Json(
-            json!({"status":"empty","reason":"ALREADY_SENT","entry_id":entry_id,"subscription_id":subscription_id}),
-        );
+        return json!({"status":"empty","reason":"ALREADY_SENT","entry_id":entry_id,"subscription_id":subscription_id});
     }
     let mut body = format_article_push_body(&article);
     if body.trim().is_empty() {
-        return Json(
-            json!({"status":"empty","reason":"EMPTY_BODY","entry_id":entry_id,"subscription_id":subscription_id}),
-        );
+        return json!({"status":"empty","reason":"EMPTY_BODY","entry_id":entry_id,"subscription_id":subscription_id});
     }
     body = format!("{body}\n\n<!-- NBACK_WECHAT sub:{subscription_id} entry:{entry_id} -->")
         .trim()
         .to_string();
-    let signed_payload = sign_nbraw_sha256(&body);
-    Json(json!({
+    let digest = sha256_hex(&body);
+    let signed_payload = format!("{SIGNED_PREFIX}{digest}\n\n{body}");
+    json!({
         "status": "ok",
         "entry_id": entry_id,
         "subscription_id": subscription_id,
         "title": article.get("title").cloned().unwrap_or_else(|| json!("")),
         "link": article.get("link").cloned().unwrap_or_else(|| json!("")),
         "body": body,
+        "digest": digest,
         "signed_payload": signed_payload,
-    }))
+    })
+}
+
+pub(crate) async fn wechat_signed(
+    State(st): State<Arc<AppState>>,
+    Query(q): Query<RssActionQuery>,
+) -> Json<Value> {
+    Json(build_wechat_signed_value(st, q).await)
+}
+
+pub(crate) async fn wechat_recover(
+    State(st): State<Arc<AppState>>,
+    Query(q): Query<RssActionQuery>,
+) -> Json<Value> {
+    let expected = q
+        .digest
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if expected.is_empty() {
+        return Json(json!({"status":"empty","reason":"MISSING_DIGEST"}));
+    }
+    for sid in wechat_candidate_subscription_ids() {
+        let mut sub_q = q.clone();
+        sub_q.subscription_id = Some(sid);
+        sub_q.force = Some(true);
+        let value = build_wechat_signed_value(st.clone(), sub_q).await;
+        if value.get("status").and_then(|v| v.as_str()) == Some("ok")
+            && value.get("digest").and_then(|v| v.as_str()) == Some(expected.as_str())
+        {
+            return Json(value);
+        }
+    }
+    Json(json!({"status":"empty","reason":"DIGEST_NOT_FOUND"}))
+}
+
+pub(crate) async fn wechat_ack(Query(q): Query<RssActionQuery>) -> Json<Value> {
+    let sub_id = q.subscription_id.unwrap_or(0).max(0);
+    let entry_id = q.entry_id.unwrap_or(0);
+    if entry_id <= 0 {
+        return Json(json!({"status":"error","reason":"INVALID_ENTRY_ID"}));
+    }
+    let cache_key = format!("sub:{sub_id}");
+    let mut cache = read_json_file(WECHAT_CACHE_FILE);
+    if !cache.is_object() {
+        cache = json!({});
+    }
+    let prev = cache.get(&cache_key).and_then(|v| v.as_i64()).unwrap_or(0);
+    if entry_id <= prev {
+        return Json(
+            json!({"status":"ok","updated":false,"key":cache_key,"prev":prev,"entry_id":entry_id}),
+        );
+    }
+    if let Some(obj) = cache.as_object_mut() {
+        obj.insert(cache_key.clone(), json!(entry_id));
+    }
+    match write_json_file_atomic(WECHAT_CACHE_FILE, &cache) {
+        Ok(()) => Json(
+            json!({"status":"ok","updated":true,"key":cache_key,"prev":prev,"entry_id":entry_id}),
+        ),
+        Err(e) => Json(
+            json!({"status":"error","reason":e,"updated":false,"key":cache_key,"prev":prev,"entry_id":entry_id}),
+        ),
+    }
+}
+
+pub(crate) async fn yage_ack(Query(q): Query<RssActionQuery>) -> Json<Value> {
+    let source_url = q.url.unwrap_or_default();
+    if source_url.trim().is_empty() {
+        return Json(json!({"status":"error","reason":"MISSING_SOURCE_URL"}));
+    }
+    let mut cache = read_json_file(YAGE_CACHE_FILE);
+    if !cache.is_object() {
+        cache = json!({});
+    }
+    let prev = cache
+        .get("last_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !should_ack_yage_url(&prev, &source_url) {
+        return Json(json!({"status":"ok","updated":false,"prev":prev,"source_url":source_url}));
+    }
+    if let Some(obj) = cache.as_object_mut() {
+        obj.insert("last_url".to_string(), json!(source_url));
+    }
+    match write_json_file_atomic(YAGE_CACHE_FILE, &cache) {
+        Ok(()) => Json(json!({"status":"ok","updated":true,"prev":prev,"source_url":source_url})),
+        Err(e) => Json(
+            json!({"status":"error","reason":e,"updated":false,"prev":prev,"source_url":source_url}),
+        ),
+    }
 }
 
 fn find_yage_daily_subscription_id(st: &Arc<AppState>) -> Option<i64> {
@@ -848,6 +987,26 @@ pub(crate) async fn yage_signed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yage_ack_only_advances_to_newer_urls() {
+        assert!(should_ack_yage_url(
+            "",
+            "https://yage-ai.kit.com/posts/2026-05-08-news"
+        ));
+        assert!(should_ack_yage_url(
+            "https://yage-ai.kit.com/posts/2026-05-07-old",
+            "https://yage-ai.kit.com/posts/2026-05-08-news"
+        ));
+        assert!(!should_ack_yage_url(
+            "https://yage-ai.kit.com/posts/2026-05-08-news",
+            "https://yage-ai.kit.com/posts/2026-05-07-old"
+        ));
+        assert!(!should_ack_yage_url(
+            "https://yage-ai.kit.com/posts/2026-05-08-news",
+            "https://yage-ai.kit.com/posts/2026-05-08-news"
+        ));
+    }
 
     #[test]
     fn nbraw_signature_has_expected_prefix_and_body() {

@@ -88,8 +88,6 @@ _IMAGE_EXTS = {
 
 # Replace unsafe characters with "_", keep Chinese and common safe punctuation.
 _SAFE_NAME_RE = re.compile(r"[^\w.\-()\[\]（）【】\u4e00-\u9fff]+", re.UNICODE)
-_YAGE_CACHE_FILE = "/root/.nanobot/workspace/skills/news-curator/yage_cache.json"
-_WECHAT_CACHE_FILE = "/root/.nanobot/workspace/skills/wechat-rss-sidecar/wechat_push_cache.json"
 
 
 def _sanitize_filename(name: str) -> str:
@@ -625,87 +623,69 @@ class QQChannel(BaseChannel):
     def _extract_yage_source_url(self, body: str) -> str | None:
         return qq_signatures.extract_yage_source_url(body)
 
-    @staticmethod
-    def _extract_date_from_url(url: str) -> datetime | None:
-        return qq_signatures.extract_date_from_url(url)
-
-    def _should_ack_yage_url(self, previous_url: str, candidate_url: str) -> bool:
-        return qq_signatures.should_ack_yage_url(previous_url, candidate_url)
-
     async def _ack_yage_delivery(self, body: str, chat_id: str) -> None:
-        """Update yage cache only after QQ send has succeeded."""
+        """Tell the RSS sidecar a Yage article was delivered successfully."""
         source_url = self._extract_yage_source_url(body)
         if not source_url:
             return
-
-        def _write_cache() -> tuple[bool, str]:
-            prev = ""
-            cache: dict[str, Any] = {}
-            if os.path.exists(_YAGE_CACHE_FILE):
-                try:
-                    with open(_YAGE_CACHE_FILE, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        if isinstance(data, dict):
-                            cache = data
-                except Exception:
-                    cache = {}
-            prev = str(cache.get("last_url") or "").strip()
-            if not self._should_ack_yage_url(prev, source_url):
-                return False, prev
-            cache["last_url"] = source_url
-            tmp = f"{_YAGE_CACHE_FILE}.tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(cache, f, ensure_ascii=False)
-            os.replace(tmp, _YAGE_CACHE_FILE)
-            return True, prev
-
-        try:
-            updated, prev = await asyncio.to_thread(_write_cache)
-            if updated:
-                logger.info(
-                    "QQ yage delivery ack cache updated chat_id={} prev={} new={}",
-                    chat_id,
-                    prev or "(empty)",
-                    source_url,
-                )
-        except Exception as e:
-            logger.warning("QQ yage delivery ack failed chat_id={} err={}", chat_id, e)
+        result = await qq_rss_sidecar.ack_yage_delivery(
+            self._http,
+            source_url,
+            timeout_sec=10.0,
+            logger=logger,
+        )
+        if result is None:
+            logger.warning("QQ yage delivery ack sidecar unavailable chat_id={}", chat_id)
+            return
+        if str(result.get("status") or "").lower() == "error":
+            logger.warning(
+                "QQ yage delivery ack failed chat_id={} reason={}",
+                chat_id,
+                result.get("reason") or "unknown",
+            )
+            return
+        if result.get("updated"):
+            logger.info(
+                "QQ yage delivery ack updated chat_id={} prev={} new={}",
+                chat_id,
+                result.get("prev") or "(empty)",
+                source_url,
+            )
 
     def _extract_wechat_ack_marker(self, body: str) -> tuple[str, tuple[int, int] | None]:
         return qq_signatures.extract_wechat_ack_marker(body)
+
     def _extract_wechat_subscription_id(self, content: str) -> int | None:
         return qq_signatures.extract_wechat_subscription_id(content)
+
     def _extract_signed_digest(self, content: str) -> str | None:
         return qq_signatures.extract_signed_digest(content)
+
     async def _recover_wechat_signed_by_digest(
         self, expected_digest: str, timeout_sec: float = 45.0
     ) -> tuple[str | None, int | None]:
         """Best-effort recovery when ACK marker is missing but signed digest is present."""
         if not expected_digest:
             return None, None
-        candidate_ids: list[int] = []
-        try:
-            if os.path.exists(_WECHAT_CACHE_FILE):
-                with open(_WECHAT_CACHE_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        for k in data.keys():
-                            if isinstance(k, str) and k.startswith("sub:"):
-                                try:
-                                    sid = int(k.split(":", 1)[1])
-                                    if sid > 0:
-                                        candidate_ids.append(sid)
-                                except Exception:
-                                    pass
-        except Exception:
-            pass
-        for sid in (1, 2, 3):
-            if sid not in candidate_ids:
-                candidate_ids.append(sid)
+        recovered_raw, recovered_sub = await qq_rss_sidecar.recover_wechat_by_digest(
+            self._http,
+            expected_digest,
+            timeout_sec=timeout_sec,
+            logger=logger,
+        )
+        if recovered_raw and recovered_raw.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
+            return recovered_raw, recovered_sub
 
-        for sid in candidate_ids:
-            recovered_raw = await self._run_wechat_signed(sid, timeout_sec=timeout_sec, force=True)
-            if not recovered_raw or not recovered_raw.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
+        # Fallback for older sidecar deployments or local tests.
+        for sid in (1, 2, 3):
+            recovered_raw = await self._run_wechat_signed(
+                sid,
+                timeout_sec=timeout_sec,
+                force=True,
+            )
+            if not recovered_raw or not recovered_raw.startswith(
+                qq_signatures.SIGNED_PAYLOAD_PREFIX
+            ):
                 continue
             got_digest = self._extract_signed_digest(recovered_raw) or ""
             if got_digest == expected_digest:
@@ -715,46 +695,37 @@ class QQChannel(BaseChannel):
     async def _ack_wechat_delivery(
         self, ack: tuple[int, int] | None, chat_id: str
     ) -> None:
-        """Update wechat sidecar cache only after QQ send has succeeded."""
+        """Tell the RSS sidecar a WeChat article was delivered successfully."""
         if not ack:
             return
         sub_id, entry_id = ack
         if sub_id < 0 or entry_id <= 0:
             return
-        cache_key = f"sub:{sub_id}"
-
-        def _write_cache() -> tuple[bool, int]:
-            cache: dict[str, Any] = {}
-            if os.path.exists(_WECHAT_CACHE_FILE):
-                try:
-                    with open(_WECHAT_CACHE_FILE, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        if isinstance(data, dict):
-                            cache = data
-                except Exception:
-                    cache = {}
-            prev = int(cache.get(cache_key, 0) or 0)
-            if entry_id <= prev:
-                return False, prev
-            cache[cache_key] = entry_id
-            tmp = f"{_WECHAT_CACHE_FILE}.tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(cache, f, ensure_ascii=False)
-            os.replace(tmp, _WECHAT_CACHE_FILE)
-            return True, prev
-
-        try:
-            updated, prev = await asyncio.to_thread(_write_cache)
-            if updated:
-                logger.info(
-                    "QQ wechat delivery ack cache updated chat_id={} key={} prev={} new={}",
-                    chat_id,
-                    cache_key,
-                    prev,
-                    entry_id,
-                )
-        except Exception as e:
-            logger.warning("QQ wechat delivery ack failed chat_id={} err={}", chat_id, e)
+        result = await qq_rss_sidecar.ack_wechat_delivery(
+            self._http,
+            sub_id,
+            entry_id,
+            timeout_sec=10.0,
+            logger=logger,
+        )
+        if result is None:
+            logger.warning("QQ wechat delivery ack sidecar unavailable chat_id={}", chat_id)
+            return
+        if str(result.get("status") or "").lower() == "error":
+            logger.warning(
+                "QQ wechat delivery ack failed chat_id={} reason={}",
+                chat_id,
+                result.get("reason") or "unknown",
+            )
+            return
+        if result.get("updated"):
+            logger.info(
+                "QQ wechat delivery ack updated chat_id={} key={} prev={} new={}",
+                chat_id,
+                result.get("key") or f"sub:{sub_id}",
+                result.get("prev") or 0,
+                entry_id,
+            )
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send attachments first, then text."""

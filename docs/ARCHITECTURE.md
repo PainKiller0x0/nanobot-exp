@@ -184,7 +184,7 @@ Nanobot core 不应该负责：
 当前仍然必须承认的 `nanobot-exp` 本体/运行时补丁：
 
 - QQ channel：`ops/config/overrides/qq.py` 是线上 QQ 通道胶水覆盖实现，容器启动时由 `/root/.nanobot/overrides/apply_overrides.py` 覆盖到 `/app/nanobot/channels/qq.py`。QQ 文件应尽量保留上游 botpy 适配结构；nanobot-exp 自定义策略放在 `nanobot/exp/qq/`，目前包括 `streaming.py`（流式策略）、`fast_paths.py`（本地快捷指令匹配）、`article_requests.py`（微信/鸭哥文章请求解析）、`local_commands.py`（本地 skill 命令 runner）、`signatures.py`（签名/ACK 解析）和 `rss_sidecar.py`（QQ 到 RSS Rust sidecar 的 HTTP Adapter）。短句“内存”查询必须走 `system` fast path，避免让 LLM 猜系统状态。
-- RSS 推送链路：`wechat-rss-rs` 暴露 `/api/latest`、`/api/ask`、`/api/push/wechat-signed`、`/api/push/yage-signed`，QQ 正常路径优先通过 Rust HTTP API 获取文章 JSON 或签名 payload；旧 Python skill 脚本只作为 Rust API 不可达时的 fallback。这个 seam 的 Interface 是“文章查询/签名推送”，不要让 QQ channel 重新关心 RSS 数据库、Markdown 清洗或脚本缓存细节。
+- RSS 推送链路：`wechat-rss-rs` 暴露 `/api/latest`、`/api/ask`、`/api/push/wechat-signed`、`/api/push/wechat-recover`、`/api/push/wechat-ack`、`/api/push/yage-signed`、`/api/push/yage-ack`。QQ 正常路径优先通过 Rust HTTP API 获取文章 JSON、签名 payload，并在 QQ 发送成功后通过 Rust API 推进 WeChat/鸭哥已投递缓存；旧 Python skill 脚本只作为 Rust API 不可达时的 fallback。这个 seam 的 Interface 是“文章查询/签名推送/投递确认”，不要让 QQ channel 重新关心 RSS 数据库、Markdown 清洗或脚本缓存细节。
 - Gateway heartbeat：`gateway.heartbeat.deliveryChannel` / `deliveryChatId` 用来固定原生 heartbeat 投递目标，避免“最近活跃渠道”把自省报告发到 WeChat。
 - 上游同步后必须跑 `ops/scripts/check-nanobot-exp-patches.sh /root/nanobot`，至少确认 heartbeat 投递、HERMES manager check、LOF refresh-before-send 这些补丁还在。
 - 若怀疑 core drift，先看 `git diff official/main...HEAD -- nanobot/`，再判断要不要把逻辑继续 sidecar 化。
