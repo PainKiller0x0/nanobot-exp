@@ -30,6 +30,8 @@ check 'nanobot/agent/capability_snapshot.py' 'dashboard_snapshot' 'Agent capabil
 check 'nanobot/agent/inbox_tool.py' 'run_tool' 'Agent knowledge inbox tool runner'
 check 'nanobot/agent/inbox_intents.py' 'extract_inbox_intent' 'Agent knowledge inbox intent matcher'
 check 'nanobot/agent/memory_client.py' 'save_memory' 'Agent Reflexio memory client helper'
+check 'nanobot/agent/memory_intents.py' 'extract_memory_to_save' 'Agent memory intent matcher'
+check 'nanobot/agent/memory_formatters.py' 'format_memory_status' 'Agent memory reply formatter'
 check 'nanobot/channels/qq.py' 'nanobot.exp.qq' 'QQ downstream helper seam'
 check 'nanobot/exp/qq/streaming.py' 'should_stream_text' 'QQ streaming policy helper'
 check 'nanobot/exp/qq/stream_runtime.py' 'send_delta' 'QQ streaming runtime helper'
