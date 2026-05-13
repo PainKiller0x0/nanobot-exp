@@ -25,6 +25,7 @@ check 'nanobot/exp/qq/article_requests.py' 'parse_yage_selector' 'QQ article req
 check 'nanobot/exp/qq/local_commands.py' 'run_personal_ops_command' 'QQ local command runner'
 check 'nanobot/exp/qq/fast_paths.py' 'match_personal_ops_command' 'QQ fast path helper'
 check 'nanobot/exp/qq/signatures.py' 'verify_and_unwrap_signed_payload' 'QQ signed payload helper'
+check 'nanobot/exp/qq/signed_delivery.py' 'prepare_outbound_content' 'QQ signed delivery policy'
 check 'nanobot/exp/qq/rss_sidecar.py' 'run_client_json' 'QQ RSS sidecar rust adapter'
 check 'nanobot/exp/qq/rss_sidecar.py' 'ack_wechat_delivery' 'QQ RSS sidecar ACK adapter'
 check 'ops/sources/wechat-rss-rs/src/qq_rss_api.rs' 'wechat_ack' 'RSS sidecar WeChat ACK API'

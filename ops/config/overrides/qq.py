@@ -43,6 +43,7 @@ from nanobot.exp.qq import article_requests as qq_article_requests
 from nanobot.exp.qq import fast_paths as qq_fast_paths
 from nanobot.exp.qq import local_commands as qq_local_commands
 from nanobot.exp.qq import signatures as qq_signatures
+from nanobot.exp.qq import signed_delivery as qq_signed_delivery
 from nanobot.exp.qq import rss_sidecar as qq_rss_sidecar
 from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.security.network import validate_url_target
@@ -614,119 +615,6 @@ class QQChannel(BaseChannel):
     # ---------------------------
 
 
-    def _requires_signed_payload(self, content: str) -> bool:
-        return qq_signatures.requires_signed_payload(content)
-
-    def _verify_and_unwrap_signed_payload(self, content: str) -> str | None:
-        return qq_signatures.verify_and_unwrap_signed_payload(content, logger=logger)
-
-    def _extract_yage_source_url(self, body: str) -> str | None:
-        return qq_signatures.extract_yage_source_url(body)
-
-    async def _ack_yage_delivery(self, body: str, chat_id: str) -> None:
-        """Tell the RSS sidecar a Yage article was delivered successfully."""
-        source_url = self._extract_yage_source_url(body)
-        if not source_url:
-            return
-        result = await qq_rss_sidecar.ack_yage_delivery(
-            self._http,
-            source_url,
-            timeout_sec=10.0,
-            logger=logger,
-        )
-        if result is None:
-            logger.warning("QQ yage delivery ack sidecar unavailable chat_id={}", chat_id)
-            return
-        if str(result.get("status") or "").lower() == "error":
-            logger.warning(
-                "QQ yage delivery ack failed chat_id={} reason={}",
-                chat_id,
-                result.get("reason") or "unknown",
-            )
-            return
-        if result.get("updated"):
-            logger.info(
-                "QQ yage delivery ack updated chat_id={} prev={} new={}",
-                chat_id,
-                result.get("prev") or "(empty)",
-                source_url,
-            )
-
-    def _extract_wechat_ack_marker(self, body: str) -> tuple[str, tuple[int, int] | None]:
-        return qq_signatures.extract_wechat_ack_marker(body)
-
-    def _extract_wechat_subscription_id(self, content: str) -> int | None:
-        return qq_signatures.extract_wechat_subscription_id(content)
-
-    def _extract_signed_digest(self, content: str) -> str | None:
-        return qq_signatures.extract_signed_digest(content)
-
-    async def _recover_wechat_signed_by_digest(
-        self, expected_digest: str, timeout_sec: float = 45.0
-    ) -> tuple[str | None, int | None]:
-        """Best-effort recovery when ACK marker is missing but signed digest is present."""
-        if not expected_digest:
-            return None, None
-        recovered_raw, recovered_sub = await qq_rss_sidecar.recover_wechat_by_digest(
-            self._http,
-            expected_digest,
-            timeout_sec=timeout_sec,
-            logger=logger,
-        )
-        if recovered_raw and recovered_raw.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
-            return recovered_raw, recovered_sub
-
-        # Fallback for older sidecar deployments or local tests.
-        for sid in (1, 2, 3):
-            recovered_raw = await self._run_wechat_signed(
-                sid,
-                timeout_sec=timeout_sec,
-                force=True,
-            )
-            if not recovered_raw or not recovered_raw.startswith(
-                qq_signatures.SIGNED_PAYLOAD_PREFIX
-            ):
-                continue
-            got_digest = self._extract_signed_digest(recovered_raw) or ""
-            if got_digest == expected_digest:
-                return recovered_raw, sid
-        return None, None
-
-    async def _ack_wechat_delivery(
-        self, ack: tuple[int, int] | None, chat_id: str
-    ) -> None:
-        """Tell the RSS sidecar a WeChat article was delivered successfully."""
-        if not ack:
-            return
-        sub_id, entry_id = ack
-        if sub_id < 0 or entry_id <= 0:
-            return
-        result = await qq_rss_sidecar.ack_wechat_delivery(
-            self._http,
-            sub_id,
-            entry_id,
-            timeout_sec=10.0,
-            logger=logger,
-        )
-        if result is None:
-            logger.warning("QQ wechat delivery ack sidecar unavailable chat_id={}", chat_id)
-            return
-        if str(result.get("status") or "").lower() == "error":
-            logger.warning(
-                "QQ wechat delivery ack failed chat_id={} reason={}",
-                chat_id,
-                result.get("reason") or "unknown",
-            )
-            return
-        if result.get("updated"):
-            logger.info(
-                "QQ wechat delivery ack updated chat_id={} key={} prev={} new={}",
-                chat_id,
-                result.get("key") or f"sub:{sub_id}",
-                result.get("prev") or 0,
-                entry_id,
-            )
-
     async def send(self, msg: OutboundMessage) -> None:
         """Send attachments first, then text."""
         if not self._client:
@@ -760,17 +648,21 @@ class QQChannel(BaseChannel):
 
         # 2) Send text (chunked to avoid QQ-side truncation on long payloads)
         if msg.content and msg.content.strip():
-            stripped_content = _strip_silent_marker(msg.content)
-            if stripped_content != msg.content:
-                msg.content = stripped_content
-                if not msg.content:
-                    logger.info("QQ outbound suppressed by silent marker chat_id={}", msg.chat_id)
-                    return
-            is_signed_payload = msg.content.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX)
-            requires_signature = self._requires_signed_payload(msg.content)
-            if requires_signature and not is_signed_payload:
+            prepared = await qq_signed_delivery.prepare_outbound_content(
+                msg.content,
+                session=self._http,
+                run_wechat_signed=self._run_wechat_signed,
+                run_yage_signed=self._run_yage_signed,
+                chat_id=msg.chat_id,
+                logger=logger,
+            )
+            if prepared.suppressed:
+                logger.info("QQ outbound suppressed reason={} chat_id={}", prepared.reason, msg.chat_id)
+                return
+            if prepared.blocked:
                 logger.warning(
-                    "QQ outbound blocked: yage-like payload without signature chat_id={}",
+                    "QQ outbound blocked reason={} chat_id={}",
+                    prepared.reason,
                     msg.chat_id,
                 )
                 await self._report_signature_blocked(
@@ -780,77 +672,9 @@ class QQChannel(BaseChannel):
                 )
                 return
 
-            safe_content = msg.content
-            if is_signed_payload:
-                safe_content = self._verify_and_unwrap_signed_payload(msg.content)
-                if safe_content is None:
-                    # Cron may occasionally reconstruct signed payload incorrectly.
-                    # Self-heal by fetching latest signed raw article directly and retrying once.
-                    expected_digest = self._extract_signed_digest(msg.content)
-                    # 1) WeChat signed payload recovery (preferred for wechat cron pushes)
-                    sub_id = self._extract_wechat_subscription_id(msg.content)
-                    if sub_id is not None:
-                        recovered_wechat = await self._run_wechat_signed(sub_id, timeout_sec=45.0, force=True)
-                        if recovered_wechat and recovered_wechat.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
-                            recovered_body = self._verify_and_unwrap_signed_payload(recovered_wechat)
-                            if recovered_body and recovered_body.strip():
-                                logger.warning(
-                                    "QQ signature mismatch self-healed via fresh wechat fetch chat_id={} sub={}",
-                                    msg.chat_id,
-                                    sub_id,
-                                )
-                                safe_content = recovered_body
-
-                    # 1.5) Marker may be stripped by LLM/tool-call transport.
-                    # Recover by signed digest across known subscription ids.
-                    if safe_content is None and expected_digest:
-                        recovered_wechat, recovered_sub = await self._recover_wechat_signed_by_digest(
-                            expected_digest,
-                            timeout_sec=45.0,
-                        )
-                        if recovered_wechat and recovered_wechat.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
-                            recovered_body = self._verify_and_unwrap_signed_payload(recovered_wechat)
-                            if recovered_body and recovered_body.strip():
-                                logger.warning(
-                                    "QQ signature mismatch self-healed via digest recovery chat_id={} sub={}",
-                                    msg.chat_id,
-                                    recovered_sub,
-                                )
-                                safe_content = recovered_body
-
-                    # 2) Yage signed payload recovery (legacy path)
-                    if safe_content is None:
-                        recovered = await self._run_yage_signed(timeout_sec=45.0, force_latest=True)
-                        if recovered and recovered.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX):
-                            recovered_body = self._verify_and_unwrap_signed_payload(recovered)
-                            if recovered_body and recovered_body.strip():
-                                logger.warning(
-                                    "QQ signature mismatch self-healed via fresh yage fetch chat_id={}",
-                                    msg.chat_id,
-                                )
-                                safe_content = recovered_body
-                    if safe_content is not None and safe_content.strip():
-                        pass
-                    else:
-                        logger.warning("QQ outbound blocked by signature validation chat_id={}", msg.chat_id)
-                        await self._report_signature_blocked(
-                            source_chat_id=msg.chat_id,
-                            source_is_group=is_group,
-                            source_msg_id=msg_id,
-                        )
-                        return
-                elif not safe_content.strip():
-                    logger.warning("QQ outbound blocked by signature validation chat_id={}", msg.chat_id)
-                    await self._report_signature_blocked(
-                        source_chat_id=msg.chat_id,
-                        source_is_group=is_group,
-                        source_msg_id=msg_id,
-                    )
-                    return
-            safe_content, wechat_ack = self._extract_wechat_ack_marker(safe_content)
-            safe_content = _strip_silent_marker(safe_content)
-            if not safe_content.strip():
-                return
+            safe_content = prepared.content
+            is_signed_payload = prepared.is_signed_payload
+            wechat_ack = prepared.wechat_ack
 
             if is_signed_payload:
                 # Prefer one-shot delivery for raw signed articles.
@@ -862,8 +686,13 @@ class QQChannel(BaseChannel):
                         msg_id=msg_id,
                         content=safe_content,
                     )
-                    await self._ack_yage_delivery(safe_content, msg.chat_id)
-                    await self._ack_wechat_delivery(wechat_ack, msg.chat_id)
+                    await qq_signed_delivery.ack_delivery(
+                        self._http,
+                        safe_content,
+                        wechat_ack,
+                        chat_id=msg.chat_id,
+                        logger=logger,
+                    )
                     return
                 except Exception as e:
                     logger.warning(
@@ -907,8 +736,13 @@ class QQChannel(BaseChannel):
                     logger.error("QQ text send failed chat_id={} err={}", msg.chat_id, e)
                     return
             if is_signed_payload:
-                await self._ack_yage_delivery(safe_content, msg.chat_id)
-                await self._ack_wechat_delivery(wechat_ack, msg.chat_id)
+                await qq_signed_delivery.ack_delivery(
+                    self._http,
+                    safe_content,
+                    wechat_ack,
+                    chat_id=msg.chat_id,
+                    logger=logger,
+                )
 
     async def _report_signature_blocked(
         self,
