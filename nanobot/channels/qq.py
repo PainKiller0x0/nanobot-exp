@@ -20,11 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import os
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import urlparse
 
 import aiohttp
 from loguru import logger
@@ -38,13 +36,15 @@ from nanobot.exp.qq import article_requests as qq_article_requests
 from nanobot.exp.qq import article_runtime as qq_article_runtime
 from nanobot.exp.qq import fast_paths as qq_fast_paths
 from nanobot.exp.qq import gateway_greeting as qq_gateway_greeting
+from nanobot.exp.qq import inbound_runtime as qq_inbound_runtime
 from nanobot.exp.qq import local_commands as qq_local_commands
 from nanobot.exp.qq import media_io as qq_media_io
+from nanobot.exp.qq import outbound_runtime as qq_outbound_runtime
 from nanobot.exp.qq import rich_media as qq_rich_media
 from nanobot.exp.qq import signatures as qq_signatures
-from nanobot.exp.qq import signed_delivery as qq_signed_delivery
 from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.exp.qq import stream_runtime as qq_stream_runtime
+from nanobot.exp.qq import text_transport as qq_text_transport
 from nanobot.utils.helpers import split_message
 
 try:
@@ -454,128 +454,20 @@ class QQChannel(BaseChannel):
             logger.warning("QQ client not initialized")
             return
 
-        msg_id = msg.metadata.get("message_id")
-        chat_type = self._chat_type_cache.get(msg.chat_id, "c2c")
-        is_group = chat_type == "group"
-
-        # 1) Send media
-        for media_ref in msg.media or []:
-            ok = await self._send_media(
-                chat_id=msg.chat_id,
-                media_ref=media_ref,
-                msg_id=msg_id,
-                is_group=is_group,
-            )
-            if not ok:
-                filename = (
-                    os.path.basename(urlparse(media_ref).path)
-                    or os.path.basename(media_ref)
-                    or "file"
-                )
-                await self._send_text_only(
-                    chat_id=msg.chat_id,
-                    is_group=is_group,
-                    msg_id=msg_id,
-                    content=f"[Attachment send failed: {filename}]",
-                )
-
-        # 2) Send text (chunked to avoid QQ-side truncation on long payloads)
-        if msg.content and msg.content.strip():
-            prepared = await qq_signed_delivery.prepare_outbound_content(
-                msg.content,
-                session=self._http,
-                run_wechat_signed=self._run_wechat_signed,
-                run_yage_signed=self._run_yage_signed,
-                chat_id=msg.chat_id,
-                logger=logger,
-            )
-            if prepared.suppressed:
-                logger.info("QQ outbound suppressed reason={} chat_id={}", prepared.reason, msg.chat_id)
-                return
-            if prepared.blocked:
-                logger.warning(
-                    "QQ outbound blocked reason={} chat_id={}",
-                    prepared.reason,
-                    msg.chat_id,
-                )
-                await self._report_signature_blocked(
-                    source_chat_id=msg.chat_id,
-                    source_is_group=is_group,
-                    source_msg_id=msg_id,
-                )
-                return
-
-            safe_content = prepared.content
-            is_signed_payload = prepared.is_signed_payload
-            wechat_ack = prepared.wechat_ack
-
-            if is_signed_payload:
-                # Prefer one-shot delivery for raw signed articles.
-                # Only fallback to splitting when QQ rejects oversize payload.
-                try:
-                    await self._send_text_only(
-                        chat_id=msg.chat_id,
-                        is_group=is_group,
-                        msg_id=msg_id,
-                        content=safe_content,
-                    )
-                    await qq_signed_delivery.ack_delivery(
-                        self._http,
-                        safe_content,
-                        wechat_ack,
-                        chat_id=msg.chat_id,
-                        logger=logger,
-                    )
-                    return
-                except Exception as e:
-                    logger.warning(
-                        "QQ signed payload one-shot send failed, fallback to chunking chat_id={} err={}",
-                        msg.chat_id,
-                        e,
-                    )
-
-            if self._should_stream_text(
-                msg_id=msg_id,
-                is_signed_payload=is_signed_payload,
-                content=safe_content,
-            ):
-                try:
-                    await self._send_text_streaming(
-                        chat_id=msg.chat_id,
-                        is_group=is_group,
-                        msg_id=msg_id,
-                        content=safe_content,
-                    )
-                    return
-                except Exception as e:
-                    logger.warning(
-                        "QQ stream send failed, fallback to normal chunking chat_id={} err={}",
-                        msg.chat_id,
-                        e,
-                    )
-
-            max_len = max(200, int(getattr(self.config, "text_chunk_max_len", 1200) or 1200))
-            for chunk in split_message(safe_content, max_len):
-                if not chunk:
-                    continue
-                try:
-                    await self._send_text_only(
-                        chat_id=msg.chat_id,
-                        is_group=is_group,
-                        msg_id=msg_id,
-                        content=chunk,
-                    )
-                except Exception as e:
-                    logger.error("QQ text send failed chat_id={} err={}", msg.chat_id, e)
-                    return
-            if is_signed_payload:
-                await qq_signed_delivery.ack_delivery(
-                    self._http,
-                    safe_content,
-                    wechat_ack,
-                    chat_id=msg.chat_id,
-                    logger=logger,
-                )
+        await qq_outbound_runtime.send_outbound(
+            msg,
+            session=self._http,
+            chat_type_cache=self._chat_type_cache,
+            text_chunk_max_len=int(getattr(self.config, "text_chunk_max_len", 1200) or 1200),
+            send_media=self._send_media,
+            send_text_only=self._send_text_only,
+            send_text_streaming=self._send_text_streaming,
+            should_stream_text=self._should_stream_text,
+            run_wechat_signed=self._run_wechat_signed,
+            run_yage_signed=self._run_yage_signed,
+            report_signature_blocked=self._report_signature_blocked,
+            logger=logger,
+        )
 
     async def _report_signature_blocked(
         self,
@@ -621,22 +513,16 @@ class QQChannel(BaseChannel):
         """Send a plain/markdown text message."""
         if not self._client:
             return
-        content = _strip_silent_marker(content)
-        if not content:
+        payload = qq_text_transport.build_text_payload(
+            content=content,
+            msg_id=msg_id,
+            msg_seq=self._msg_seq + 1,
+            use_markdown=self.config.msg_format == "markdown",
+        )
+        if not payload:
             return
 
         self._msg_seq += 1
-        use_markdown = self.config.msg_format == "markdown"
-        payload: dict[str, Any] = {
-            "msg_type": 2 if use_markdown else 0,
-            "msg_id": msg_id,
-            "msg_seq": self._msg_seq,
-        }
-        if use_markdown:
-            payload["markdown"] = {"content": content}
-        else:
-            payload["content"] = content
-
         await self._post_text_payload(
             chat_id=chat_id,
             is_group=is_group,
@@ -657,10 +543,6 @@ class QQChannel(BaseChannel):
             is_signed_payload=is_signed_payload,
             content=content,
         )
-    def _stream_delta_flush_policy(self, *, first_frame_sent: bool) -> tuple[int, float]:
-        return qq_streaming.delta_flush_policy(self.config, first_frame_sent=first_frame_sent)
-    def _split_stream_chunks(self, text: str) -> list[str]:
-        return qq_streaming.split_stream_chunks(self.config, text)
     async def _send_stream_frame(
         self,
         *,
@@ -674,20 +556,15 @@ class QQChannel(BaseChannel):
         stream_id: str | None = None,
     ) -> str | None:
         self._msg_seq += 1
-        stream_meta: dict[str, Any] = {
-            "state": state,
-            "index": index,
-            "reset": reset,
-        }
-        if stream_id:
-            stream_meta["id"] = stream_id
-        payload: dict[str, Any] = {
-            "msg_type": 2,
-            "msg_id": msg_id,
-            "msg_seq": self._msg_seq,
-            "markdown": {"content": content},
-            "stream": stream_meta,
-        }
+        payload = qq_text_transport.build_stream_payload(
+            content=content,
+            msg_id=msg_id,
+            msg_seq=self._msg_seq,
+            state=state,
+            index=index,
+            reset=reset,
+            stream_id=stream_id,
+        )
         result = await self._post_stream_payload(
             chat_id=chat_id,
             is_group=is_group,
@@ -742,32 +619,15 @@ class QQChannel(BaseChannel):
         payload: dict[str, Any],
     ) -> Any | None:
         """Post QQ stream payload through raw botpy HTTP to avoid SDK kwarg filtering."""
-        self._apply_botpy_http_timeout()
-        if not self._client or not getattr(self._client.api, "_http", None) or Route is None:
-            raise RuntimeError("QQ raw HTTP client is not available for streaming")
-
-        if is_group:
-            endpoint = "/v2/groups/{group_openid}/messages"
-            id_key = "group_openid"
-        else:
-            endpoint = "/v2/users/{openid}/messages"
-            id_key = "openid"
-
-        route = Route("POST", endpoint, **{id_key: chat_id})
-        return await self._client.api._http.request(route, json=payload)
-
-    def _apply_botpy_http_timeout(self) -> None:
-        """Keep botpy sends from hanging longer than our QQ channel budget."""
-        timeout = float(getattr(self.config, "botpy_http_timeout_sec", 0) or 0)
-        if not self._client or timeout <= 0:
-            return
-        try:
-            api = getattr(self._client, "api", None)
-            http = getattr(api, "_http", None)
-            if http is not None:
-                http.timeout = timeout
-        except Exception as e:  # pragma: no cover - defensive only
-            logger.debug("QQ botpy timeout tune skipped: {}", e)
+        return await qq_text_transport.post_stream_payload(
+            self._client,
+            Route,
+            chat_id=chat_id,
+            is_group=is_group,
+            payload=payload,
+            timeout_sec=float(getattr(self.config, "botpy_http_timeout_sec", 0) or 0),
+            logger=logger,
+        )
 
     async def _post_text_payload(
         self,
@@ -777,41 +637,18 @@ class QQChannel(BaseChannel):
         payload: dict[str, Any],
     ) -> Any | None:
         """Post text through botpy, retrying passive replies when botpy reports no response."""
-        self._apply_botpy_http_timeout()
-        can_retry = bool(msg_id) and bool(getattr(self.config, "send_retry_on_empty_response", False))
-        retry_attempts = int(getattr(self.config, "send_retry_attempts", 0) or 0)
-        attempts = 1 + max(0, retry_attempts if can_retry else 0)
-        delay = max(0.0, float(getattr(self.config, "send_retry_delay_sec", 0.0) or 0.0))
-
-        for attempt in range(1, attempts + 1):
-            try:
-                if is_group:
-                    result = await self._client.api.post_group_message(group_openid=chat_id, **payload)
-                else:
-                    result = await self._client.api.post_c2c_message(openid=chat_id, **payload)
-                if can_retry and result is None:
-                    raise asyncio.TimeoutError("QQ API returned no response")
-                return result
-            except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
-                if attempt >= attempts:
-                    logger.warning(
-                        "QQ text send failed after {} attempt(s) chat_id={} msg_seq={} err={}",
-                        attempts,
-                        chat_id,
-                        payload.get("msg_seq"),
-                        e,
-                    )
-                    raise
-                logger.warning(
-                    "QQ text send attempt {}/{} failed chat_id={} msg_seq={} err={}; retrying same msg_seq",
-                    attempt,
-                    attempts,
-                    chat_id,
-                    payload.get("msg_seq"),
-                    e,
-                )
-                if delay:
-                    await asyncio.sleep(delay)
+        return await qq_text_transport.post_text_payload(
+            self._client,
+            chat_id=chat_id,
+            is_group=is_group,
+            msg_id=msg_id,
+            payload=payload,
+            timeout_sec=float(getattr(self.config, "botpy_http_timeout_sec", 0) or 0),
+            retry_on_empty_response=bool(getattr(self.config, "send_retry_on_empty_response", False)),
+            retry_attempts=int(getattr(self.config, "send_retry_attempts", 0) or 0),
+            retry_delay_sec=float(getattr(self.config, "send_retry_delay_sec", 0.0) or 0.0),
+            logger=logger,
+        )
 
     async def _send_media(
         self,
@@ -968,21 +805,15 @@ class QQChannel(BaseChannel):
             return
         self._processed_ids.append(data.id)
 
-        author = getattr(data, "author", None)
-        if is_group:
-            chat_id = getattr(data, "group_openid", "")
-            user_id = getattr(author, "member_openid", "unknown")
-            if not chat_id:
-                logger.warning(
-                    "QQ group message missing group_openid message_id={}",
-                    getattr(data, "id", "unknown"),
-                )
-                return
-            self._chat_type_cache[chat_id] = "group"
-        else:
-            chat_id = str(getattr(author, "id", None) or getattr(author, "user_openid", "unknown"))
-            user_id = chat_id
-            self._chat_type_cache[chat_id] = "c2c"
+        chat_context = qq_inbound_runtime.resolve_chat_context(
+            data,
+            is_group=is_group,
+            chat_type_cache=self._chat_type_cache,
+            logger=logger,
+        )
+        if chat_context is None:
+            return
+        chat_id, user_id = chat_context
 
         ack_message = (getattr(self.config, "ack_message", "") or "").strip()
         if ack_message:
@@ -1019,11 +850,11 @@ class QQChannel(BaseChannel):
 
         media_paths, recv_lines, att_meta = await self._handle_attachments(attachments)
 
-        # Compose content that always contains actionable saved paths
-        if recv_lines:
-            tag = "[Image]" if any(_is_image_name(Path(p).name) for p in media_paths) else "[File]"
-            file_block = "Received files:\n" + "\n".join(recv_lines)
-            content = f"{content}\n\n{file_block}".strip() if content else f"{tag}\n{file_block}"
+        content = qq_inbound_runtime.compose_attachment_content(
+            content,
+            media_paths=media_paths,
+            recv_lines=recv_lines,
+        )
 
         if not content and not media_paths:
             return
