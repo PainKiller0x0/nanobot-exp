@@ -1,76 +1,15 @@
 #!/usr/bin/env python3
 import argparse
-import json
-import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
-from dataclasses import dataclass
-from typing import Any
 
-
-@dataclass
-class Result:
-    name: str
-    ok: bool
-    detail: str
-
-
-def http(method: str, url: str, body: Any = None, timeout: float = 12.0):
-    data = None
-    headers = {}
-    if body is not None:
-        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        headers["content-type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    started = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            text = resp.read().decode("utf-8", "replace")
-            parsed = parse_json(text)
-            return resp.status, parsed, time.time() - started
-    except urllib.error.HTTPError as exc:
-        text = exc.read().decode("utf-8", "replace")
-        return exc.code, parse_json(text), time.time() - started
-    except Exception as exc:
-        return 0, {"error": str(exc)}, time.time() - started
-
-
-def parse_json(text: str):
-    if not text.strip():
-        return None
-    try:
-        return json.loads(text)
-    except Exception:
-        return {"raw": text[:500]}
-
-
-def short(value: Any, limit: int = 140) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return text[:limit] + ("..." if len(text) > limit else "")
-
-
-def add(results: list[Result], name: str, ok: bool, detail: str):
-    results.append(Result(name, ok, detail))
-
-
-def get(url: str, timeout: float = 12.0):
-    return http("GET", url, timeout=timeout)
-
-
-def post(url: str, body: Any, timeout: float = 45.0):
-    return http("POST", url, body=body, timeout=timeout)
-
-
-def command(args: list[str], timeout: float = 20.0):
-    started = time.time()
-    try:
-        proc = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
-        return proc.returncode, (proc.stdout + proc.stderr).strip(), time.time() - started
-    except Exception as exc:
-        return 99, str(exc), time.time() - started
-
+from smoke_common import (
+    CheckResult as Result,
+    add_result as add,
+    get_simple as get,
+    post_simple as post,
+    run_command as command,
+    short,
+)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke-test nanobot-exp local sidecars without spending LLM tokens.")

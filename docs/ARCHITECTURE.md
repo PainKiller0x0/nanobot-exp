@@ -99,6 +99,7 @@ nanobot-exp/
     scripts/deploy-sidecar.sh      构建、安装、重启、状态检查入口
     scripts/check-nanobot-exp-patches.sh
                                     上游同步后检查 exp 必保留补丁
+    scripts/smoke_common.py         smoke 脚本共享 HTTP/JSON/命令 helper
     sbin/                          主机辅助脚本
     systemd/                       systemd unit 和 drop-in
     sources/
@@ -410,6 +411,7 @@ QQ 回复 / dashboard 摘要
 - 服务矩阵和 `sidecarctl` 让 health/log/restart 有统一入口。
 - Trend Radar 提供新闻采集和 MCP 风格工具，但没有把重 Python 服务塞进 core。
 - `_shared/ops_common.py` 已经减少 skill 客户端重复代码，HERMES、LOF wrapper、Trend、RSS skill 和个人 ops summary 都复用同一套 HTTP/时间 helper。
+- `ops/scripts/smoke_common.py` 已经收口 smoke 脚本的 HTTP/JSON、结果记录、短摘要和命令执行 helper；`smoke-sidecars.py` 与 `smoke-model-switch.py` 只保留各自检查流程。
 - RSS 的 cleaner 规则已经收口到 `paid_cleaner.rs`，HTML inline Markdown 保真收口到 `markdown.rs`；handler 只负责接收请求和返回 JSON。
 - RSS 的 LLM settings 重复逻辑已经收口到 `LlmSettings`，避免 handler、settings API、test endpoint 各自处理密钥遮蔽和 `free_only`。
 - Reflexio 的免费模型策略已经收口到 `cost_policy.rs`，`main.rs` 和 `embedding.rs` 不再各自复制 env bool 与免费白名单判断。
@@ -423,7 +425,7 @@ QQ 回复 / dashboard 摘要
 
 - `lof-sidecar-rs` 仍然偏大，但服务管理、系统指标、页面 HTML、反代和 LOF domain 已拆出；下一步重点是 OBP auth/session 和 dashboard/inbox 数据 API 继续 deepening。
 - `wechat-rss-rs` 仍然偏大，虽然 DB、Markdown helper、paid cleaner、pages、settings 和 `yage` adapter 已有边界，但通用 RSS crawler、订阅 API route handler 仍主要挤在 `main.rs`。
-- `ops/` 快照和 `/root/nanobot-ops` 线上工作副本可能漂移；现在已有 `sync-to-live.sh`、`check-architecture.sh` 和 `smoke-sidecars.py`，提交前必须跑。
+- `ops/` 快照和 `/root/nanobot-ops` 线上工作副本可能漂移；现在已有 `sync-to-live.sh`、`check-architecture.sh`、`smoke-sidecars.py`、`smoke-model-switch.py` 和 `smoke_common.py`，提交前必须跑。
 - `/obp/` 和未来 MCP 入口的认证边界要继续显式维护，不能为了方便把 admin 面裸露出去。
 - 部分 systemd unit 指向 `/root/.nanobot` 线上路径，这是设计选择，但恢复环境时必须先恢复 workspace 和 secrets。
 - `weather-expert/weather_check.py` 仍有一套天气专用的节假日/时段逻辑；除非继续扩成多脚本复用，否则先不要硬抽，避免破坏天气文案。
@@ -435,7 +437,7 @@ QQ 回复 / dashboard 摘要
 2. `lof-sidecar-rs` 如果继续加功能，下一步拆 OBP auth/session、dashboard history 和 inbox data API；service manager、system metrics、pages、reverse proxy 和 `lof_domain` 已经完成第一轮拆分。
 3. `wechat-rss-rs` 下一步优先拆通用 RSS crawler、订阅/文章 route handler；`paid_cleaner`、`pages`、`settings` 与 `yage` 继续分别保留为文章格式化、页面、settings/cost policy 和 Kit 来源 adapter 入口。
 4. `weather-expert/weather_check.py` 如果出现第二个天气/通勤脚本，再把节假日和未来时段选择抽进 `_shared`。
-5. 保持 `ops/scripts/check-architecture.sh`、`ops/scripts/smoke-sidecars.py` 和 `ops/scripts/sync-to-live.sh` 三件套，检查 registry/unit/seam、跑线上 smoke、同步 `/root/nanobot-ops`。
+5. 保持 `ops/scripts/check-architecture.sh`、`ops/scripts/smoke_common.py`、`ops/scripts/smoke-sidecars.py`、`ops/scripts/smoke-model-switch.py` 和 `ops/scripts/sync-to-live.sh`，检查 registry/unit/seam、复用 smoke helper、跑线上 smoke、同步 `/root/nanobot-ops`。
 6. 新个人自动化默认采用 `skill + sidecar API`，除非确实必须改 Nanobot core。
 
 ## 上游同步 checklist

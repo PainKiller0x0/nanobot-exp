@@ -1,65 +1,14 @@
 #!/usr/bin/env python3
 import argparse
-import json
-import subprocess
-import time
-import urllib.error
-import urllib.request
-from dataclasses import dataclass, field
-from typing import Any
 
-
-@dataclass
-class Check:
-    name: str
-    ok: bool
-    detail: str = ""
-    data: dict[str, Any] = field(default_factory=dict)
-
-
-def http_json(method: str, url: str, body: Any = None, headers: dict[str, str] | None = None, timeout: float = 20.0):
-    data = None
-    req_headers = dict(headers or {})
-    if body is not None:
-        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        req_headers.setdefault("Content-Type", "application/json")
-    req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
-    started = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            text = raw.decode("utf-8", "replace")
-            try:
-                parsed = json.loads(text) if text.strip() else None
-            except Exception:
-                parsed = {"raw": text}
-            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, parsed, time.time() - started
-    except urllib.error.HTTPError as e:
-        raw = e.read()
-        text = raw.decode("utf-8", "replace")
-        try:
-            parsed = json.loads(text) if text.strip() else None
-        except Exception:
-            parsed = {"raw": text[:500]}
-        return e.code, {k.lower(): v for k, v in e.headers.items()}, parsed, time.time() - started
-
-
-def short(obj: Any, limit: int = 160) -> str:
-    text = json.dumps(obj, ensure_ascii=False, separators=(",", ":")) if not isinstance(obj, str) else obj
-    return text[:limit] + ("..." if len(text) > limit else "")
-
-
-def add(results: list[Check], name: str, ok: bool, detail: str = "", data: dict[str, Any] | None = None):
-    results.append(Check(name, ok, detail, data or {}))
-
-
-def get(url: str, timeout: float = 12.0):
-    return http_json("GET", url, timeout=timeout)
-
-
-def post(url: str, body: Any, headers: dict[str, str] | None = None, timeout: float = 45.0):
-    return http_json("POST", url, body=body, headers=headers, timeout=timeout)
-
+from smoke_common import (
+    CheckResult as Check,
+    add_result as add,
+    get_json as get,
+    post_json as post,
+    run_proc as run_cmd,
+    short,
+)
 
 def route_summary(headers: dict[str, str]) -> str:
     return " ".join(

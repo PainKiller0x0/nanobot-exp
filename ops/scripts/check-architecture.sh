@@ -150,8 +150,13 @@ for path in [
 
 sync_script = ops / "scripts" / "sync-to-live.sh"
 deploy_script = ops / "scripts" / "deploy-sidecar.sh"
+smoke_common = ops / "scripts" / "smoke_common.py"
+smoke_scripts = [ops / "scripts" / "smoke-sidecars.py", ops / "scripts" / "smoke-model-switch.py"]
 require_file(sync_script, "live ops sync script")
 require_file(deploy_script, "sidecar deploy script")
+require_file(smoke_common, "shared smoke helper")
+for script in smoke_scripts:
+    require_file(script, "smoke script")
 if sync_script.exists():
     sync_text = sync_script.read_text(encoding="utf-8", errors="replace")
     for token in ["--check", "--apply", "rsync", "/root/nanobot-ops"]:
@@ -161,6 +166,14 @@ if deploy_script.exists():
     deploy_text = deploy_script.read_text(encoding="utf-8", errors="replace")
     if "sync-to-live.sh" not in deploy_text or "--skip-sync-check" not in deploy_text:
         errors.append("ops/scripts/deploy-sidecar.sh must guard /root/nanobot-ops drift")
+if smoke_common.exists():
+    common_text = smoke_common.read_text(encoding="utf-8", errors="replace")
+    for token in ["http_json", "CheckResult", "run_command"]:
+        if token not in common_text:
+            errors.append(f"ops/scripts/smoke_common.py missing {token}")
+for script in smoke_scripts:
+    if script.exists() and "smoke_common" not in script.read_text(encoding="utf-8", errors="replace"):
+        errors.append(f"{rel(script)} must use ops/scripts/smoke_common.py")
 
 for unit in units:
     path = ops / "systemd" / unit
