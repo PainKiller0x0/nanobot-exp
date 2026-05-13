@@ -41,6 +41,7 @@ from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
 from nanobot.exp.qq import article_requests as qq_article_requests
 from nanobot.exp.qq import fast_paths as qq_fast_paths
+from nanobot.exp.qq import local_commands as qq_local_commands
 from nanobot.exp.qq import signatures as qq_signatures
 from nanobot.exp.qq import rss_sidecar as qq_rss_sidecar
 from nanobot.exp.qq import streaming as qq_streaming
@@ -1497,31 +1498,7 @@ class QQChannel(BaseChannel):
         return qq_fast_paths.match_personal_ops_command(content)
 
     async def _run_personal_ops_command(self, command: str) -> str:
-        """Run the personal ops script without involving the LLM."""
-        script = Path("/root/.nanobot/workspace/skills/personal-ops-assistant/ops_summary.py")
-        if not script.exists():
-            return "运维助手脚本不存在，暂时无法查询。"
-
-        proc = await asyncio.create_subprocess_exec(
-            "python3",
-            str(script),
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            return "运维查询超时了，稍后再试一下。"
-
-        out = stdout.decode("utf-8", errors="replace").strip()
-        err = stderr.decode("utf-8", errors="replace").strip()
-        if proc.returncode != 0:
-            detail = err or out or f"exit {proc.returncode}"
-            return f"运维查询失败：{detail[:500]}"
-        return out or "运维查询完成，但没有输出。"
+        return await qq_local_commands.run_personal_ops_command(command)
 
     async def _try_handle_personal_ops_query(
         self,
@@ -1552,31 +1529,7 @@ class QQChannel(BaseChannel):
         return qq_fast_paths.match_knowledge_inbox_command(content)
 
     async def _run_knowledge_inbox_command(self, args: list[str]) -> str:
-        """Run the knowledge inbox script without involving the LLM."""
-        script = Path("/root/.nanobot/workspace/skills/knowledge-inbox/inbox.py")
-        if not script.exists():
-            return "知识收件箱脚本不存在，暂时无法处理链接。"
-
-        proc = await asyncio.create_subprocess_exec(
-            "python3",
-            str(script),
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=35)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            return "知识收件箱抓取超时了，可能是目标网页太慢或禁止访问。"
-
-        out = stdout.decode("utf-8", errors="replace").strip()
-        err = stderr.decode("utf-8", errors="replace").strip()
-        if proc.returncode != 0:
-            detail = err or out or f"exit {proc.returncode}"
-            return f"知识收件箱失败：{detail[:500]}"
-        return out or "知识收件箱处理完成，但没有输出。"
+        return await qq_local_commands.run_knowledge_inbox_command(args)
 
     async def _try_handle_knowledge_inbox_query(
         self,
