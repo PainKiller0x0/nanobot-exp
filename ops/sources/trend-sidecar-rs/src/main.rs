@@ -1200,10 +1200,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
   </section>
 </div>
 <script>
-const root=document.documentElement;if(localStorage.trendTheme==='dark')root.setAttribute('data-theme','dark');
+const root=document.documentElement;
+function applyTheme(mode){const dark=mode==='dark';const value=dark?'dark':'light';root.setAttribute('data-theme',value);root.classList.toggle('dark',dark);if(document.body){document.body.setAttribute('data-theme',value);document.body.classList.toggle('dark',dark)}['trendTheme','sidecarShellTheme','dashboardTheme'].forEach(k=>localStorage[k]=value)}
+applyTheme((localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage.trendTheme)==='dark'?'dark':'light');
 const BASE=location.pathname.startsWith('/trends')?'/trends':'';
 const API=BASE+'/api';
-function toggleTheme(){const d=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',d?'light':'dark');localStorage.trendTheme=d?'light':'dark'}
+function toggleTheme(){const d=root.getAttribute('data-theme')==='dark'||root.classList.contains('dark');applyTheme(d?'light':'dark')}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function fmtTime(s){if(!s)return '-';try{return new Date(s).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}catch{return s}}
 function itemHtml(x){const summary=x.summary?`<div class="muted" style="margin-top:5px">${esc(x.summary)}</div>`:'';return `<div class="item"><div class="name"><span class="hot">#${esc(x.rank)}</span> [${esc(x.source_name)}] <a href="${esc(x.url||x.mobile_url||'#')}" target="_blank" rel="noopener">${esc(x.title)}</a></div>${summary}<div class="muted mini">score ${esc(x.score)} · seen ${esc(x.seen_count)} · best #${esc(x.best_rank)} · ${esc((x.tags||[]).join(' / '))} · ${fmtTime(x.last_seen_at)}</div></div>`}

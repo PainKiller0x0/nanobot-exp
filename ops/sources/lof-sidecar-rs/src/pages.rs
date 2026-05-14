@@ -64,9 +64,11 @@ pub(crate) async fn dashboard() -> Html<String> {
 </div>
 <script src="/assets/nb-shell.js" data-prefix="/" data-label="今日驾驶舱" defer></script>
 <script>
-const root=document.documentElement;if(localStorage.dashboardTheme==='dark')root.setAttribute('data-theme','dark');
+const root=document.documentElement;
+function applyDashboardTheme(mode){const dark=mode==='dark';const value=dark?'dark':'light';root.setAttribute('data-theme',value);root.classList.toggle('dark',dark);if(document.body){document.body.setAttribute('data-theme',value);document.body.classList.toggle('dark',dark)}['dashboardTheme','sidecarShellTheme','lofTheme','theme'].forEach(k=>localStorage[k]=value)}
+applyDashboardTheme((localStorage.sidecarShellTheme||localStorage.dashboardTheme)==='dark'?'dark':'light');
 const state={system:null,sidecars:null,lof:null,notify:null,rss:null,rssSubs:null,history:null,compact:null};
-function toggleTheme(){const dark=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',dark?'light':'dark');localStorage.dashboardTheme=dark?'light':'dark'}
+function toggleTheme(){const dark=root.getAttribute('data-theme')==='dark'||root.classList.contains('dark');applyDashboardTheme(dark?'light':'dark')}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function pill(cls,text){return `<span class="pill ${cls}">${esc(text)}</span>`}
 function fmtPct(v){return v==null?'-':Number(v).toFixed(2)+'%'}
@@ -241,11 +243,14 @@ pub(crate) async fn shell_js() -> Response {
   const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   function applyTheme(mode){
     const dark = mode === 'dark';
-    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    const value = dark ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', value);
     document.documentElement.classList.toggle('dark', dark);
-    localStorage.sidecarShellTheme = dark ? 'dark' : 'light';
-    localStorage.dashboardTheme = dark ? 'dark' : 'light';
-    localStorage.obp_theme = dark ? 'dark' : 'light';
+    if (document.body) {
+      document.body.setAttribute('data-theme', value);
+      document.body.classList.toggle('dark', dark);
+    }
+    ['sidecarShellTheme','dashboardTheme','obp_theme','lofTheme','theme'].forEach(k => { localStorage[k] = value; });
   }
   function toggleTheme(){
     const cur = document.documentElement.classList.contains('dark') || document.documentElement.getAttribute('data-theme') === 'dark';
@@ -254,7 +259,8 @@ pub(crate) async fn shell_js() -> Response {
   function build(){
     if (document.getElementById('nb-sidecar-shell')) return;
     document.documentElement.classList.add('nb-skin');
-    if (localStorage.sidecarShellTheme === 'dark' || localStorage.dashboardTheme === 'dark' || localStorage.obp_theme === 'dark') applyTheme('dark');
+    const savedTheme = localStorage.sidecarShellTheme || localStorage.dashboardTheme || localStorage.lofTheme || localStorage.theme || localStorage.obp_theme || 'light';
+    applyTheme(savedTheme === 'dark' ? 'dark' : 'light');
     const style = document.createElement('style');
     style.textContent = `
       html.nb-skin{--nb-bg:#f5efe3;--nb-panel:#fffdf7;--nb-soft:#f1e8d8;--nb-text:#202019;--nb-muted:#6d6658;--nb-line:#e2d7c4;--nb-accent:#b96631;--nb-accent2:#287f72;--nb-ok:#16844d;--nb-warn:#b7791f;--nb-bad:#c43d32;--nb-shadow:0 22px 68px rgba(66,45,22,.13)}html.nb-skin.dark,html.nb-skin[data-theme="dark"]{--nb-bg:#101816;--nb-panel:#1b2621;--nb-soft:#24322b;--nb-text:#edf5ea;--nb-muted:#a9b6a5;--nb-line:#304038;--nb-accent:#f0a35c;--nb-accent2:#78c8b8;--nb-ok:#76d39a;--nb-warn:#f3c468;--nb-bad:#ff8278;--nb-shadow:0 24px 76px rgba(0,0,0,.36)}
@@ -321,11 +327,13 @@ pub(crate) async fn workbench_page() -> impl IntoResponse {
 </div>
 <script src="/assets/nb-shell.js" data-prefix="/workbench" data-label="内容工作台" defer></script>
 <script>
-const root=document.documentElement;if(localStorage.dashboardTheme==='dark'||localStorage.sidecarShellTheme==='dark')root.setAttribute('data-theme','dark');
+const root=document.documentElement;
+function applyWorkbenchTheme(mode){const dark=mode==='dark';const value=dark?'dark':'light';root.setAttribute('data-theme',value);root.classList.toggle('dark',dark);if(document.body){document.body.setAttribute('data-theme',value);document.body.classList.toggle('dark',dark)}['dashboardTheme','sidecarShellTheme','lofTheme','theme'].forEach(k=>localStorage[k]=value)}
+applyWorkbenchTheme((localStorage.sidecarShellTheme||localStorage.dashboardTheme)==='dark'?'dark':'light');
 const state={rss:[],inbox:[],trends:[],sidecars:null,active:'all',marks:JSON.parse(localStorage.nbWorkbenchMarks||'{}')};
 const filters=[['all','全部'],['rss','RSS 文章'],['inbox','知识收件箱'],['trend','热点雷达'],['saved','已收藏'],['unread','未读']];
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-function toggleTheme(){const dark=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',dark?'light':'dark');localStorage.dashboardTheme=dark?'light':'dark';localStorage.sidecarShellTheme=dark?'light':'dark'}
+function toggleTheme(){const dark=root.getAttribute('data-theme')==='dark'||root.classList.contains('dark');applyWorkbenchTheme(dark?'light':'dark')}
 function saveMarks(){localStorage.nbWorkbenchMarks=JSON.stringify(state.marks)}
 async function getJson(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(url+' '+r.status);return r.json()}
 function cleanMd(s){return String(s??'').replace(/\[([^\]]+)\]\(([^)]+)\)/g,'$1').replace(/[*_`#>]/g,'').replace(/^\s*[-*+]\s+/gm,'').replace(/\s+/g,' ').trim()}
@@ -360,7 +368,7 @@ loadAll();
 }
 
 pub(crate) async fn common_js() -> Response {
-    const COMMON_JS: &str = r##"window.NB=window.NB||(()=>{const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));function fmtTime(s,f='-'){if(!s)return f;try{return new Date(s).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}catch{return s||f}}function host(u,f='-'){try{return new URL(u).host}catch{return f}}function bindTheme(key,opt={}){const root=document.documentElement;const also=opt.also||[];if(localStorage[key]==='dark'||also.some(k=>localStorage[k]==='dark'))root.setAttribute('data-theme','dark');return function(){const dark=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',dark?'light':'dark');localStorage[key]=dark?'light':'dark'}}function stat(k,v,n=''){return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="mini">${esc(n)}</div></div>`}function shortList(items,empty='-',cls='pill warn'){return (items||[]).length?(items||[]).map(v=>`<span class="${esc(cls)}">${esc(v)}</span>`).join(' '):`<span class="muted">${esc(empty)}</span>`}function fallbackCopy(text,done){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done&&done()}function copyText(text,btn){if(!text)return;const done=()=>{if(!btn)return;const old=btn.textContent;btn.textContent='已复制';setTimeout(()=>btn.textContent=old,1200)};if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,done));else fallbackCopy(text,done)}function copyFromButton(btn){return copyText(btn?.dataset?.copy||'',btn)}function cmdHtml(label,text){return `<div class="cmdtop"><span>${esc(label)}</span><button class="copybtn" data-copy="${esc(text||'')}" onclick="NB.copyFromButton(this)">复制</button></div><code>${esc(text||'-')}</code>`}function loadShell(){if(document.querySelector('script[src="/assets/nb-shell.js"]'))return;const sc=document.createElement('script');sc.src='/assets/nb-shell.js';sc.defer=true;sc.dataset.label=document.title||'Nanobot';document.head.appendChild(sc)}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',loadShell);else loadShell();return{esc,fmtTime,host,bindTheme,stat,shortList,copyText,copyFromButton,cmdHtml,fallbackCopy}})();"##;
+    const COMMON_JS: &str = r##"window.NB=window.NB||(()=>{const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));function fmtTime(s,f='-'){if(!s)return f;try{return new Date(s).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}catch{return s||f}}function host(u,f='-'){try{return new URL(u).host}catch{return f}}function applyTheme(mode,key,also=[]){const dark=mode==='dark';const value=dark?'dark':'light';const root=document.documentElement;root.setAttribute('data-theme',value);root.classList.toggle('dark',dark);if(document.body){document.body.setAttribute('data-theme',value);document.body.classList.toggle('dark',dark)}[key,...also,'sidecarShellTheme','dashboardTheme'].filter(Boolean).forEach(k=>localStorage[k]=value)}function bindTheme(key,opt={}){const root=document.documentElement;const also=opt.also||[];const saved=localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage[key]||also.map(k=>localStorage[k]).find(v=>v==='dark'||v==='light')||'light';applyTheme(saved==='dark'?'dark':'light',key,also);return function(){const dark=root.getAttribute('data-theme')==='dark'||root.classList.contains('dark');applyTheme(dark?'light':'dark',key,also)}}function stat(k,v,n=''){return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="mini">${esc(n)}</div></div>`}function shortList(items,empty='-',cls='pill warn'){return (items||[]).length?(items||[]).map(v=>`<span class="${esc(cls)}">${esc(v)}</span>`).join(' '):`<span class="muted">${esc(empty)}</span>`}function fallbackCopy(text,done){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done&&done()}function copyText(text,btn){if(!text)return;const done=()=>{if(!btn)return;const old=btn.textContent;btn.textContent='已复制';setTimeout(()=>btn.textContent=old,1200)};if(navigator.clipboard&&window.isSecureContext)navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,done));else fallbackCopy(text,done)}function copyFromButton(btn){return copyText(btn?.dataset?.copy||'',btn)}function cmdHtml(label,text){return `<div class="cmdtop"><span>${esc(label)}</span><button class="copybtn" data-copy="${esc(text||'')}" onclick="NB.copyFromButton(this)">复制</button></div><code>${esc(text||'-')}</code>`}function loadShell(){if(document.querySelector('script[src="/assets/nb-shell.js"]'))return;const sc=document.createElement('script');sc.src='/assets/nb-shell.js';sc.defer=true;sc.dataset.label=document.title||'Nanobot';document.head.appendChild(sc)}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',loadShell);else loadShell();return{esc,fmtTime,host,bindTheme,stat,shortList,copyText,copyFromButton,cmdHtml,fallbackCopy}})();"##;
     (
         [(
             header::CONTENT_TYPE,
@@ -551,9 +559,9 @@ pub(crate) async fn index() -> Html<String> {
   <title>LOF Sidecar · Rust</title>
   <style>
     :root{--bg:#f4f7fb;--panel:#ffffff;--fg:#0d1b2a;--muted:#4f5d75;--accent:#0ea5e9;--ok:#16a34a;--err:#dc2626;--warn:#d97706;}
-    .dark{--bg:#0b1220;--panel:#111b2e;--fg:#e5eefc;--muted:#a2b1cc;--accent:#38bdf8;--ok:#22c55e;--err:#f87171;--warn:#f59e0b;}
+    .dark,[data-theme="dark"]{--bg:#0b1220;--panel:#111b2e;--fg:#e5eefc;--muted:#a2b1cc;--accent:#38bdf8;--ok:#22c55e;--err:#f87171;--warn:#f59e0b;}
     body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif;background:linear-gradient(135deg,var(--bg),#d9e4f5 140%);color:var(--fg)}
-    .dark body{background:linear-gradient(135deg,var(--bg),#1a2945 140%)}
+    .dark body,[data-theme="dark"] body{background:linear-gradient(135deg,var(--bg),#1a2945 140%)}
     .wrap{max-width:980px;margin:28px auto;padding:0 16px}
     .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
     .card{background:var(--panel);border-radius:16px;padding:18px;box-shadow:0 10px 28px rgba(2,8,23,.12);margin-bottom:14px}
@@ -563,19 +571,19 @@ pub(crate) async fn index() -> Html<String> {
     .k{font-size:12px;color:var(--muted)} .v{font-size:18px;font-weight:700}
     .ok{color:var(--ok)} .err{color:var(--err)} .warn{color:var(--warn)}
     pre{white-space:pre-wrap;word-break:break-word;background:#0f172a;color:#e2e8f0;padding:14px;border-radius:12px;max-height:420px;overflow:auto}
-    .dark pre{background:#020617}
+    .dark pre,[data-theme="dark"] pre{background:#020617}
     .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
     .ctrl{border:1px solid #cbd5e1;border-radius:10px;padding:9px 12px;min-width:220px;background:#fff;color:#0d1b2a}
-    .dark .ctrl{background:#0f172a;color:#e2e8f0;border-color:#334155}
+    .dark .ctrl,[data-theme="dark"] .ctrl{background:#0f172a;color:#e2e8f0;border-color:#334155}
     .statusline{font-size:12px;color:var(--muted)}
     .autoctl{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;user-select:none}
     .autoctl input{width:16px;height:16px;accent-color:var(--accent)}
     table{width:100%;border-collapse:collapse;font-size:12px}
     th,td{padding:8px 6px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:middle}
-    .dark th,.dark td{border-bottom-color:#1e293b}
+    .dark th,.dark td,[data-theme="dark"] th,[data-theme="dark"] td{border-bottom-color:#1e293b}
     tbody tr{transition:background-color .12s ease}
     tbody tr:hover{background:rgba(14,165,233,.08)}
-    .dark tbody tr:hover{background:rgba(56,189,248,.14)}
+    .dark tbody tr:hover,[data-theme="dark"] tbody tr:hover{background:rgba(56,189,248,.14)}
     th{font-size:12px;color:var(--muted)}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
     th.sortable{cursor:pointer;user-select:none}
@@ -680,14 +688,22 @@ pub(crate) async fn index() -> Html<String> {
 </div>
 <script>
 const root=document.documentElement;
-if(localStorage.theme==='dark'){root.classList.add('dark')}
+function applyLofTheme(mode){
+  const dark=mode==='dark';
+  const value=dark?'dark':'light';
+  root.setAttribute('data-theme',value);
+  root.classList.toggle('dark',dark);
+  if(document.body){document.body.setAttribute('data-theme',value);document.body.classList.toggle('dark',dark)}
+  ['lofTheme','theme','sidecarShellTheme','dashboardTheme'].forEach(k=>localStorage[k]=value);
+}
+applyLofTheme((localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage.lofTheme||localStorage.theme)==='dark'?'dark':'light');
 let latestBoard=null;
 let sortState={key:'rt_premium_pct',dir:'desc',type:'num'};
 let histRow=null;
 const BOARD_AUTO_REFRESH_MS=30000;
 let boardAutoRefreshTimer=null;
 let boardRefreshBusy=false;
-function toggleTheme(){root.classList.toggle('dark');localStorage.theme=root.classList.contains('dark')?'dark':'light'}
+function toggleTheme(){const dark=root.getAttribute('data-theme')==='dark'||root.classList.contains('dark');applyLofTheme(dark?'light':'dark')}
 function fmt(s){try{return new Date(s).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}catch{return s||'-'}}
 function esc(s){return String(s??'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]))}
 function histClass(v){
@@ -900,6 +916,8 @@ mod tests {
         assert!(html.contains("boardRefreshBtn"));
         assert!(html.contains("boardAutoRefresh"));
         assert!(html.contains("BOARD_AUTO_REFRESH_MS=30000"));
+        assert!(html.contains("applyLofTheme"));
+        assert!(html.contains("data-theme"));
         assert!(!html.contains("setInterval(refresh,10000)"));
     }
 }

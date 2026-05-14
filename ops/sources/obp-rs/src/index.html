@@ -34,7 +34,7 @@
         <div class="flex flex-wrap items-start gap-2">
           <button @click="refresh()" class="px-3 py-2 rounded-xl bg-slate-900 text-white dark:bg-white dark:text-slate-900 text-sm font-bold">刷新</button>
           <button @click="showAuth=true" class="btn">登录设置</button>
-          <button @click="dark=!dark;localStorage.obp_theme=dark?'dark':'light'" class="btn" x-text="dark?'浅色':'深色'"></button>
+          <button @click="dark=!dark;const v=dark?'dark':'light';localStorage.obp_theme=v;localStorage.sidecarShellTheme=v;localStorage.dashboardTheme=v" class="btn" x-text="dark?'浅色':'深色'"></button>
         </div>
       </div>
       <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
@@ -292,7 +292,7 @@
   <script>
     function detectBase(){const path=location.pathname.replace(/\/+/g,'/');const hit=path.match(/^(.*?\/obp)(?:\/|$)/);return hit?hit[1].replace(/(\/obp)+$/,'/obp'):''}
     function joinPath(base,path){const joined=(String(base||'').replace(/\/+$/,'')+'/'+String(path||'').replace(/^\/+/,'')).replace(/\/+/g,'/');return joined.replace(/(\/obp)(?:\/obp)+/g,'$1')}
-    function app(){return{dark:localStorage.obp_theme==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,ledgerMode:'paid',lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
+    function app(){return{dark:(localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage.obp_theme)==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,ledgerMode:'paid',lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
       get apiUrl(){return location.origin + joinPath(this.base,'/v1')},
       get chatUrl(){return location.origin + joinPath(this.base,'/v1/chat/completions')},
       get anthropicUrl(){return location.origin + joinPath(this.base,'/anthropic/v1/messages')},

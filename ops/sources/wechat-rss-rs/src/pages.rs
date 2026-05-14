@@ -81,7 +81,7 @@ function toCN(v){if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()
 function ts(v){const d=new Date(v||'');return Number.isNaN(d.getTime())?0:d.getTime();}
 const THEME_KEY='wechat_rss_theme';
 function setThemeBtn(mode){const el=document.getElementById('themeToggle');if(!el)return;el.textContent=mode==='dark'?'Theme: Dark':'Theme: Light';}
-function applyTheme(mode){document.documentElement.setAttribute('data-theme',mode);document.body&&document.body.setAttribute('data-theme',mode);setThemeBtn(mode);if(!localStorage.getItem(MD_THEME_KEY))applyMdPreviewTheme(mode);}
+function applyTheme(mode){const dark=mode==='dark';document.documentElement.setAttribute('data-theme',mode);document.documentElement.classList.toggle('dark',dark);if(document.body){document.body.setAttribute('data-theme',mode);document.body.classList.toggle('dark',dark)}localStorage.setItem(THEME_KEY,mode);localStorage.setItem('sidecarShellTheme',mode);localStorage.setItem('dashboardTheme',mode);setThemeBtn(mode);if(!localStorage.getItem(MD_THEME_KEY))applyMdPreviewTheme(mode);}
 function initTheme(){const saved=localStorage.getItem(THEME_KEY);if(saved==='dark'||saved==='light'){applyTheme(saved);return;}const prefers=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;applyTheme(prefers?'dark':'light');}
 function toggleTheme(){const cur=document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';const next=cur==='dark'?'light':'dark';localStorage.setItem(THEME_KEY,next);applyTheme(next);}
 function renderAutoHint(status){
@@ -166,7 +166,7 @@ html[data-theme="dark"],body[data-theme="dark"]{color-scheme:dark;--bg:#14181a;-
 <div class="card"><div class="bar"><span class="pill" id="meta">等待生成</span><button onclick="copyMd()">复制 Markdown</button><button onclick="downloadMd()">下载 .md</button><button id="refineBtn" onclick="refineWithLlm()">LLM &#31934;&#20462;</button></div><label>Markdown 结果</label><textarea id="output" class="out" readonly placeholder="生成后的 Markdown 会出现在这里。"></textarea><div class="status" id="status"></div><div class="footer">这个工具适合你已购买后个人整理归档。RSS 订阅库仍只保存公开可抓到的内容；付费全文不自动入库，避免误把试读导流当完整文章。</div></div></section></div>
 <script>
 const KEY='paid_cleaner_theme';let lastFilename='wechat-paid-article.md';let capturedPasteHtml='';let capturedPasteText='';
-function applyTheme(t){document.documentElement.setAttribute('data-theme',t);document.body&&document.body.setAttribute('data-theme',t);localStorage.setItem(KEY,t)}
+function applyTheme(t){const dark=t==='dark';document.documentElement.setAttribute('data-theme',t);document.documentElement.classList.toggle('dark',dark);if(document.body){document.body.setAttribute('data-theme',t);document.body.classList.toggle('dark',dark)}localStorage.setItem(KEY,t);localStorage.setItem('sidecarShellTheme',t);localStorage.setItem('dashboardTheme',t)}
 function initTheme(){const saved=localStorage.getItem(KEY);applyTheme(saved==='dark'||saved==='light'?saved:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'))}
 function toggleTheme(){applyTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark')}
 function setStatus(t){document.getElementById('status').textContent=t||''}

@@ -53,8 +53,10 @@
   </section>
 </div>
 <script>
-const root=document.documentElement;if(localStorage.reflexioTheme==='dark')root.setAttribute('data-theme','dark');
-function toggleTheme(){const d=root.getAttribute('data-theme')==='dark';root.setAttribute('data-theme',d?'light':'dark');localStorage.reflexioTheme=d?'light':'dark'}
+const root=document.documentElement;
+function applyTheme(mode){const dark=mode==='dark';const value=dark?'dark':'light';root.setAttribute('data-theme',value);root.classList.toggle('dark',dark);if(document.body){document.body.setAttribute('data-theme',value);document.body.classList.toggle('dark',dark)}['reflexioTheme','sidecarShellTheme','dashboardTheme'].forEach(k=>localStorage[k]=value)}
+applyTheme((localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage.reflexioTheme)==='dark'?'dark':'light');
+function toggleTheme(){const d=root.getAttribute('data-theme')==='dark'||root.classList.contains('dark');applyTheme(d?'light':'dark')}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 async function getJson(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(url+' '+r.status);return r.json()}
 async function postJson(url,payload){const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});if(!r.ok)throw new Error(url+' '+r.status);return r.json()}
