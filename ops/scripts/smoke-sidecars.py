@@ -92,6 +92,9 @@ def main() -> int:
     rc, output, dt = command(["/root/nanobot/ops/scripts/check-architecture.sh"], timeout=30)
     add(results, "architecture.check", rc == 0, f"rc={rc} {dt:.2f}s {short(output)}")
 
+    rc, output, dt = command(["/root/nanobot/ops/scripts/smoke-dashboard-ui.py"], timeout=30)
+    add(results, "dashboard.ui_audit", rc == 0, f"rc={rc} {dt:.2f}s {short(output)}")
+
     print("Nanobot sidecar smoke")
     failed = 0
     optional_failed = 0

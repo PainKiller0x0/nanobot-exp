@@ -20,6 +20,7 @@ use tokio::{process::Command, sync::Mutex, time};
 
 const DEFAULT_CONFIG: &str = "/root/.nanobot/workspace/skills/notify-sidecar-rs/config.json";
 const TZ_SHANGHAI_OFFSET: i32 = 8 * 3600;
+const JOB_HISTORY_LIMIT: usize = 7;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct AppConfig {
@@ -58,7 +59,7 @@ struct TokenCache {
     expires_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct Stats {
     total_runs: u64,
     success_runs: u64,
@@ -67,7 +68,7 @@ struct Stats {
     sent_messages: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct JobStatus {
     last_started_at: Option<String>,
     last_finished_at: Option<String>,
@@ -79,6 +80,25 @@ struct JobStatus {
     last_stdout_preview: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct JobRunRecord {
+    started_at: String,
+    finished_at: String,
+    duration_ms: u128,
+    status: String,
+    trigger: String,
+    sent: bool,
+    error: Option<String>,
+    stdout_preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct PersistedRuntimeSnapshot {
+    stats: Option<Stats>,
+    jobs: Option<HashMap<String, JobStatus>>,
+    job_history: Option<HashMap<String, Vec<JobRunRecord>>>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct RuntimeSnapshot {
     started_at: String,
@@ -87,6 +107,7 @@ struct RuntimeSnapshot {
     jobs: HashMap<String, JobStatus>,
     configured_jobs: Vec<JobConfig>,
     job_details: Vec<JobDetail>,
+    job_history: HashMap<String, Vec<JobRunRecord>>,
     target_kind: String,
     target_set: bool,
 }
@@ -103,6 +124,7 @@ struct JobDetail {
     timeout_secs: u64,
     next_runs: Vec<String>,
     status: JobStatus,
+    recent_runs: Vec<JobRunRecord>,
 }
 
 #[derive(Debug)]
@@ -110,6 +132,7 @@ struct RuntimeState {
     started_at: String,
     stats: Stats,
     jobs: HashMap<String, JobStatus>,
+    job_history: HashMap<String, Vec<JobRunRecord>>,
     last_run_keys: HashMap<String, String>,
     running_jobs: HashSet<String>,
     msg_seq: u64,
@@ -121,6 +144,7 @@ impl RuntimeState {
             started_at: now_iso(),
             stats: Stats::default(),
             jobs: HashMap::new(),
+            job_history: HashMap::new(),
             last_run_keys: HashMap::new(),
             running_jobs: HashSet::new(),
             msg_seq: current_unix() as u64,
@@ -182,11 +206,12 @@ async fn main() -> anyhow_like::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(8094);
 
+    let runtime_state = load_runtime_state(&config.state_file).await;
     let state = Arc::new(AppState {
         config,
         qq,
         http: Client::builder().timeout(Duration::from_secs(60)).build()?,
-        runtime: Arc::new(Mutex::new(RuntimeState::new())),
+        runtime: Arc::new(Mutex::new(runtime_state)),
         token: Arc::new(Mutex::new(TokenCache::default())),
     });
 
@@ -209,6 +234,31 @@ async fn main() -> anyhow_like::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn load_runtime_state(path: &str) -> RuntimeState {
+    let mut runtime = RuntimeState::new();
+    let Ok(text) = tokio::fs::read_to_string(path).await else {
+        return runtime;
+    };
+    let Ok(snapshot) = serde_json::from_str::<PersistedRuntimeSnapshot>(&text) else {
+        return runtime;
+    };
+    if let Some(stats) = snapshot.stats {
+        runtime.stats = stats;
+    }
+    if let Some(jobs) = snapshot.jobs {
+        runtime.jobs = jobs;
+    }
+    if let Some(mut history) = snapshot.job_history {
+        for runs in history.values_mut() {
+            if runs.len() > JOB_HISTORY_LIMIT {
+                runs.truncate(JOB_HISTORY_LIMIT);
+            }
+        }
+        runtime.job_history = history;
+    }
+    runtime
 }
 
 async fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow_like::Result<T> {
@@ -439,7 +489,8 @@ async fn snapshot(state: &Arc<AppState>) -> RuntimeSnapshot {
         stats: runtime.stats.clone(),
         jobs: runtime.jobs.clone(),
         configured_jobs: state.config.jobs.clone(),
-        job_details: build_job_details(&state.config.jobs, &runtime.jobs),
+        job_details: build_job_details(&state.config.jobs, &runtime.jobs, &runtime.job_history),
+        job_history: runtime.job_history.clone(),
         target_kind: state.qq.target_kind.clone(),
         target_set: !state.qq.target_id.is_empty(),
     }
@@ -516,13 +567,31 @@ async fn run_job(state: Arc<AppState>, job: JobConfig, trigger: &str) -> RunResp
             "error" => runtime.stats.error_runs += 1,
             _ => runtime.stats.success_runs += 1,
         }
+        let finished_at = now_iso();
         let entry = runtime.jobs.entry(job.id.clone()).or_default();
-        entry.last_finished_at = Some(now_iso());
+        entry.last_finished_at = Some(finished_at.clone());
         entry.last_duration_ms = Some(duration_ms);
-        entry.last_status = Some(status);
+        entry.last_status = Some(status.clone());
         entry.last_sent = sent;
-        entry.last_error = error;
-        entry.last_stdout_preview = preview;
+        entry.last_error = error.clone();
+        entry.last_stdout_preview = preview.clone();
+        let history_entry = runtime.job_history.entry(job.id.clone()).or_default();
+        history_entry.insert(
+            0,
+            JobRunRecord {
+                started_at,
+                finished_at,
+                duration_ms,
+                status,
+                trigger: trigger.to_string(),
+                sent,
+                error,
+                stdout_preview: preview,
+            },
+        );
+        if history_entry.len() > JOB_HISTORY_LIMIT {
+            history_entry.truncate(JOB_HISTORY_LIMIT);
+        }
         let _ = persist_state(&state, &runtime).await;
     }
 
@@ -772,7 +841,8 @@ async fn persist_state(state: &Arc<AppState>, runtime: &RuntimeState) -> anyhow_
         stats: runtime.stats.clone(),
         jobs: runtime.jobs.clone(),
         configured_jobs: state.config.jobs.clone(),
-        job_details: build_job_details(&state.config.jobs, &runtime.jobs),
+        job_details: build_job_details(&state.config.jobs, &runtime.jobs, &runtime.job_history),
+        job_history: runtime.job_history.clone(),
         target_kind: state.qq.target_kind.clone(),
         target_set: !state.qq.target_id.is_empty(),
     };
@@ -786,7 +856,11 @@ async fn persist_state(state: &Arc<AppState>, runtime: &RuntimeState) -> anyhow_
     Ok(())
 }
 
-fn build_job_details(jobs: &[JobConfig], statuses: &HashMap<String, JobStatus>) -> Vec<JobDetail> {
+fn build_job_details(
+    jobs: &[JobConfig],
+    statuses: &HashMap<String, JobStatus>,
+    history: &HashMap<String, Vec<JobRunRecord>>,
+) -> Vec<JobDetail> {
     jobs.iter()
         .map(|job| JobDetail {
             id: job.id.clone(),
@@ -806,6 +880,7 @@ fn build_job_details(jobs: &[JobConfig], statuses: &HashMap<String, JobStatus>) 
                 Vec::new()
             },
             status: statuses.get(&job.id).cloned().unwrap_or_default(),
+            recent_runs: history.get(&job.id).cloned().unwrap_or_default(),
         })
         .collect()
 }

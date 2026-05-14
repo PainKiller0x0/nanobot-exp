@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -1076,6 +1076,181 @@ fn json_array(value: &serde_json::Value, key: &str) -> Vec<serde_json::Value> {
         .unwrap_or_default()
 }
 
+fn json_text(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(serde_json::Value::Bool(v)) => v.to_string(),
+        Some(v) if !v.is_null() => v.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn today_actions(
+    task_alerts: &[serde_json::Value],
+    lof_high: &[serde_json::Value],
+    rss_count: usize,
+    trend_count: usize,
+    inbox_count: usize,
+) -> Vec<serde_json::Value> {
+    let mut actions = Vec::new();
+
+    for alert in task_alerts.iter().take(2) {
+        let title = json_text(alert.get("name"));
+        let id = json_text(alert.get("id"));
+        actions.push(serde_json::json!({
+            "level": "bad",
+            "title": format!("任务异常：{}", if title.is_empty() { id } else { title }),
+            "body": json_text(alert.get("reason")),
+            "action": "打开任务追踪",
+            "url": "/tasks",
+        }));
+    }
+
+    for row in lof_high.iter().take(2) {
+        let code = json_text(row.get("code"));
+        let name = json_text(row.get("name"));
+        let premium = row
+            .get("rt_premium_pct")
+            .and_then(|v| v.as_f64())
+            .map(|v| format!("{v:.2}%"))
+            .unwrap_or_else(|| "-".to_string());
+        actions.push(serde_json::json!({
+            "level": "warn",
+            "title": format!("关注高溢价：{} {}", code, name),
+            "body": format!("实时溢价 {premium}，先看是否值得避开追高。"),
+            "action": "打开投资看板",
+            "url": "/lof",
+        }));
+    }
+
+    if actions.len() < 3 && rss_count > 0 {
+        actions.push(serde_json::json!({
+            "level": "info",
+            "title": format!("阅读今日 RSS：{rss_count} 篇"),
+            "body": "优先看微信订阅和鸭哥 AI 要闻，广告/付费导流已由 RSS 侧过滤。",
+            "action": "打开内容工作台",
+            "url": "/workbench",
+        }));
+    }
+    if actions.len() < 3 && trend_count > 0 {
+        actions.push(serde_json::json!({
+            "level": "info",
+            "title": format!("扫一眼热点雷达：{trend_count} 条"),
+            "body": "只看与科技、经济、政策相关的高信号新闻，跳过低价值娱乐噪音。",
+            "action": "打开内容工作台",
+            "url": "/workbench",
+        }));
+    }
+    if actions.len() < 3 && inbox_count > 0 {
+        actions.push(serde_json::json!({
+            "level": "info",
+            "title": format!("收件箱待处理：{inbox_count} 条"),
+            "body": "把值得看的材料标记、复制 Markdown 或直接删除无效条目。",
+            "action": "打开知识收件箱",
+            "url": "/inbox",
+        }));
+    }
+    if actions.is_empty() {
+        actions.push(serde_json::json!({
+            "level": "ok",
+            "title": "今天没有红色事项",
+            "body": "系统、任务和投资雷达都没有需要立刻处理的告警。",
+            "action": "保持观察",
+            "url": "/",
+        }));
+    }
+    actions.truncate(3);
+    actions
+}
+
+fn collect_source_names(root: &serde_json::Value, names: &mut BTreeSet<String>) {
+    if let Some(map) = root.get("by_source").and_then(|v| v.as_object()) {
+        for key in map.keys() {
+            names.insert(key.clone());
+        }
+    }
+    if let Some(map) = root.get("by_source_month").and_then(|v| v.as_object()) {
+        for key in map.keys() {
+            names.insert(key.clone());
+        }
+    }
+}
+
+fn bucket_for_source(root: &serde_json::Value, source: &str, month: &str) -> serde_json::Value {
+    root.get("by_source_month")
+        .and_then(|v| v.get(source))
+        .and_then(|v| v.get(month))
+        .or_else(|| root.get("by_source").and_then(|v| v.get(source)))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn bucket_requests(bucket: &serde_json::Value) -> u64 {
+    bucket
+        .get("requests")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_default()
+}
+
+fn bucket_cost(bucket: &serde_json::Value) -> f64 {
+    bucket
+        .get("cost_cny")
+        .and_then(|v| v.as_f64())
+        .unwrap_or_default()
+}
+
+fn source_cost_rows(stats: &serde_json::Value) -> Vec<serde_json::Value> {
+    let month = shanghai_now().format("%Y-%m").to_string();
+    let mut names = BTreeSet::new();
+    collect_source_names(stats, &mut names);
+    if let Some(paid) = stats.get("paid") {
+        collect_source_names(paid, &mut names);
+    }
+    if let Some(free) = stats.get("free") {
+        collect_source_names(free, &mut names);
+    }
+
+    let paid_root = stats.get("paid").unwrap_or(&serde_json::Value::Null);
+    let free_root = stats.get("free").unwrap_or(&serde_json::Value::Null);
+    let mut rows = names
+        .into_iter()
+        .map(|source| {
+            let paid = bucket_for_source(paid_root, &source, &month);
+            let free = bucket_for_source(free_root, &source, &month);
+            let total = bucket_for_source(stats, &source, &month);
+            let paid_cost = bucket_cost(&paid);
+            let total_requests = bucket_requests(&total)
+                .max(bucket_requests(&paid).saturating_add(bucket_requests(&free)));
+            serde_json::json!({
+                "source": source,
+                "month": month,
+                "paid": paid,
+                "free": free,
+                "total": total,
+                "paid_cost_cny": paid_cost,
+                "free_requests": bucket_requests(&free),
+                "total_requests": total_requests,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|a, b| {
+        bucket_cost(b.get("paid").unwrap_or(&serde_json::Value::Null))
+            .partial_cmp(&bucket_cost(
+                a.get("paid").unwrap_or(&serde_json::Value::Null),
+            ))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                bucket_requests(b.get("total").unwrap_or(&serde_json::Value::Null)).cmp(
+                    &bucket_requests(a.get("total").unwrap_or(&serde_json::Value::Null)),
+                )
+            })
+    });
+    rows.truncate(20);
+    rows
+}
+
 async fn api_today(State(state): State<AppState>) -> impl IntoResponse {
     let rss = fetch_json_value(
         &state.http,
@@ -1123,14 +1298,26 @@ async fn api_today(State(state): State<AppState>) -> impl IntoResponse {
         })
         .collect::<Vec<_>>();
 
+    let rss_items = json_array(&rss, "items");
+    let trend_items = json_array(&trend, "top_items");
+    let inbox_items = json_array(&inbox, "items");
+    let actions = today_actions(
+        &task_alerts,
+        &lof_high,
+        rss_items.len(),
+        trend_items.len(),
+        inbox_items.len(),
+    );
+
     Json(serde_json::json!({
         "ok": true,
         "now": shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-        "rss_items": json_array(&rss, "items"),
-        "trend_items": json_array(&trend, "top_items"),
-        "inbox_items": json_array(&inbox, "items"),
+        "rss_items": rss_items,
+        "trend_items": trend_items,
+        "inbox_items": inbox_items,
         "lof_high": lof_high,
         "task_alerts": task_alerts,
+        "actions": actions,
     }))
 }
 
@@ -1143,6 +1330,7 @@ async fn api_task_trace(State(state): State<AppState>) -> impl IntoResponse {
         "now": shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
         "stats": notify.get("stats").cloned().unwrap_or_else(|| serde_json::json!({})),
         "items": notify_job_items(&notify),
+        "history_ready": true,
     }))
 }
 
@@ -1224,6 +1412,8 @@ async fn api_model_routes(State(state): State<AppState>) -> impl IntoResponse {
         }
     }
 
+    let source_costs = source_cost_rows(&stats);
+
     Json(serde_json::json!({
         "ok": true,
         "now": shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
@@ -1232,6 +1422,7 @@ async fn api_model_routes(State(state): State<AppState>) -> impl IntoResponse {
         "recent": recent,
         "pro_count": pro_count,
         "pro_reasons": pro_reasons,
+        "source_costs": source_costs,
     }))
 }
 
