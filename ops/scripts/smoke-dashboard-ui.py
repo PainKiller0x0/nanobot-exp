@@ -7,7 +7,11 @@ and API fields that the dashboard depends on.
 """
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -35,16 +39,38 @@ def fetch_text(path: str, timeout: float = 12.0) -> tuple[int, str, float]:
         return 0, str(exc), time.time() - started
 
 
+def inline_script_errors(name: str, text: str) -> list[str]:
+    node = shutil.which("node")
+    if not node:
+        return []
+    errors: list[str] = []
+    scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", text, flags=re.S | re.I)
+    for idx, script in enumerate(scripts):
+        if not script.strip():
+            continue
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=f"-{name}-{idx}.js", delete=False) as fh:
+            fh.write(script)
+            script_path = fh.name
+        proc = subprocess.run([node, "--check", script_path], text=True, capture_output=True, timeout=10)
+        Path(script_path).unlink(missing_ok=True)
+        if proc.returncode != 0:
+            errors.append(f"script{idx}:{short(proc.stderr or proc.stdout, 120)}")
+    return errors
+
+
 def check_page(results: list[Result], name: str, path: str, required: list[str]) -> None:
     status, text, elapsed = fetch_text(path)
     missing = [item for item in required if item not in text]
     mojibake = "????" in text or "锟" in text
-    ok = 200 <= status < 300 and not missing and not mojibake
+    js_errors = inline_script_errors(name, text) if 200 <= status < 300 else []
+    ok = 200 <= status < 300 and not missing and not mojibake and not js_errors
     detail = f"http={status} {elapsed:.2f}s"
     if missing:
         detail += " missing=" + ",".join(missing[:4])
     if mojibake:
         detail += " mojibake=true"
+    if js_errors:
+        detail += " js=" + ";".join(js_errors[:2])
     add(results, name, ok, detail)
 
 
