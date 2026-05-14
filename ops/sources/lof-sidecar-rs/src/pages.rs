@@ -26,11 +26,10 @@ pub(crate) async fn dashboard() -> Html<String> {
       <h1 class="title">&#x4eca;&#x65e5;&#x9a7e;&#x9a76;&#x8231;</h1>
       <p class="sub">&#x628a;&#x6587;&#x7ae0;&#x3001;LOF&#x3001;&#x5b9a;&#x65f6;&#x4efb;&#x52a1;&#x548c;&#x670d;&#x52a1;&#x5668;&#x72b6;&#x6001;&#x538b;&#x6210;&#x4e00;&#x773c;&#x80fd;&#x770b;&#x61c2;&#x7684;&#x6458;&#x8981;&#x3002;&#x4f4e;&#x4ef7;&#x503c;&#x4fe1;&#x606f;&#x8fdb;&#x770b;&#x677f;&#xff0c;&#x9ad8;&#x4ef7;&#x503c;&#x5f02;&#x5e38;&#x518d;&#x6253;&#x6270;&#x4f60;&#x3002;</p>
       <div class="actions">
-        <a class="btn" href="/workbench">内容工作台</a>
-        <a class="btn secondary" href="/lof">&#x6253;&#x5f00; LOF &#x770b;&#x677f;</a>
-        <a class="btn secondary" href="/rss/">RSS &#x8ba2;&#x9605;</a>
-        <a class="btn secondary" href="/evolution">&#x8fdb;&#x5316;&#x65e5;&#x5fd7;</a>
-        <a class="btn secondary" href="/sidecars">&#x670d;&#x52a1;&#x603b;&#x63a7;</a>
+        <a class="btn" href="/today">打开个人中枢</a>
+        <a class="btn secondary" href="/workbench">内容工作台</a>
+        <a class="btn secondary" href="/lof">LOF 投资看板</a>
+        <a class="btn secondary" href="/sidecars">系统运维</a>
         <button class="btn secondary" onclick="loadAll(true)">&#x5237;&#x65b0;</button>
         <button class="btn secondary" onclick="toggleTheme()">&#x660e;&#x6697;</button>
       </div>
@@ -46,7 +45,7 @@ pub(crate) async fn dashboard() -> Html<String> {
     <article class="panel card fade" style="animation-delay:.12s"><h2>&#x5b9a;&#x65f6;&#x4efb;&#x52a1;</h2><div class="metric" id="notifyMetrics"></div></article>
     <article class="panel card full fade" style="animation-delay:.13s"><h2>&#x4eca;&#x65e5;&#x6458;&#x8981;</h2><div id="todayBrief"></div></article>
     <article class="panel card wide fade" style="animation-delay:.14s"><h2>&#x9700;&#x8981;&#x4f60;&#x770b;</h2><div class="list" id="attention"></div></article>
-    <article class="panel card fade" style="animation-delay:.16s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/today">个人中枢<span>今日内容 / 任务追踪 / 模型路由</span></a><a href="/tasks">任务追踪<span>规则 / 最近状态 / 一键重跑</span></a><a href="/model-routes">模型路由<span>Pro 原因 / 来源消耗 / 费用透明</span></a><a href="/lof">LOF &#x96f7;&#x8fbe;<span>&#x4f30;&#x503c; / &#x6ea2;&#x4ef7; / &#x62a5;&#x544a;</span></a><a href="/rss/">RSS &#x6587;&#x7ae0;<span>&#x5fae;&#x4fe1; / &#x9e2d;&#x54e5; / Markdown</span></a><a href="/trends/">热点雷达<span>全网热榜 / MCP 工具 / 话题分析</span></a><a href="/sidecars">&#x670d;&#x52a1;&#x603b;&#x63a7;<span>&#x65e5;&#x5fd7; / &#x91cd;&#x542f;&#x547d;&#x4ee4;</span></a><a href="/evolution">进化日志<span>能力变化 / 性能证据 / 修复记录</span></a><a href="/inbox">知识收件箱<span>待读材料 / Markdown 路径 / 决策评分</span></a></div></article>
+    <article class="panel card fade" style="animation-delay:.16s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/today">个人中枢<span>今日内容、任务追踪、模型路由先看这里</span></a><a href="/workbench">内容工作台<span>RSS、知识收件箱、热点雷达合并阅读</span></a><a href="/lof">投资看板<span>LOF 实时估值、溢价、报告和手动刷新</span></a><a href="/sidecars">系统运维<span>服务健康、能力矩阵、日志和命令入口</span></a><a href="/model-routes">模型成本<span>OBP 路由、Pro 原因、付费/免费消耗</span></a><a href="/evolution">进化日志<span>能力变化、性能证据、修复记录</span></a></div></article>
     <article class="panel card wide fade" style="animation-delay:.18s"><h2>&#x6295;&#x8d44;&#x96f7;&#x8fbe;</h2><div id="lofRadar"></div></article>
     <article class="panel card fade" style="animation-delay:.20s"><h2>&#x4fe1;&#x606f;&#x96f7;&#x8fbe;</h2><div class="list" id="infoRadar"></div></article>
     <article class="panel card full fade" style="animation-delay:.21s"><h2>7 &#x5929;&#x5386;&#x53f2;</h2><div id="historyPanel"></div></article>
@@ -238,7 +237,7 @@ pub(crate) async fn shell_js() -> Response {
   const label = script?.dataset?.label || document.title || 'Sidecar';
   const current = script?.dataset?.prefix || location.pathname.split('/')[1] || '/';
   const links = [
-    ['驾驶舱','/'],['今日','/today'],['任务','/tasks'],['模型','/model-routes'],['工作台','/workbench'],['RSS','/rss/'],['LOF','/lof'],['OBP','/obp/'],['服务','/sidecars'],['热点','/trends/'],['收件箱','/inbox'],['Reflexio','/reflexio/']
+    ['总览','/'],['今日','/today'],['内容','/workbench'],['投资','/lof'],['任务','/tasks'],['模型','/model-routes'],['服务','/sidecars']
   ];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   function applyTheme(mode){
@@ -315,7 +314,7 @@ pub(crate) async fn workbench_page() -> impl IntoResponse {
       <div class="eyebrow">CONTENT WORKBENCH</div>
       <h1 class="title">内容工作台</h1>
       <p class="sub">把 RSS、知识收件箱和热点雷达放到一个阅读流里。先看摘要和来源，再决定打开原文、进入 Markdown 预览、标记已读或留到稍后。</p>
-      <div class="toolbar"><a class="btn" href="/">回到驾驶舱</a><a class="btn secondary" href="/rss/">RSS 订阅</a><a class="btn secondary" href="/inbox">知识收件箱</a><a class="btn secondary" href="/trends/">热点雷达</a><button class="btn secondary" onclick="loadAll(true)">刷新</button><button class="btn secondary" onclick="toggleTheme()">明暗</button></div>
+      <div class="toolbar"><a class="btn" href="/">回到驾驶舱</a><a class="btn secondary" href="/rss/">RSS 订阅</a><a class="btn secondary" href="/rss/cleaner">付费文章清洗器</a><a class="btn secondary" href="/inbox">知识收件箱</a><a class="btn secondary" href="/trends/">热点雷达</a><button class="btn secondary" onclick="loadAll(true)">刷新</button><button class="btn secondary" onclick="toggleTheme()">明暗</button></div>
       <div class="search"><input id="q" class="input" placeholder="搜索标题、摘要、来源..." oninput="render()"><button class="btn secondary" onclick="clearSearch()">清空</button></div>
     </div>
     <div class="panel"><div class="stats" id="stats"><div class="empty">加载中...</div></div><p class="hint" id="freshness">正在读取 sidecar 数据。</p></div>
@@ -922,7 +921,7 @@ pub(crate) async fn personal_ops_page() -> Html<String> {
 <script src="/assets/nb-shell.js" data-prefix="/today" data-label="个人中枢" defer></script>
 <div class="wrap">
   <section class="hero">
-    <div class="panel"><div class="eyebrow">PERSONAL OPS</div><h1>个人中枢</h1><p class="sub">把“有没有跑、今天有什么、模型为什么花钱”放到一张桌面上。这里不替代 sidecar，只做收口和解释。</p><div class="toolbar"><a class="btn" href="/">回到驾驶舱</a><button class="secondary" onclick="loadAll(true)">刷新</button><button class="secondary" onclick="toggleTheme()">明暗</button></div></div>
+    <div class="panel"><div class="eyebrow">PERSONAL OPS</div><h1>个人中枢</h1><p class="sub">把“有没有跑、今天有什么、模型为什么花钱”放到一张桌面上。这里不替代 sidecar，只做收口和解释。</p><div class="toolbar"><a class="btn" href="/">回到驾驶舱</a><a class="btn secondary" href="/workbench">内容工作台</a><a class="btn secondary" href="/lof">投资看板</a><a class="btn secondary" href="/sidecars">系统运维</a><button class="secondary" onclick="loadAll(true)">刷新</button><button class="secondary" onclick="toggleTheme()">明暗</button></div></div>
     <div class="panel"><div class="k">状态摘要</div><div class="stats" id="heroStats"><div class="stat"><div class="k">加载中</div><div class="v">...</div></div></div></div>
   </section>
   <div class="panel" style="margin-top:14px"><div class="tabs"><button id="tab-today" class="tab" onclick="showTab('today')">今日收件箱</button><button id="tab-tasks" class="tab" onclick="showTab('tasks')">任务追踪</button><button id="tab-model" class="tab" onclick="showTab('model')">模型路由</button></div></div>
