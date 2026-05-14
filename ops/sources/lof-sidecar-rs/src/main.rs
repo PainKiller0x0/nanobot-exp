@@ -28,8 +28,8 @@ mod system_metrics;
 
 use lof_domain::{is_trading_session, run_native_report, BoardData};
 use pages::{
-    common_js, dashboard, evolution_page, inbox_page, index, shell_js, sidecars_page,
-    workbench_page,
+    common_js, dashboard, evolution_page, inbox_page, index, personal_ops_page, shell_js,
+    sidecars_page, workbench_page,
 };
 use reverse_proxy::reverse_proxy;
 use sidecar_manager::ManagedSidecarStatus;
@@ -266,6 +266,9 @@ async fn main() {
         .route("/inbox", get(inbox_page))
         .route("/workbench", get(workbench_page))
         .route("/workbench/", get(workbench_page))
+        .route("/today", get(personal_ops_page))
+        .route("/tasks", get(personal_ops_page))
+        .route("/model-routes", get(personal_ops_page))
         .route("/assets/nb-shell.js", get(shell_js))
         .route("/assets/nb-common.js", get(common_js))
         .route("/api/sidecars", get(api_sidecars))
@@ -274,6 +277,10 @@ async fn main() {
         .route("/api/capabilities", get(api_capabilities))
         .route("/api/evolution", get(api_evolution))
         .route("/api/notify-jobs", get(api_notify_jobs))
+        .route("/api/today", get(api_today))
+        .route("/api/task-trace", get(api_task_trace))
+        .route("/api/task-run/:id", post(api_task_run))
+        .route("/api/model-routes", get(api_model_routes))
         .route("/rss", any(proxy_rss_root))
         .route("/rss/", any(proxy_rss_root))
         .route("/rss/*path", any(proxy_rss_path))
@@ -1031,6 +1038,201 @@ async fn api_notify_jobs(State(state): State<AppState>) -> impl IntoResponse {
             Json(serde_json::json!({"ok": false, "error": e.to_string()})),
         ),
     }
+}
+
+fn notify_job_items(notify: &serde_json::Value) -> Vec<serde_json::Value> {
+    if let Some(items) = notify.get("job_details").and_then(|v| v.as_array()) {
+        return items.clone();
+    }
+    let statuses = notify.get("jobs").and_then(|v| v.as_object());
+    notify
+        .get("configured_jobs")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .cloned()
+                .map(|mut item| {
+                    if let Some(obj) = item.as_object_mut() {
+                        let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                        let status = statuses
+                            .and_then(|map| map.get(id))
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        obj.insert("status".to_string(), status);
+                    }
+                    item
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_array(value: &serde_json::Value, key: &str) -> Vec<serde_json::Value> {
+    value
+        .get(key)
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+async fn api_today(State(state): State<AppState>) -> impl IntoResponse {
+    let rss = fetch_json_value(
+        &state.http,
+        "http://127.0.0.1:8091/api/entries?days=1&limit=30",
+    )
+    .await
+    .unwrap_or_else(|| serde_json::json!({}));
+    let trend = fetch_json_value(&state.http, "http://127.0.0.1:8095/api/trends/brief")
+        .await
+        .unwrap_or_else(|| serde_json::json!({}));
+    let notify = fetch_json_value(&state.http, "http://127.0.0.1:8094/api/status")
+        .await
+        .unwrap_or_else(|| serde_json::json!({}));
+    let inbox = inbox_snapshot(&state.inbox_dir).await;
+    let lof = load_state(&state.state_file).await;
+
+    let lof_high = lof
+        .last_board
+        .as_ref()
+        .map(|board| {
+            board
+                .rows
+                .iter()
+                .filter(|row| row.rt_premium_pct.unwrap_or(0.0) >= 5.0)
+                .take(12)
+                .map(|row| serde_json::to_value(row).unwrap_or(serde_json::Value::Null))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let jobs = notify_job_items(&notify);
+    let task_alerts = jobs
+        .iter()
+        .filter(|job| {
+            matches!(
+                job.pointer("/status/last_status").and_then(|v| v.as_str()),
+                Some("error") | Some("timeout")
+            )
+        })
+        .map(|job| {
+            serde_json::json!({
+                "id": job.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                "name": job.get("name").cloned().unwrap_or(serde_json::Value::Null),
+                "reason": job.pointer("/status/last_error").cloned().unwrap_or_else(|| serde_json::json!("最近任务异常")),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({
+        "ok": true,
+        "now": shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+        "rss_items": json_array(&rss, "items"),
+        "trend_items": json_array(&trend, "top_items"),
+        "inbox_items": json_array(&inbox, "items"),
+        "lof_high": lof_high,
+        "task_alerts": task_alerts,
+    }))
+}
+
+async fn api_task_trace(State(state): State<AppState>) -> impl IntoResponse {
+    let notify = fetch_json_value(&state.http, "http://127.0.0.1:8094/api/status")
+        .await
+        .unwrap_or_else(|| serde_json::json!({"ok": false, "error": "notify_unreachable"}));
+    Json(serde_json::json!({
+        "ok": notify.get("ok").and_then(|v| v.as_bool()).unwrap_or(true),
+        "now": shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+        "stats": notify.get("stats").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "items": notify_job_items(&notify),
+    }))
+}
+
+async fn api_task_run(State(state): State<AppState>, AxumPath(id): AxumPath<String>) -> Response {
+    if id.trim().is_empty() || id.contains('/') || id.contains('\\') {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": "invalid_job_id"})),
+        )
+            .into_response();
+    }
+    let url = format!("http://127.0.0.1:8094/api/run/{id}");
+    match tokio::time::timeout(Duration::from_secs(180), state.http.post(url).send()).await {
+        Ok(Ok(resp)) => {
+            let status =
+                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let value = resp
+                .json::<serde_json::Value>()
+                .await
+                .unwrap_or_else(|_| serde_json::json!({"ok": status.is_success()}));
+            (status, Json(value)).into_response()
+        }
+        Ok(Err(err)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"ok": false, "error": err.to_string()})),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(serde_json::json!({"ok": false, "error": "notify_run_timeout"})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_model_routes(State(state): State<AppState>) -> impl IntoResponse {
+    let stats = fetch_json_value(&state.http, "http://127.0.0.1:8000/admin/stats")
+        .await
+        .unwrap_or_else(|| serde_json::json!({}));
+    let router = fetch_json_value(&state.http, "http://127.0.0.1:8000/admin/router")
+        .await
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut recent = json_array(&stats, "recent");
+    if recent.is_empty() {
+        recent = stats
+            .pointer("/logs/recent")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+    }
+    recent.reverse();
+    recent.truncate(80);
+
+    let mut pro_reasons = serde_json::Map::new();
+    let mut pro_count = 0_u64;
+    for log in &recent {
+        let route = log
+            .get("route")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let model = log
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if route.contains("pro") || model.contains("pro") {
+            pro_count += 1;
+            let reason = log
+                .get("route_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let count = pro_reasons
+                .get(&reason)
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                + 1;
+            pro_reasons.insert(reason, serde_json::json!(count));
+        }
+    }
+
+    Json(serde_json::json!({
+        "ok": true,
+        "now": shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+        "stats": stats,
+        "router": router,
+        "recent": recent,
+        "pro_count": pro_count,
+        "pro_reasons": pro_reasons,
+    }))
 }
 
 fn shanghai_now() -> DateTime<FixedOffset> {
