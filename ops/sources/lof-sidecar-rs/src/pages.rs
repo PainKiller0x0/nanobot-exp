@@ -41,10 +41,10 @@ pub(crate) async fn dashboard() -> Html<String> {
   </section>
   <section class="grid">
     <article class="panel card full fade" style="animation-delay:.08s"><h2>&#x4eca;&#x65e5;&#x6458;&#x8981;</h2><div id="todayBrief"></div></article>
-    <article class="panel card wide fade" style="animation-delay:.10s"><h2>&#x9700;&#x8981;&#x4f60;&#x770b;</h2><div class="list" id="attention"></div></article>
-    <article class="panel card fade" style="animation-delay:.12s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/today">个人中枢<span>今日内容、任务追踪、模型路由先看这里</span></a><a href="/workbench">内容工作台<span>RSS、知识收件箱、热点雷达合并阅读</span></a><a href="/lof">投资看板<span>LOF 实时估值、溢价、报告和手动刷新</span></a><a href="/sidecars">系统运维<span>服务健康、能力矩阵、日志和命令入口</span></a><a href="/model-routes">模型成本<span>OBP 路由、Pro 原因、付费/免费消耗</span></a><a href="/evolution">进化日志<span>能力变化、性能证据、修复记录</span></a></div></article>
+    <article class="panel card wide fade" style="animation-delay:.10s"><h2>&#x6295;&#x8d44;&#x96f7;&#x8fbe;</h2><div id="lofRadar"></div></article>
+    <article class="panel card fade" style="animation-delay:.12s"><h2>&#x9700;&#x8981;&#x4f60;&#x770b;</h2><div class="list" id="attention"></div></article>
     <details class="panel card full fade statusFold" style="animation-delay:.14s" open><summary><h2>运行状态</h2><span class="foldHint"></span></summary><div class="opsMiniGrid"><div class="opsMini"><h3>&#x7cfb;&#x7edf;&#x4f53;&#x611f;</h3><div class="metric" id="systemMetrics"></div></div><div class="opsMini"><h3>&#x670d;&#x52a1;&#x5065;&#x5eb7;</h3><div class="metric" id="sidecarMetrics"></div></div><div class="opsMini"><h3>&#x5b9a;&#x65f6;&#x4efb;&#x52a1;</h3><div class="metric" id="notifyMetrics"></div></div></div></details>
-    <article class="panel card wide fade" style="animation-delay:.16s"><h2>&#x6295;&#x8d44;&#x96f7;&#x8fbe;</h2><div id="lofRadar"></div></article>
+    <article class="panel card full fade" style="animation-delay:.16s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/today">个人中枢<span>今日内容、任务追踪、模型路由先看这里</span></a><a href="/workbench">内容工作台<span>RSS、知识收件箱、热点雷达合并阅读</span></a><a href="/lof">投资看板<span>LOF 实时估值、溢价、报告和手动刷新</span></a><a href="/sidecars">系统运维<span>服务健康、能力矩阵、日志和命令入口</span></a><a href="/model-routes">模型成本<span>OBP 路由、Pro 原因、付费/免费消耗</span></a><a href="/evolution">进化日志<span>能力变化、性能证据、修复记录</span></a></div></article>
     <article class="panel card fade" style="animation-delay:.18s"><h2>&#x4fe1;&#x606f;&#x96f7;&#x8fbe;</h2><div class="list" id="infoRadar"></div></article>
     <details class="panel card full fade detailCard" style="animation-delay:.20s"><summary><h2>7 &#x5929;&#x5386;&#x53f2;</h2><span class="foldHint"></span></summary><div class="detailBody" id="historyPanel"></div></details>
     <details class="panel card full fade detailCard" style="animation-delay:.21s"><summary><h2>记忆压缩</h2><span class="foldHint"></span></summary><div class="detailBody" id="compactPanel"></div></details>
@@ -968,17 +968,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_prioritizes_digest_then_collapsible_mini_status() {
+    async fn dashboard_prioritizes_digest_money_then_collapsible_status() {
         let Html(html) = dashboard().await;
         let digest = html
             .find("&#x4eca;&#x65e5;&#x6458;&#x8981;")
             .expect("digest card");
+        let investment = html
+            .find("&#x6295;&#x8d44;&#x96f7;&#x8fbe;")
+            .expect("investment radar card");
         let attention = html
             .find("&#x9700;&#x8981;&#x4f60;&#x770b;")
             .expect("attention card");
         let status = html.find("运行状态").expect("mini status fold");
-        assert!(digest < attention);
+        let quick = html
+            .find("&#x5feb;&#x901f;&#x5165;&#x53e3;")
+            .expect("quick links card");
+        assert!(digest < investment);
+        assert!(investment < attention);
         assert!(attention < status);
+        assert!(status < quick);
         assert!(html.contains("opsMiniGrid"));
         assert!(html.contains("detailCard"));
     }
