@@ -567,6 +567,9 @@ pub(crate) async fn index() -> Html<String> {
     .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
     .ctrl{border:1px solid #cbd5e1;border-radius:10px;padding:9px 12px;min-width:220px;background:#fff;color:#0d1b2a}
     .dark .ctrl{background:#0f172a;color:#e2e8f0;border-color:#334155}
+    .statusline{font-size:12px;color:var(--muted)}
+    .autoctl{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;user-select:none}
+    .autoctl input{width:16px;height:16px;accent-color:var(--accent)}
     table{width:100%;border-collapse:collapse;font-size:12px}
     th,td{padding:8px 6px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:middle}
     .dark th,.dark td{border-bottom-color:#1e293b}
@@ -626,6 +629,12 @@ pub(crate) async fn index() -> Html<String> {
     <div class="toolbar">
       <div class="k">精简看板（关键字段）</div>
       <input id="kw" class="ctrl" placeholder="筛选代码/名称，如 513100 或 纳指" oninput="renderBoard()"/>
+      <button id="boardRefreshBtn" class="btn2" onclick="manualBoardRefresh(event)">手动刷新</button>
+      <label class="autoctl" title="只在本页面打开时轮询看板接口，不触发行情抓取">
+        <input id="boardAutoRefresh" type="checkbox" onchange="toggleBoardAutoRefresh(this.checked)">
+        自动刷新
+      </label>
+      <span id="boardRefreshHint" class="statusline">未开启，勾选后每 30 秒刷新一次</span>
     </div>
     <div style="overflow:auto;margin-top:10px;">
       <table>
@@ -675,6 +684,9 @@ if(localStorage.theme==='dark'){root.classList.add('dark')}
 let latestBoard=null;
 let sortState={key:'rt_premium_pct',dir:'desc',type:'num'};
 let histRow=null;
+const BOARD_AUTO_REFRESH_MS=30000;
+let boardAutoRefreshTimer=null;
+let boardRefreshBusy=false;
 function toggleTheme(){root.classList.toggle('dark');localStorage.theme=root.classList.contains('dark')?'dark':'light'}
 function fmt(s){try{return new Date(s).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'})}catch{return s||'-'}}
 function esc(s){return String(s??'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]))}
@@ -732,6 +744,59 @@ function openHist(code){
 }
 function closeHist(){
   document.getElementById('histModal').style.display='none';
+}
+function setBoardRefreshHint(text){
+  const el=document.getElementById('boardRefreshHint');
+  if(el) el.textContent=text;
+}
+function boardRefreshTime(){
+  return new Date().toLocaleTimeString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'});
+}
+async function safeRefreshBoard(){
+  if(boardRefreshBusy) return false;
+  boardRefreshBusy=true;
+  try{
+    await refresh();
+    return true;
+  }catch(e){
+    setBoardRefreshHint(`刷新失败：${e.message||e}`);
+    throw e;
+  }finally{
+    boardRefreshBusy=false;
+  }
+}
+async function manualBoardRefresh(ev){
+  const btn=ev?.currentTarget||document.getElementById('boardRefreshBtn');
+  const bak=btn?.textContent;
+  if(btn){btn.disabled=true;btn.textContent='刷新中...'}
+  try{
+    const done=await safeRefreshBoard();
+    if(done) setBoardRefreshHint(`已手动刷新：${boardRefreshTime()}`);
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=bak}
+  }
+}
+function stopBoardAutoRefresh(){
+  if(boardAutoRefreshTimer){clearInterval(boardAutoRefreshTimer);boardAutoRefreshTimer=null;}
+}
+function startBoardAutoRefresh(){
+  stopBoardAutoRefresh();
+  boardAutoRefreshTimer=setInterval(async()=>{
+    const done=await safeRefreshBoard().catch(()=>false);
+    if(done) setBoardRefreshHint(`自动刷新中：每 30 秒，上次 ${boardRefreshTime()}`);
+  },BOARD_AUTO_REFRESH_MS);
+  setBoardRefreshHint('自动刷新中：每 30 秒，只刷新页面看板');
+}
+function toggleBoardAutoRefresh(enabled){
+  localStorage.lofBoardAutoRefresh=enabled?'1':'0';
+  if(enabled) startBoardAutoRefresh();
+  else{stopBoardAutoRefresh();setBoardRefreshHint('未开启，勾选后每 30 秒刷新一次');}
+}
+function initBoardAutoRefresh(){
+  const box=document.getElementById('boardAutoRefresh');
+  const enabled=localStorage.lofBoardAutoRefresh==='1';
+  if(box) box.checked=enabled;
+  if(enabled) startBoardAutoRefresh();
 }
 function renderHistModal(){
   const stat=document.getElementById('histStats');
@@ -797,7 +862,7 @@ function renderBoard(){
   }).join('');
 }
 async function refresh(){
-  const r=await fetch('/api/status'); const d=await r.json();
+  const r=await fetch('/api/status',{cache:'no-store'}); const d=await r.json();
   document.getElementById('total').textContent=d.stats?.total_runs ?? 0;
   document.getElementById('succ').textContent=d.stats?.success_runs ?? 0;
   document.getElementById('tout').textContent=d.stats?.timeout_runs ?? 0;
@@ -813,12 +878,28 @@ async function runNow(){
   const btn=event.target; btn.disabled=true; const bak=btn.textContent; btn.textContent='运行中...';
   try{
     await fetch('/api/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({tag:'收盘'})});
-    await refresh();
+    await safeRefreshBoard();
+    setBoardRefreshHint(`已运行并刷新：${boardRefreshTime()}`);
   }finally{btn.disabled=false; btn.textContent=bak}
 }
-refresh(); setInterval(refresh,10000);
+safeRefreshBoard().catch(()=>{});
+initBoardAutoRefresh();
 </script>
 </body></html>"#
             .to_string(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lof_index_has_manual_and_opt_in_auto_refresh_controls() {
+        let Html(html) = index().await;
+        assert!(html.contains("boardRefreshBtn"));
+        assert!(html.contains("boardAutoRefresh"));
+        assert!(html.contains("BOARD_AUTO_REFRESH_MS=30000"));
+        assert!(!html.contains("setInterval(refresh,10000)"));
+    }
 }
