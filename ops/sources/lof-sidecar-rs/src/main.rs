@@ -1870,6 +1870,29 @@ fn apply_inbox_rating(
         obj.insert("auto_decision_label".to_string(), auto_label);
         obj.insert("auto_decision_reasons".to_string(), auto_reasons);
     }
+    if !obj.contains_key("auto_base_score") {
+        let base_score = obj
+            .get("auto_decision_score")
+            .cloned()
+            .or_else(|| obj.get("decision_score").cloned())
+            .unwrap_or(serde_json::Value::Null);
+        let base_label = obj
+            .get("auto_decision_label")
+            .cloned()
+            .or_else(|| obj.get("decision_label").cloned())
+            .unwrap_or(serde_json::Value::Null);
+        let base_reasons = obj
+            .get("auto_decision_reasons")
+            .cloned()
+            .or_else(|| obj.get("decision_reasons").cloned())
+            .unwrap_or_else(|| serde_json::json!([]));
+        obj.insert("auto_base_score".to_string(), base_score);
+        obj.insert("auto_base_label".to_string(), base_label);
+        obj.insert("auto_base_reasons".to_string(), base_reasons);
+    }
+    if !obj.contains_key("profile_version") {
+        obj.insert("profile_version".to_string(), serde_json::json!("taste-v0.2"));
+    }
     let clean_note = note.trim();
     let mut reasons = vec![serde_json::json!(format!("手动评分覆盖：{score}/100"))];
     if !clean_note.is_empty() {

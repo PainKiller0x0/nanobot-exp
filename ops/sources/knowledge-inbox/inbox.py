@@ -635,6 +635,35 @@ def first_sentences(text: str, limit: int = 220) -> str:
     return short(out or body, limit)
 
 
+
+PROFILE_VERSION = "taste-v0.2"
+HIGH_TRUST_SOURCES = ("记忆承载", "记忆承载3", "碧树西风", "鸭哥 AI 要闻", "鸭哥AI要闻")
+MEDIUM_TRUST_HOSTS = {"github.com", "linux.do"}
+MEDIUM_TRUST_SOURCES = ("Share - Computing Life", "Computing Life", "技术博客")
+COGNITIVE_KEYWORDS = {"认知", "模型", "系统", "底层", "框架", "决策", "人生", "职业", "长期", "选择", "努力", "反馈", "风险"}
+HORIZON_KEYWORDS = {"趋势", "未来", "视野", "周期", "变化", "机会", "行业", "创业", "产品", "可能性"}
+MONEY_CONCRETE_KEYWORDS = {"lof", "qdii", "溢价", "套利", "估值", "限额", "成交额", "折价", "费率", "基金", "股票", "债券"}
+AI_ANCHOR_KEYWORDS = {"ai", "llm", "agent", "openai", "deepseek", "claude", "gemini", "minimax", "longcat"}
+AI_DETAIL_KEYWORDS = {"价格", "api", "发布", "产品", "创业", "模型", "能力", "上下文", "tool", "function calling"}
+AI_PRIORITY_KEYWORDS = AI_ANCHOR_KEYWORDS | AI_DETAIL_KEYWORDS
+AI_GOSSIP_KEYWORDS = {"八卦", "绯闻", "饭圈", "综艺", "撕逼", "热搜", "瓜"}
+PAID_COST_KEYWORDS = {"付费", "购买"}
+
+
+@dataclass
+class ScoreResult:
+    score: int
+    label: str
+    reasons: list[str]
+    base_score: int
+    base_label: str
+    base_reasons: list[str]
+    preference_adjustment: int
+    preference_reasons: list[str]
+    preference_samples: int
+    profile_version: str = PROFILE_VERSION
+
+
 def decision_label_for_score(score: int) -> str:
     if score >= 75:
         return "值得优先看"
@@ -645,47 +674,282 @@ def decision_label_for_score(score: int) -> str:
     return "大概率可跳过"
 
 
-def score_page(title: str, description: str, markdown: str) -> tuple[int, str, list[str]]:
-    text = f"{title}\n{description}\n{markdown[:4000]}".lower()
-    ascii_tokens = set(re.findall(r"[a-z][a-z0-9_+.-]{1,}", text))
+def hit_any(text: str, keywords: set[str] | tuple[str, ...]) -> list[str]:
+    low = text.lower()
+    hits: list[str] = []
+    ascii_tokens = set(re.findall(r"[a-z][a-z0-9_+.-]{1,}", low))
+    for keyword in keywords:
+        k = keyword.lower()
+        if re.fullmatch(r"[a-z0-9_+.-]+", k):
+            if k in ascii_tokens:
+                hits.append(keyword)
+        elif k in low:
+            hits.append(keyword)
+    return sorted(set(hits))
 
-    def keyword_hit(keyword: str) -> bool:
-        low = keyword.lower()
-        if re.fullmatch(r"[a-z0-9_+.-]+", low):
-            return low in ascii_tokens
-        return low in text
+
+def ai_priority_hits(text: str) -> list[str]:
+    """AI only counts when an AI anchor and a concrete product/model signal co-exist."""
+    anchors = hit_any(text, AI_ANCHOR_KEYWORDS)
+    details = hit_any(text, AI_DETAIL_KEYWORDS)
+    provider_hits = [x for x in anchors if x.lower() not in {"ai", "llm", "agent"}]
+    if anchors and (details or provider_hits):
+        return sorted(set(anchors + details))
+    return []
+
+
+def same_url(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    return left.split("#", 1)[0].rstrip("/") == right.split("#", 1)[0].rstrip("/")
+
+
+def source_tier(title: str, description: str, markdown: str, url: str = "") -> tuple[str, str]:
+    text = f"{title}\n{description}\n{markdown[:2500]}"
+    for source in HIGH_TRUST_SOURCES:
+        if source in text:
+            return "high", source
+    host = urlparse(url or "").netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host in MEDIUM_TRUST_HOSTS or any(host.endswith("." + item) for item in MEDIUM_TRUST_HOSTS):
+        return "medium", host
+    for source in MEDIUM_TRUST_SOURCES:
+        if source.lower() in text.lower():
+            return "medium", source
+    return "normal", host or "未知来源"
+
+
+def preference_features(title: str, description: str, markdown: str, url: str = "", note: str = "") -> set[str]:
+    text = f"{title}\n{description}\n{markdown[:5000]}\n{note}".lower()
+    host = urlparse(url or "").netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    tier, source = source_tier(title, description, f"{markdown}\n{note}", url)
+    features = {f"source-tier:{tier}"}
+    if host:
+        features.add(f"host:{host}")
+    if source and source != "未知来源":
+        features.add(f"source:{source.lower()}")
+    if hit_any(text, COGNITIVE_KEYWORDS):
+        features.add("topic:cognitive-model")
+    if hit_any(text, HORIZON_KEYWORDS):
+        features.add("topic:horizon")
+    if len(hit_any(text, MONEY_CONCRETE_KEYWORDS)) >= 2:
+        features.add("topic:money-concrete")
+    if ai_priority_hits(text):
+        features.add("topic:ai-product")
+    if hit_any(text, AI_GOSSIP_KEYWORDS):
+        features.add("topic:ai-gossip")
+    if len(clean_ws(markdown)) >= 2500:
+        features.add("content:longform")
+        if tier == "high":
+            features.add("content:trusted-longform")
+    if hit_any(text, PAID_COST_KEYWORDS):
+        features.add("cost:paid")
+    return features
+
+
+def feature_weight(feature: str) -> float:
+    if feature.startswith("source:") or feature.startswith("host:"):
+        return 2.0
+    if feature.startswith("topic:"):
+        return 1.5
+    if feature == "content:trusted-longform":
+        return 1.3
+    if feature.startswith("content:"):
+        return 0.8
+    if feature.startswith("cost:"):
+        return 0.5
+    return 0.4
+
+
+def score_learning_adjustment(
+    title: str,
+    description: str,
+    markdown: str,
+    url: str,
+    items: dict[str, dict[str, Any]] | None,
+) -> tuple[int, list[str], int]:
+    if not items:
+        return 0, [], 0
+    current = preference_features(title, description, markdown, url)
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    evidence: list[str] = []
+    samples = 0
+    for item in items.values():
+        if item.get("manual_score") is None:
+            continue
+        item_url = str(item.get("final_url") or item.get("url") or "")
+        if same_url(url, item_url):
+            continue
+        try:
+            manual = int(item.get("manual_score"))
+            base = int(item.get("auto_base_score", item.get("auto_decision_score", item.get("decision_score", manual))))
+        except (TypeError, ValueError):
+            continue
+        delta = manual - base
+        if abs(delta) < 6:
+            continue
+        sample_features = preference_features(
+            str(item.get("title") or ""),
+            str(item.get("description") or ""),
+            "",
+            str(item.get("final_url") or item.get("url") or ""),
+            str(item.get("manual_score_note") or "") + "\n" + "\n".join(str(x) for x in item.get("keywords") or []),
+        )
+        matched = current & sample_features
+        if not matched:
+            continue
+        similarity = sum(feature_weight(feature) for feature in matched)
+        if similarity < 1.5:
+            continue
+        samples += 1
+        influence = min(1.0, similarity / 4.0)
+        weighted_sum += delta * influence
+        weight_sum += influence
+        evidence.extend(sorted(matched))
+    if samples == 0 or weight_sum <= 0:
+        return 0, [], 0
+
+    avg_delta = weighted_sum / weight_sum
+    confidence = 0.35 if samples == 1 else 0.65 if samples < 5 else 1.0
+    limit = 8 if samples == 1 else 14 if samples < 5 else 22
+    adjustment = int(round(max(-limit, min(limit, avg_delta * confidence))))
+    if adjustment == 0:
+        return 0, [], samples
+
+    readable: list[str] = []
+    labels = {
+        "topic:cognitive-model": "认知模型类内容",
+        "topic:horizon": "打开视野/趋势类内容",
+        "topic:money-concrete": "具体投资机会/风险内容",
+        "topic:ai-product": "AI 产品/模型/API 内容",
+        "content:longform": "长文",
+        "content:trusted-longform": "可信来源长文",
+        "cost:paid": "付费/阅读成本内容",
+    }
+    for feature in sorted(set(evidence)):
+        if feature in labels:
+            readable.append(labels[feature])
+        elif feature.startswith("source:"):
+            readable.append("相似来源")
+        elif feature.startswith("host:"):
+            readable.append("相似站点")
+    readable = list(dict.fromkeys(readable))[:4]
+    sign = "+" if adjustment > 0 else ""
+    reason = f"个人偏好学习 {sign}{adjustment}：基于 {samples} 条手动评分样本"
+    if readable:
+        reason += "，匹配 " + "、".join(readable)
+    return adjustment, [reason], samples
+
+
+def score_page(
+    title: str,
+    description: str,
+    markdown: str,
+    url: str = "",
+    items: dict[str, dict[str, Any]] | None = None,
+) -> ScoreResult:
+    text = f"{title}\n{description}\n{markdown[:5000]}".lower()
 
     score = 45
     reasons: list[str] = []
-    matched_interest = sorted({kw for kw in INTEREST_KEYWORDS if keyword_hit(kw)})
-    matched_ads = sorted({kw for kw in AD_KEYWORDS if keyword_hit(kw)})
-    if matched_interest:
-        add = min(25, 5 + len(matched_interest) * 3)
-        score += add
-        reasons.append("命中你的长期关注：" + "、".join(matched_interest[:6]))
     content_len = len(clean_ws(markdown))
-    if content_len >= 2500:
+    tier, source = source_tier(title, description, markdown, url)
+    if tier == "high":
+        score += 18
+        reasons.append(f"高信任来源：{source}")
+    elif tier == "medium":
+        score += 6
+        reasons.append(f"中信任来源：{source}")
+
+    cognitive_hits = hit_any(text, COGNITIVE_KEYWORDS)
+    horizon_hits = hit_any(text, HORIZON_KEYWORDS)
+    money_hits = hit_any(text, MONEY_CONCRETE_KEYWORDS)
+    ai_hits = ai_priority_hits(f"{title}\n{description}\n{markdown[:1500]}")
+    gossip_hits = hit_any(text, AI_GOSSIP_KEYWORDS)
+    matched_interest = sorted({kw for kw in INTEREST_KEYWORDS if hit_any(text, {kw})})
+    matched_ads = sorted({kw for kw in AD_KEYWORDS if hit_any(text, {kw})})
+
+    if cognitive_hits:
+        score += 12
+        reasons.append("贴合你的核心偏好：认知模型/底层框架")
+    if horizon_hits:
+        score += 8
+        reasons.append("有打开视野或趋势判断价值")
+    if len(money_hits) >= 2:
         score += 10
-        reasons.append("内容足够长，可能有信息密度")
+        reasons.append("投资相关且包含具体机会/数据/风险信号")
+    elif any(kw in text for kw in ("投资", "市场", "经济")):
+        score += 2
+        reasons.append("泛投资/市场内容，仅小幅加权")
+    if ai_hits and not gossip_hits:
+        score += 8
+        reasons.append("AI 模型/价格/API/产品趋势相关")
+    if gossip_hits:
+        score -= 10
+        reasons.append("包含 AI 八卦/热搜类信号，降权")
+
+    # Interest keywords are a secondary signal now; avoid letting raw keyword count dominate taste.
+    if matched_interest:
+        add = min(10, 2 + len(matched_interest))
+        score += add
+        reasons.append("命中长期关注词：" + "、".join(matched_interest[:6]))
+
+    if content_len >= 2500:
+        if tier == "high":
+            score += 10
+            reasons.append("可信来源长文，长度视为信息密度信号")
+        elif cognitive_hits or horizon_hits:
+            score += 5
+            reasons.append("长文且有认知/趋势主题，小幅加分")
+        else:
+            reasons.append("长文阅读成本较高，不因字数直接加分")
     elif content_len < 500:
         score -= 12
         reasons.append("正文偏短，可能只是入口页或摘要")
+
     link_count = len(re.findall(r"\]\(https?://", markdown))
-    if link_count >= 5:
-        score += 5
-        reasons.append("包含较多外链，适合做资料入口")
-    if matched_ads:
-        score -= min(35, 12 + len(matched_ads) * 4)
+    if link_count >= 5 and (ai_hits or len(money_hits) >= 2 or tier != "normal"):
+        score += 4
+        reasons.append("包含资料链接，适合后续整理")
+
+    paid_only = bool(matched_ads) and set(matched_ads).issubset(PAID_COST_KEYWORDS)
+    if paid_only and content_len >= 2500:
+        reasons.append("付费/购买只作为阅读成本提示，不按广告扣分")
+    elif matched_ads:
+        score -= min(30, 10 + len(matched_ads) * 4)
         reasons.append("疑似营销/广告信号：" + "、".join(matched_ads[:6]))
+
     if re.search(r"404|not found|access denied|forbidden", title.lower() + markdown[:300].lower()):
         score -= 30
         reasons.append("页面可能不可读或权限受限")
-    score = max(0, min(100, score))
-    label = decision_label_for_score(score)
+
+    base_score = max(0, min(94, score))
+    base_label = decision_label_for_score(base_score)
     if not reasons:
         reasons.append("没有明显强信号，建议按标题兴趣决定")
-    return score, label, reasons
 
+    preference_adjustment, preference_reasons, preference_samples = score_learning_adjustment(
+        title, description, markdown, url, items
+    )
+    final_score = max(0, min(96, base_score + preference_adjustment))
+    final_label = decision_label_for_score(final_score)
+    final_reasons = list(reasons)
+    final_reasons.extend(preference_reasons)
+    return ScoreResult(
+        score=final_score,
+        label=final_label,
+        reasons=final_reasons,
+        base_score=base_score,
+        base_label=base_label,
+        base_reasons=reasons,
+        preference_adjustment=preference_adjustment,
+        preference_reasons=preference_reasons,
+        preference_samples=preference_samples,
+    )
 
 def write_markdown(item: dict[str, Any], markdown: str) -> Path:
     path = MD_DIR / f"{item['id']}.md"
@@ -713,8 +977,17 @@ def capture(url: str, note: str = "", tags: list[str] | None = None, force: bool
     items = load_items()
     existing = next((v for v in items.values() if v.get("url") == page.url or v.get("final_url") == page.final_url), None)
     item_id = existing.get("id") if existing and not force else item_id_for_url(page.final_url or page.url)
-    auto_score, auto_label, auto_reasons = score_page(page.title, page.description, page.markdown)
-    score, label, reasons = auto_score, auto_label, auto_reasons
+    score_result = score_page(
+        page.title,
+        page.description,
+        page.markdown,
+        page.final_url or page.url,
+        items,
+    )
+    auto_score = score_result.score
+    auto_label = score_result.label
+    auto_reasons = list(score_result.reasons)
+    score, label, reasons = auto_score, auto_label, list(auto_reasons)
     manual_score = existing.get("manual_score") if existing else None
     if manual_score is not None:
         try:
@@ -739,6 +1012,13 @@ def capture(url: str, note: str = "", tags: list[str] | None = None, force: bool
         "captured_at": now_local().isoformat(timespec="seconds"),
         "content_type": page.content_type,
         "content_chars": len(page.markdown),
+        "profile_version": score_result.profile_version,
+        "auto_base_score": score_result.base_score,
+        "auto_base_label": score_result.base_label,
+        "auto_base_reasons": score_result.base_reasons,
+        "preference_adjustment": score_result.preference_adjustment,
+        "preference_reasons": score_result.preference_reasons,
+        "preference_samples": score_result.preference_samples,
         "auto_decision_score": auto_score,
         "auto_decision_label": auto_label,
         "auto_decision_reasons": auto_reasons,
@@ -841,6 +1121,12 @@ def rate_item(ref: str, score: int, note: str = "") -> dict[str, Any]:
         item["auto_decision_score"] = item.get("decision_score")
         item["auto_decision_label"] = item.get("decision_label")
         item["auto_decision_reasons"] = item.get("decision_reasons") or []
+    if "auto_base_score" not in item:
+        item["auto_base_score"] = item.get("auto_decision_score", item.get("decision_score"))
+        item["auto_base_label"] = item.get("auto_decision_label", item.get("decision_label"))
+        item["auto_base_reasons"] = item.get("auto_decision_reasons") or item.get("decision_reasons") or []
+    if "profile_version" not in item:
+        item["profile_version"] = PROFILE_VERSION
     item["manual_score"] = score
     item["manual_score_note"] = clean_ws(note)
     item["manual_score_at"] = now_local().isoformat(timespec="seconds")
@@ -872,6 +1158,16 @@ def render_item(item: dict[str, Any], verbose: bool = False) -> str:
         f"ID：{item.get('id')}",
         f"判断：{item.get('decision_label')}（{item.get('decision_score')}/100）",
     ]
+    if item.get("auto_base_score") is not None:
+        try:
+            pref = int(item.get("preference_adjustment") or 0)
+            lines.append(f"拆分：基础 {int(item.get('auto_base_score'))}/100；偏好修正 {pref:+d}")
+        except (TypeError, ValueError):
+            pass
+    if item.get("manual_score") is not None:
+        manual_note = clean_ws(str(item.get("manual_score_note") or ""))
+        suffix = f"；{manual_note}" if manual_note else ""
+        lines.append(f"人工评分：{item.get('manual_score')}/100{suffix}")
     if item.get("summary"):
         summary = str(item.get("summary") or "").strip()
         if "\n" in summary:
