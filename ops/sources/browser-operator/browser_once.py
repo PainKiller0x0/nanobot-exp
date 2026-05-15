@@ -269,6 +269,72 @@ def cmd_quick_text(args: argparse.Namespace) -> int:
     ))
 
 
+def cmd_deep_text(args: argparse.Namespace) -> int:
+    limit = max(1000, int(args.limit))
+    scrolls = max(1, int(args.scrolls))
+    delay_ms = max(100, int(args.delay_ms))
+    js = f"""
+(async () => {{
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const normalize = (text) => (text || '').replace(/\\u200b/g, '').trim();
+  const snapshots = [];
+  const addSnapshot = () => {{
+    const text = normalize(document.body ? document.body.innerText : '');
+    if (text && !snapshots.includes(text)) {{
+      snapshots.push(text);
+    }}
+  }};
+  const scrollTargets = () => {{
+    const nodes = Array.from(document.querySelectorAll('*'))
+      .filter((node) => {{
+        const style = window.getComputedStyle(node);
+        const overflow = `${{style.overflowY}} ${{style.overflow}}`;
+        return node.scrollHeight > node.clientHeight + 40 && /(auto|scroll)/.test(overflow);
+      }})
+      .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))
+      .slice(0, 8);
+    const root = document.scrollingElement || document.documentElement;
+    return [root, ...nodes].filter(Boolean);
+  }};
+  addSnapshot();
+  for (let i = 0; i < {scrolls}; i += 1) {{
+    const amount = Math.max(320, Math.floor(window.innerHeight * 0.85));
+    window.scrollBy(0, amount);
+    for (const target of scrollTargets()) {{
+      target.scrollTop = Math.min(target.scrollTop + amount, target.scrollHeight);
+      target.dispatchEvent(new Event('scroll', {{ bubbles: true }}));
+    }}
+    await sleep({delay_ms});
+    addSnapshot();
+    const height = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    const rootDone = window.scrollY + window.innerHeight >= height - 8;
+    const targetsDone = scrollTargets().every((target) => target.scrollTop + target.clientHeight >= target.scrollHeight - 8);
+    if (rootDone && targetsDone) {{
+      break;
+    }}
+  }}
+  const merged = [];
+  for (const snapshot of snapshots) {{
+    for (const rawLine of snapshot.split(/\\n+/)) {{
+      const line = normalize(rawLine);
+      if (!line) {{
+        continue;
+      }}
+      if (merged[merged.length - 1] !== line && !merged.includes(line)) {{
+        merged.push(line);
+      }}
+    }}
+  }}
+  return merged.join('\\n').slice(0, {limit});
+}})()
+"""
+    return emit(page_flow(
+        args,
+        lambda: run_bb(["eval", js], timeout=args.timeout, output_limit=args.output_limit),
+        "result",
+    ))
+
+
 def cmd_screenshot(args: argparse.Namespace) -> int:
     output = str(Path(args.output).expanduser())
     return emit(page_flow(
@@ -305,6 +371,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-limit", type=int, default=DEFAULT_OUTPUT_LIMIT)
     p.add_argument("--keep-browser", action="store_true")
     p.set_defaults(func=cmd_quick_text)
+
+    p = sub.add_parser("deep-text", help="open a URL, scroll, extract rendered body text, close tab")
+    p.add_argument("url")
+    p.add_argument("--limit", type=int, default=24000)
+    p.add_argument("--scrolls", type=int, default=18)
+    p.add_argument("--delay-ms", type=int, default=450)
+    p.add_argument("--wait-ms", type=int, default=5000)
+    p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    p.add_argument("--output-limit", type=int, default=DEFAULT_OUTPUT_LIMIT)
+    p.add_argument("--keep-browser", action="store_true")
+    p.set_defaults(func=cmd_deep_text)
 
     p = sub.add_parser("screenshot", help="open a URL, save screenshot, close tab")
     p.add_argument("url")

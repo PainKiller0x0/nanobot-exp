@@ -9,6 +9,7 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,13 @@ ITEMS_FILE = DATA_DIR / "items.json"
 MD_DIR = DATA_DIR / "markdown"
 MAX_FETCH_BYTES = 2_000_000
 TIMEOUT_SECS = 15
+RENDER_TIMEOUT_SECS = int(os.environ.get("NANOBOT_INBOX_RENDER_TIMEOUT_SECS", "90"))
+BROWSER_OPERATOR_PATH = Path(
+    os.environ.get(
+        "NANOBOT_INBOX_BROWSER_OPERATOR",
+        "/root/.nanobot/workspace/skills/browser-operator/browser_once.py",
+    )
+)
 LLM_TIMEOUT_SECS = float(os.environ.get("NANOBOT_INBOX_LLM_TIMEOUT_SECS", "14"))
 LLM_SETTINGS_PATH = Path(
     os.environ.get(
@@ -325,6 +333,142 @@ class FetchedPage:
     description: str
     markdown: str
     content_type: str
+    source_status: str = "ok"
+    source_message: str = ""
+
+
+def rendered_text_to_markdown(text: str, source_url: str) -> tuple[str, str]:
+    ui_noise = {
+        "docs",
+        "feishu docs",
+        "modified today",
+        "log in or sign up",
+        "comments",
+        "help center",
+        "keyboard shortcuts",
+    }
+    lines: list[str] = []
+    seen_streak = 0
+    previous = ""
+    for raw in (text or "").replace("\u200b", "").splitlines():
+        line = clean_ws(raw)
+        if not line:
+            continue
+        low = line.lower()
+        if low in ui_noise or re.fullmatch(r"comments\s*\(\d+\)", low) or low.startswith("last updated:"):
+            continue
+        if line == previous:
+            seen_streak += 1
+            if seen_streak > 1:
+                continue
+        else:
+            seen_streak = 0
+        previous = line
+        lines.append(line)
+
+    title = next((line for line in lines if not line.startswith("发布时间：")), "")
+    body_lines = [line for line in lines if line != title]
+    markdown = "\n\n".join(body_lines).strip()
+    if source_url and f"]({source_url})" not in markdown:
+        markdown = f"{markdown}\n\n[打开原文]({source_url})".strip()
+    return title, markdown
+
+
+def fetch_with_rendered_browser(url: str) -> FetchedPage | None:
+    if os.environ.get("NANOBOT_INBOX_RENDER_ENABLED", "1").strip().lower() in {"0", "false", "off", "no"}:
+        return None
+    if not BROWSER_OPERATOR_PATH.exists():
+        return None
+
+    payload: dict[str, Any] = {}
+    rendered_text = ""
+    for attempt in range(2):
+        cmd = [
+            sys.executable,
+            str(BROWSER_OPERATOR_PATH),
+            "deep-text",
+            url,
+            "--limit",
+            "40000",
+            "--scrolls",
+            str(24 + attempt * 8),
+            "--delay-ms",
+            "450",
+            "--wait-ms",
+            str(8000 + attempt * 4000),
+            "--timeout",
+            str(RENDER_TIMEOUT_SECS),
+            "--output-limit",
+            "50000",
+        ]
+        try:
+            completed = subprocess.run(
+                cmd,
+                text=True,
+                capture_output=True,
+                timeout=RENDER_TIMEOUT_SECS + 15,
+                check=False,
+            )
+            payload = json.loads(completed.stdout or "{}")
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            continue
+        if completed.returncode != 0 or not payload.get("ok"):
+            continue
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        rendered_text = result.get("stdout") if isinstance(result, dict) else ""
+        rendered_text = clean_ws(str(rendered_text or ""))
+        if len(rendered_text) >= 80:
+            break
+    if len(rendered_text) < 80:
+        return None
+
+    title, markdown = rendered_text_to_markdown(rendered_text, url)
+    if not title:
+        title = short(markdown.splitlines()[0] if markdown else url, 90)
+    source_message = "普通抓取遇到跳转循环，已用一次性浏览器渲染抓取正文。"
+    return FetchedPage(
+        url=url,
+        final_url=str(payload.get("url") or url),
+        title=title,
+        description="",
+        markdown=markdown,
+        content_type="text/plain; rendered=browser",
+        source_status="rendered",
+        source_message=source_message,
+    )
+
+
+def redirect_loop_fallback(url: str, exc: HTTPError) -> FetchedPage | None:
+    if exc.code not in {301, 302, 303, 307, 308}:
+        return None
+    message = str(exc)
+    if "infinite loop" not in message.lower():
+        return None
+    rendered = fetch_with_rendered_browser(url)
+    if rendered is not None:
+        return rendered
+    host = urlparse(url).netloc or "目标网页"
+    title = f"需要登录或权限的网页：{host}"
+    description = "目标网页反复跳转到登录/验证页，已保存链接，正文需要手动打开。"
+    markdown = "\n".join([
+        f"> {description}",
+        "",
+        f"- 原始链接：{url}",
+        f"- 抓取状态：302 redirect loop",
+        f"- 说明：{short(message, 220)}",
+        "",
+        f"[打开原文]({url})",
+    ])
+    return FetchedPage(
+        url=url,
+        final_url=url,
+        title=title,
+        description=description,
+        markdown=markdown,
+        content_type="text/plain; status=redirect-loop",
+        source_status="redirect_loop",
+        source_message=description,
+    )
 
 
 def fetch_url(url: str) -> FetchedPage:
@@ -335,7 +479,12 @@ def fetch_url(url: str) -> FetchedPage:
             content_type = resp.headers.get("Content-Type", "")
             raw = resp.read(MAX_FETCH_BYTES + 1)
             final_url = resp.geturl()
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+    except HTTPError as exc:
+        fallback = redirect_loop_fallback(url, exc)
+        if fallback is not None:
+            return fallback
+        raise RuntimeError(f"抓取失败：{exc}") from exc
+    except (URLError, TimeoutError, OSError) as exc:
         raise RuntimeError(f"抓取失败：{exc}") from exc
     if len(raw) > MAX_FETCH_BYTES:
         raw = raw[:MAX_FETCH_BYTES]
@@ -499,7 +648,8 @@ def capture(url: str, note: str = "", tags: list[str] | None = None, force: bool
         "links": extract_links(page.markdown),
         "note": note,
         "tags": tags or [],
-        "source_status": "ok",
+        "source_status": page.source_status,
+        "source_message": page.source_message,
     }
     md_path = write_markdown(item, page.markdown)
     item["markdown_path"] = str(md_path)
