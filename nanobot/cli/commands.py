@@ -1484,6 +1484,84 @@ def plugins_list():
 
 
 # ============================================================================
+# Doctor Commands
+# ============================================================================
+
+
+def _render_doctor_report(report) -> None:
+    """Render a compact doctor report."""
+    status_style = {
+        "ok": "green",
+        "fixed": "cyan",
+        "warn": "yellow",
+        "fail": "red",
+        "info": "dim",
+    }
+    counts = report.summary
+    console.print(f"{__logo__} nanobot Doctor")
+    console.print(
+        "  "
+        f"[green]ok {counts.get('ok', 0)}[/green] · "
+        f"[cyan]fixed {counts.get('fixed', 0)}[/cyan] · "
+        f"[yellow]warn {counts.get('warn', 0)}[/yellow] · "
+        f"[red]fail {counts.get('fail', 0)}[/red] · "
+        f"[dim]info {counts.get('info', 0)}[/dim]"
+    )
+    console.print()
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Area", no_wrap=True)
+    table.add_column("Check", no_wrap=True)
+    table.add_column("Detail")
+    table.add_column("Hint")
+    for check in report.checks:
+        style = status_style.get(check.status, "white")
+        table.add_row(
+            f"[{style}]{check.status.upper()}[/{style}]",
+            check.area,
+            check.name,
+            check.detail,
+            check.hint or "",
+        )
+    console.print(table)
+
+    if report.repairs:
+        console.print("\n[bold cyan]Repairs applied[/bold cyan]")
+        for item in report.repairs:
+            console.print(f"  [cyan]•[/cyan] {item}")
+    if report.stable_point:
+        console.print(f"\n[dim]Ark Lite stable point: {report.stable_point}[/dim]")
+
+
+@app.command()
+def doctor(
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    repair: bool = typer.Option(False, "--repair", "--fix", help="Apply low-risk repairs"),
+    deep: bool = typer.Option(False, "--deep", help="Use deeper/slower runtime probes"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """Run health checks and low-risk repairs."""
+    import json
+
+    from nanobot.doctor import run_doctor
+
+    report = run_doctor(
+        config_path=config,
+        workspace=workspace,
+        repair=repair,
+        deep=deep,
+    )
+    if json_output:
+        sys.stdout.write(json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n")
+    else:
+        _render_doctor_report(report)
+    if report.has_failures:
+        raise typer.Exit(1)
+
+
+# ============================================================================
 # Status Commands
 # ============================================================================
 
