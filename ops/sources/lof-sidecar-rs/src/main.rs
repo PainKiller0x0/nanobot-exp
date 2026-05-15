@@ -18,6 +18,7 @@ use axum::{
 use chrono::{DateTime, Duration as ChronoDuration, FixedOffset, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tokio::process::Command;
 use tokio::sync::Mutex;
 
 mod lof_domain;
@@ -100,6 +101,13 @@ struct ObpLoginRequest {
 struct ObpPasswordRequest {
     username: String,
     password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RenderTextRequest {
+    url: String,
+    token: Option<String>,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -274,6 +282,7 @@ async fn main() {
         .route("/api/sidecars", get(api_sidecars))
         .route("/api/inbox", get(api_inbox))
         .route("/api/inbox/:id", delete(api_delete_inbox))
+        .route("/api/internal/render-text", post(api_internal_render_text))
         .route("/api/capabilities", get(api_capabilities))
         .route("/api/evolution", get(api_evolution))
         .route("/api/notify-jobs", get(api_notify_jobs))
@@ -386,6 +395,145 @@ async fn api_delete_inbox(
         )
             .into_response(),
     }
+}
+
+async fn api_internal_render_text(Json(req): Json<RenderTextRequest>) -> Response {
+    let Some(expected_token) = read_render_token().await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "render token is not configured"
+            })),
+        )
+            .into_response();
+    };
+    if req.token.as_deref() != Some(expected_token.as_str()) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "unauthorized"
+            })),
+        )
+            .into_response();
+    }
+    if !is_allowed_render_url(&req.url) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "only public Feishu document URLs are allowed"
+            })),
+        )
+            .into_response();
+    }
+
+    let script = std::env::var("NANOBOT_BROWSER_OPERATOR").unwrap_or_else(|_| {
+        "/root/.nanobot/workspace/skills/browser-operator/browser_once.py".to_string()
+    });
+    let limit = req.limit.unwrap_or(40_000).clamp(1_000, 60_000);
+    let mut command = Command::new("python3");
+    command
+        .arg(script)
+        .arg("deep-text")
+        .arg(&req.url)
+        .arg("--limit")
+        .arg(limit.to_string())
+        .arg("--scrolls")
+        .arg("18")
+        .arg("--delay-ms")
+        .arg("450")
+        .arg("--wait-ms")
+        .arg("6000")
+        .arg("--timeout")
+        .arg("100")
+        .arg("--output-limit")
+        .arg((limit + 10_000).to_string());
+
+    let output = match tokio::time::timeout(Duration::from_secs(115), command.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("render command failed: {}", err)
+                })),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": "render command timed out"
+                })),
+            )
+                .into_response();
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let parsed = serde_json::from_str::<serde_json::Value>(&stdout).unwrap_or_else(|_| {
+        serde_json::json!({
+            "ok": false,
+            "error": "render command returned non-json output",
+            "stdout": stdout,
+            "stderr": stderr,
+        })
+    });
+    let text = parsed
+        .pointer("/result/stdout")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !output.status.success() || !parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "render command did not complete successfully",
+                "details": parsed,
+                "stderr": stderr,
+            })),
+        )
+            .into_response();
+    }
+
+    Json(serde_json::json!({
+        "ok": true,
+        "url": req.url,
+        "chars": text.chars().count(),
+        "text": text,
+    }))
+    .into_response()
+}
+
+async fn read_render_token() -> Option<String> {
+    let path = std::env::var("NANOBOT_INBOX_RENDER_TOKEN_FILE")
+        .unwrap_or_else(|_| "/root/.nanobot/data/knowledge-inbox/render_token".to_string());
+    let token = tokio::fs::read_to_string(path).await.ok()?;
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
+
+fn is_allowed_render_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str().map(|h| h.to_ascii_lowercase()) else {
+        return false;
+    };
+    host == "feishu.cn" || host.ends_with(".feishu.cn")
 }
 
 async fn refresh_dashboard_history(state: &AppState) -> serde_json::Value {

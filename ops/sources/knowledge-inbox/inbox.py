@@ -33,6 +33,16 @@ BROWSER_OPERATOR_PATH = Path(
         "/root/.nanobot/workspace/skills/browser-operator/browser_once.py",
     )
 )
+RENDER_GATEWAY_URL = os.environ.get(
+    "NANOBOT_INBOX_RENDER_GATEWAY",
+    "http://host.containers.internal:8093/api/internal/render-text",
+)
+RENDER_TOKEN_FILE = Path(
+    os.environ.get(
+        "NANOBOT_INBOX_RENDER_TOKEN_FILE",
+        "/root/.nanobot/data/knowledge-inbox/render_token",
+    )
+)
 LLM_TIMEOUT_SECS = float(os.environ.get("NANOBOT_INBOX_LLM_TIMEOUT_SECS", "14"))
 LLM_SETTINGS_PATH = Path(
     os.environ.get(
@@ -438,6 +448,56 @@ def fetch_with_rendered_browser(url: str) -> FetchedPage | None:
     )
 
 
+def read_render_token() -> str:
+    try:
+        return RENDER_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def fetch_with_render_gateway(url: str) -> FetchedPage | None:
+    if os.environ.get("NANOBOT_INBOX_RENDER_ENABLED", "1").strip().lower() in {"0", "false", "off", "no"}:
+        return None
+    token = read_render_token()
+    if not token or not RENDER_GATEWAY_URL:
+        return None
+    payload = {
+        "url": url,
+        "token": token,
+        "limit": 40_000,
+    }
+    req = Request(
+        RENDER_GATEWAY_URL,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=RENDER_TIMEOUT_SECS + 25) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not data.get("ok"):
+        return None
+    rendered_text = clean_ws(str(data.get("text") or ""))
+    if len(rendered_text) < 80:
+        return None
+    title, markdown = rendered_text_to_markdown(rendered_text, url)
+    if not title:
+        title = short(markdown.splitlines()[0] if markdown else url, 90)
+    source_message = "普通抓取遇到跳转循环，已通过宿主机浏览器渲染服务抓取正文。"
+    return FetchedPage(
+        url=url,
+        final_url=str(data.get("url") or url),
+        title=title,
+        description="",
+        markdown=markdown,
+        content_type="text/plain; rendered=gateway",
+        source_status="rendered",
+        source_message=source_message,
+    )
+
+
 def redirect_loop_fallback(url: str, exc: HTTPError) -> FetchedPage | None:
     if exc.code not in {301, 302, 303, 307, 308}:
         return None
@@ -445,6 +505,9 @@ def redirect_loop_fallback(url: str, exc: HTTPError) -> FetchedPage | None:
     if "infinite loop" not in message.lower():
         return None
     rendered = fetch_with_rendered_browser(url)
+    if rendered is not None:
+        return rendered
+    rendered = fetch_with_render_gateway(url)
     if rendered is not None:
         return rendered
     host = urlparse(url).netloc or "目标网页"
