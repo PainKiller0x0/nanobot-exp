@@ -80,6 +80,10 @@ def match_knowledge_inbox_command(content: str) -> list[str] | None:
 
     urls = [u.rstrip("。.,，、；;!！?？") for u in _GENERIC_URL_RE.findall(text)]
     if not urls:
+        rating = re.search(r"(?:收件箱评分|收件箱打分)\s*([A-Za-z0-9_-]{8,})\s*(\d{1,3})", text)
+        if rating:
+            score = max(0, min(100, int(rating.group(2))))
+            return ["rate", rating.group(1), str(score)]
         if any(
             k in compact
             for k in ("待读简报", "收件箱简报", "稍后看简报", "收件箱今天先看什么", "待读先看什么")

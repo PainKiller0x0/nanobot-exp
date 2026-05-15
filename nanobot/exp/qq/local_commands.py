@@ -67,7 +67,7 @@ async def run_knowledge_inbox_command(
     args: Sequence[str],
     *,
     script: Path = KNOWLEDGE_INBOX_SCRIPT,
-    timeout_sec: float = 35,
+    timeout_sec: float = 90,
 ) -> str:
     """Run the knowledge inbox script without involving the LLM."""
     return await _run_python_script(

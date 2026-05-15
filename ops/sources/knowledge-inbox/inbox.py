@@ -125,6 +125,12 @@ def is_wechat_article_url(url: str) -> bool:
     return parsed.netloc.lower() in WECHAT_HOSTS
 
 
+def is_feishu_docx_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = parsed.netloc.lower()
+    return parsed.scheme == "https" and (host == "feishu.cn" or host.endswith(".feishu.cn")) and "/docx/" in parsed.path
+
+
 def looks_like_wechat_env_block(title: str, markdown: str) -> bool:
     text = clean_ws(f"{title}\n{markdown}")
     return "环境异常" in text and any(marker in text for marker in WECHAT_ENV_MARKERS)
@@ -392,25 +398,42 @@ def fetch_with_rendered_browser(url: str) -> FetchedPage | None:
 
     payload: dict[str, Any] = {}
     rendered_text = ""
-    for attempt in range(2):
-        cmd = [
-            sys.executable,
-            str(BROWSER_OPERATOR_PATH),
-            "deep-text",
-            url,
-            "--limit",
-            "40000",
-            "--scrolls",
-            str(24 + attempt * 8),
-            "--delay-ms",
-            "450",
-            "--wait-ms",
-            str(8000 + attempt * 4000),
-            "--timeout",
-            str(RENDER_TIMEOUT_SECS),
-            "--output-limit",
-            "50000",
-        ]
+    attempts = 1 if is_feishu_docx_url(url) else 2
+    for attempt in range(attempts):
+        if is_feishu_docx_url(url):
+            cmd = [
+                sys.executable,
+                str(BROWSER_OPERATOR_PATH),
+                "feishu-text",
+                url,
+                "--limit",
+                "60000",
+                "--wait-ms",
+                "8000",
+                "--timeout",
+                str(RENDER_TIMEOUT_SECS),
+                "--output-limit",
+                "70000",
+            ]
+        else:
+            cmd = [
+                sys.executable,
+                str(BROWSER_OPERATOR_PATH),
+                "deep-text",
+                url,
+                "--limit",
+                "40000",
+                "--scrolls",
+                str(24 + attempt * 8),
+                "--delay-ms",
+                "450",
+                "--wait-ms",
+                str(8000 + attempt * 4000),
+                "--timeout",
+                str(RENDER_TIMEOUT_SECS),
+                "--output-limit",
+                "50000",
+            ]
         try:
             completed = subprocess.run(
                 cmd,
@@ -612,6 +635,16 @@ def first_sentences(text: str, limit: int = 220) -> str:
     return short(out or body, limit)
 
 
+def decision_label_for_score(score: int) -> str:
+    if score >= 75:
+        return "值得优先看"
+    if score >= 58:
+        return "可以稍后看"
+    if score >= 42:
+        return "只需扫一眼"
+    return "大概率可跳过"
+
+
 def score_page(title: str, description: str, markdown: str) -> tuple[int, str, list[str]]:
     text = f"{title}\n{description}\n{markdown[:4000]}".lower()
     ascii_tokens = set(re.findall(r"[a-z][a-z0-9_+.-]{1,}", text))
@@ -648,14 +681,7 @@ def score_page(title: str, description: str, markdown: str) -> tuple[int, str, l
         score -= 30
         reasons.append("页面可能不可读或权限受限")
     score = max(0, min(100, score))
-    if score >= 75:
-        label = "值得优先看"
-    elif score >= 58:
-        label = "可以稍后看"
-    elif score >= 42:
-        label = "只需扫一眼"
-    else:
-        label = "大概率可跳过"
+    label = decision_label_for_score(score)
     if not reasons:
         reasons.append("没有明显强信号，建议按标题兴趣决定")
     return score, label, reasons
@@ -687,7 +713,16 @@ def capture(url: str, note: str = "", tags: list[str] | None = None, force: bool
     items = load_items()
     existing = next((v for v in items.values() if v.get("url") == page.url or v.get("final_url") == page.final_url), None)
     item_id = existing.get("id") if existing and not force else item_id_for_url(page.final_url or page.url)
-    score, label, reasons = score_page(page.title, page.description, page.markdown)
+    auto_score, auto_label, auto_reasons = score_page(page.title, page.description, page.markdown)
+    score, label, reasons = auto_score, auto_label, auto_reasons
+    manual_score = existing.get("manual_score") if existing else None
+    if manual_score is not None:
+        try:
+            score = max(0, min(100, int(manual_score)))
+            label = decision_label_for_score(score)
+            reasons = [f"手动评分覆盖：{score}/100"] + auto_reasons[:2]
+        except (TypeError, ValueError):
+            manual_score = None
     keywords = extract_keywords(f"{page.title}\n{page.description}\n{page.markdown}")
     extractive_summary = first_sentences(page.description or page.markdown)
     llm_summary = summarize_with_longcat(page.title, page.markdown)
@@ -704,6 +739,9 @@ def capture(url: str, note: str = "", tags: list[str] | None = None, force: bool
         "captured_at": now_local().isoformat(timespec="seconds"),
         "content_type": page.content_type,
         "content_chars": len(page.markdown),
+        "auto_decision_score": auto_score,
+        "auto_decision_label": auto_label,
+        "auto_decision_reasons": auto_reasons,
         "decision_score": score,
         "decision_label": label,
         "decision_reasons": reasons,
@@ -714,6 +752,10 @@ def capture(url: str, note: str = "", tags: list[str] | None = None, force: bool
         "source_status": page.source_status,
         "source_message": page.source_message,
     }
+    if existing and manual_score is not None:
+        item["manual_score"] = score
+        item["manual_score_note"] = existing.get("manual_score_note", "")
+        item["manual_score_at"] = existing.get("manual_score_at", "")
     md_path = write_markdown(item, page.markdown)
     item["markdown_path"] = str(md_path)
     items[item_id] = item
@@ -788,6 +830,42 @@ def delete_item(ref: str, keep_markdown: bool = False) -> tuple[dict[str, Any], 
     return item, markdown_deleted
 
 
+def rate_item(ref: str, score: int, note: str = "") -> dict[str, Any]:
+    score = max(0, min(100, int(score)))
+    items = load_items()
+    key = resolve_item_key(ref, items)
+    if not key:
+        raise RuntimeError(f"没找到这个收件箱条目：{ref}")
+    item = items[key]
+    if "auto_decision_score" not in item:
+        item["auto_decision_score"] = item.get("decision_score")
+        item["auto_decision_label"] = item.get("decision_label")
+        item["auto_decision_reasons"] = item.get("decision_reasons") or []
+    item["manual_score"] = score
+    item["manual_score_note"] = clean_ws(note)
+    item["manual_score_at"] = now_local().isoformat(timespec="seconds")
+    item["decision_score"] = score
+    item["decision_label"] = decision_label_for_score(score)
+    reasons = [f"手动评分覆盖：{score}/100"]
+    if note:
+        reasons.append(f"备注：{clean_ws(note)}")
+    auto_reasons = item.get("auto_decision_reasons") or []
+    reasons.extend(str(reason) for reason in auto_reasons[:2])
+    item["decision_reasons"] = reasons
+    save_items(items)
+    path = Path(str(item.get("markdown_path") or ""))
+    if path.exists():
+        body = path.read_text(encoding="utf-8", errors="replace")
+        body = re.sub(
+            r"- Decision: .+?\n",
+            f"- Decision: {item.get('decision_label')} ({item.get('decision_score')}/100)\n",
+            body,
+            count=1,
+        )
+        path.write_text(body, encoding="utf-8")
+    return item
+
+
 def render_item(item: dict[str, Any], verbose: bool = False) -> str:
     lines = [
         f"📥 已入收件箱：{item.get('title') or '未命名'}",
@@ -844,6 +922,17 @@ def render_delete(ref: str, keep_markdown: bool = False) -> str:
     else:
         lines.append("Markdown：" + ("已删除" if markdown_deleted else "未找到或已跳过"))
     return "\n".join(lines)
+
+
+def render_rate(ref: str, score: int, note: str = "") -> str:
+    item = rate_item(ref, score, note=note)
+    auto_score = item.get("auto_decision_score")
+    suffix = f"；自动评分原为 {auto_score}/100" if auto_score is not None else ""
+    return "\n".join([
+        f"✅ 已更新评分：{item.get('title') or '未命名'}",
+        f"ID：{item.get('id')}",
+        f"当前判断：{item.get('decision_label')}（{item.get('decision_score')}/100）{suffix}",
+    ])
 
 
 def render_decide(target: str, question: str = "") -> str:
@@ -929,6 +1018,11 @@ def main() -> int:
     p_delete.add_argument("ref")
     p_delete.add_argument("--keep-markdown", action="store_true")
 
+    p_rate = sub.add_parser("rate")
+    p_rate.add_argument("ref")
+    p_rate.add_argument("score", type=int)
+    p_rate.add_argument("--note", default="")
+
     p_brief = sub.add_parser("brief")
     p_brief.add_argument("--limit", type=int, default=8)
 
@@ -945,6 +1039,8 @@ def main() -> int:
             print(render_read(args.ref, chars=max(200, min(args.chars, 5000))))
         elif args.command == "delete":
             print(render_delete(args.ref, keep_markdown=args.keep_markdown))
+        elif args.command == "rate":
+            print(render_rate(args.ref, args.score, note=args.note))
         elif args.command == "brief":
             print(render_brief(max(1, min(args.limit, 30))))
     except Exception as exc:  # noqa: BLE001 - QQ should receive a compact failure.

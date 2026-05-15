@@ -204,10 +204,26 @@ function render(data){
     const tags=tagHtml(item);
     const itemId=String(item.id||'');
     const title=String(item.title||'未命名网页');
-    return `<article class="item"><div class="score ${cls(score)}">${esc(score)}</div><div class="itemBody"><div class="itemTop"><div><div class="name"><a href="${esc(url)}" target="_blank" rel="noopener">${esc(title)}</a></div><div class="meta">${esc(label(item))} · ${esc(host(url))} · ${fmtTime(item.captured_at)} · ${esc(item.content_chars||0)} 字</div></div></div><div class="summary">${summaryHtml(item)}</div><div class="itemFooter"><div class="tags">${tags}</div><div class="itemActions"><a class="btn secondary small" href="${esc(url)}" target="_blank" rel="noopener">原文</a><button class="btn secondary small" data-path="${esc(item.markdown_path||'')}" onclick="NB.copyText(this.dataset.path,this)">复制 Markdown 路径</button><button class="btn danger small" data-id="${esc(itemId)}" data-title="${esc(title)}" onclick="deleteItemFromButton(this)">删除</button></div></div></div></article>`
+    const manual=item.manual_score!==undefined&&item.manual_score!==null?' · 手动评分':'';
+    return `<article class="item"><div class="score ${cls(score)}">${esc(score)}</div><div class="itemBody"><div class="itemTop"><div><div class="name"><a href="${esc(url)}" target="_blank" rel="noopener">${esc(title)}</a></div><div class="meta">${esc(label(item))} · ${esc(host(url))} · ${fmtTime(item.captured_at)} · ${esc(item.content_chars||0)} 字${manual}</div></div></div><div class="summary">${summaryHtml(item)}</div><div class="itemFooter"><div class="tags">${tags}</div><div class="itemActions"><a class="btn secondary small" href="${esc(url)}" target="_blank" rel="noopener">原文</a><button class="btn secondary small" data-path="${esc(item.markdown_path||'')}" onclick="NB.copyText(this.dataset.path,this)">复制 Markdown 路径</button><button class="btn secondary small" data-id="${esc(itemId)}" data-title="${esc(title)}" data-score="${esc(score)}" onclick="rateItemFromButton(this)">评分</button><button class="btn danger small" data-id="${esc(itemId)}" data-title="${esc(title)}" onclick="deleteItemFromButton(this)">删除</button></div></div></div></article>`
   }).join(''):'<div class="panel empty">收件箱还是空的。QQ 发“收一下 https://example.com”就能开始积累。</div>'
 }
 function deleteItemFromButton(btn){deleteItem(btn.dataset.id||'',btn.dataset.title||'未命名网页')}
+function rateItemFromButton(btn){rateItem(btn.dataset.id||'',btn.dataset.title||'未命名网页',btn.dataset.score||'')}
+async function rateItem(id,title,current){
+  if(!id)return alert('这个条目没有 ID，不能评分');
+  const value=prompt(`给这条内容打多少分？0-100\n\n${title}`, current||'');
+  if(value===null)return;
+  const score=Number(value);
+  if(!Number.isFinite(score)||score<0||score>100)return alert('评分需要是 0 到 100 的数字');
+  const note=prompt('备注（可选）：', '')||'';
+  try{
+    const r=await fetch('/api/inbox/'+encodeURIComponent(id)+'/rating',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score:Math.round(score),note})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||data.ok===false)throw new Error(data.error||'评分失败');
+    await loadAll();
+  }catch(e){alert('评分失败：'+(e&&e.message?e.message:e))}
+}
 async function deleteItem(id,title){
   if(!id)return alert('这个条目没有 ID，不能删除');
   if(!confirm(`删除这条收件箱内容？\n\n${title}\n${id}`))return;

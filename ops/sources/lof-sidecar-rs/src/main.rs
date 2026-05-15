@@ -110,6 +110,12 @@ struct RenderTextRequest {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+struct InboxRatingRequest {
+    score: i64,
+    note: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct RunResponse {
     ok: bool,
@@ -282,6 +288,7 @@ async fn main() {
         .route("/api/sidecars", get(api_sidecars))
         .route("/api/inbox", get(api_inbox))
         .route("/api/inbox/:id", delete(api_delete_inbox))
+        .route("/api/inbox/:id/rating", post(api_rate_inbox))
         .route("/api/internal/render-text", post(api_internal_render_text))
         .route("/api/capabilities", get(api_capabilities))
         .route("/api/evolution", get(api_evolution))
@@ -397,6 +404,25 @@ async fn api_delete_inbox(
     }
 }
 
+async fn api_rate_inbox(
+    State(state): State<AppState>,
+    AxumPath(ref_id): AxumPath<String>,
+    Json(req): Json<InboxRatingRequest>,
+) -> Response {
+    match rate_inbox_item(&state.inbox_dir, &ref_id, req.score, req.note.unwrap_or_default()).await {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err((status, message)) => (
+            status,
+            Json(serde_json::json!({
+                "ok": false,
+                "id": ref_id,
+                "error": message,
+            })),
+        )
+            .into_response(),
+    }
+}
+
 async fn api_internal_render_text(Json(req): Json<RenderTextRequest>) -> Response {
     let Some(expected_token) = read_render_token().await else {
         return (
@@ -434,22 +460,36 @@ async fn api_internal_render_text(Json(req): Json<RenderTextRequest>) -> Respons
     });
     let limit = req.limit.unwrap_or(40_000).clamp(1_000, 60_000);
     let mut command = Command::new("python3");
-    command
-        .arg(script)
-        .arg("deep-text")
-        .arg(&req.url)
-        .arg("--limit")
-        .arg(limit.to_string())
-        .arg("--scrolls")
-        .arg("18")
-        .arg("--delay-ms")
-        .arg("450")
-        .arg("--wait-ms")
-        .arg("6000")
-        .arg("--timeout")
-        .arg("100")
-        .arg("--output-limit")
-        .arg((limit + 10_000).to_string());
+    command.arg(script);
+    if is_feishu_docx_url(&req.url) {
+        command
+            .arg("feishu-text")
+            .arg(&req.url)
+            .arg("--limit")
+            .arg(limit.to_string())
+            .arg("--wait-ms")
+            .arg("8000")
+            .arg("--timeout")
+            .arg("100")
+            .arg("--output-limit")
+            .arg((limit + 10_000).to_string());
+    } else {
+        command
+            .arg("deep-text")
+            .arg(&req.url)
+            .arg("--limit")
+            .arg(limit.to_string())
+            .arg("--scrolls")
+            .arg("18")
+            .arg("--delay-ms")
+            .arg("450")
+            .arg("--wait-ms")
+            .arg("6000")
+            .arg("--timeout")
+            .arg("100")
+            .arg("--output-limit")
+            .arg((limit + 10_000).to_string());
+    }
 
     let output = match tokio::time::timeout(Duration::from_secs(115), command.output()).await {
         Ok(Ok(output)) => output,
@@ -534,6 +574,20 @@ fn is_allowed_render_url(url: &str) -> bool {
         return false;
     };
     host == "feishu.cn" || host.ends_with(".feishu.cn")
+}
+
+fn is_feishu_docx_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    parsed.path().contains("/docx/")
+        && parsed
+            .host_str()
+            .map(|host| {
+                let host = host.to_ascii_lowercase();
+                host == "feishu.cn" || host.ends_with(".feishu.cn")
+            })
+            .unwrap_or(false)
 }
 
 async fn refresh_dashboard_history(state: &AppState) -> serde_json::Value {
@@ -1782,6 +1836,110 @@ async fn remove_inbox_markdown(
         Ok(_) => (true, Some(raw_path.to_string())),
         Err(_) => (false, Some(raw_path.to_string())),
     }
+}
+
+fn inbox_decision_label(score: i64) -> &'static str {
+    if score >= 75 {
+        "值得优先看"
+    } else if score >= 58 {
+        "可以稍后看"
+    } else if score >= 42 {
+        "只需扫一眼"
+    } else {
+        "大概率可跳过"
+    }
+}
+
+fn apply_inbox_rating(
+    item: &mut serde_json::Value,
+    score: i64,
+    note: &str,
+) -> Result<(), (StatusCode, String)> {
+    let Some(obj) = item.as_object_mut() else {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "inbox item is not an object".to_string()));
+    };
+    let score = score.clamp(0, 100);
+    if !obj.contains_key("auto_decision_score") {
+        let auto_score = obj.get("decision_score").cloned().unwrap_or(serde_json::Value::Null);
+        let auto_label = obj.get("decision_label").cloned().unwrap_or(serde_json::Value::Null);
+        let auto_reasons = obj
+            .get("decision_reasons")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        obj.insert("auto_decision_score".to_string(), auto_score);
+        obj.insert("auto_decision_label".to_string(), auto_label);
+        obj.insert("auto_decision_reasons".to_string(), auto_reasons);
+    }
+    let clean_note = note.trim();
+    let mut reasons = vec![serde_json::json!(format!("手动评分覆盖：{score}/100"))];
+    if !clean_note.is_empty() {
+        reasons.push(serde_json::json!(format!("备注：{clean_note}")));
+    }
+    if let Some(auto_reasons) = obj.get("auto_decision_reasons").and_then(|v| v.as_array()) {
+        for reason in auto_reasons.iter().take(2) {
+            reasons.push(reason.clone());
+        }
+    }
+    obj.insert("manual_score".to_string(), serde_json::json!(score));
+    obj.insert("manual_score_note".to_string(), serde_json::json!(clean_note));
+    obj.insert(
+        "manual_score_at".to_string(),
+        serde_json::json!(shanghai_now().to_rfc3339()),
+    );
+    obj.insert("decision_score".to_string(), serde_json::json!(score));
+    obj.insert(
+        "decision_label".to_string(),
+        serde_json::json!(inbox_decision_label(score)),
+    );
+    obj.insert("decision_reasons".to_string(), serde_json::Value::Array(reasons));
+    Ok(())
+}
+
+async fn rate_inbox_item(
+    inbox_dir: &Path,
+    ref_id: &str,
+    score: i64,
+    note: String,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let ref_id = ref_id.trim();
+    if ref_id.is_empty() || ref_id.contains('/') || ref_id.contains('\\') {
+        return Err((StatusCode::BAD_REQUEST, "invalid inbox item id".to_string()));
+    }
+    let items_file = inbox_dir.join("items.json");
+    let raw = tokio::fs::read_to_string(&items_file)
+        .await
+        .unwrap_or_else(|_| "{}".to_string());
+    let mut parsed =
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|_| serde_json::json!({}));
+    let updated = match &mut parsed {
+        serde_json::Value::Object(map) => {
+            let key = resolve_inbox_map_key(map, ref_id)?;
+            let item = map
+                .get_mut(&key)
+                .ok_or_else(|| (StatusCode::NOT_FOUND, "inbox item not found".to_string()))?;
+            apply_inbox_rating(item, score, &note)?;
+            item.clone()
+        }
+        serde_json::Value::Array(items) => {
+            let idx = resolve_inbox_array_index(items, ref_id)?;
+            let item = items
+                .get_mut(idx)
+                .ok_or_else(|| (StatusCode::NOT_FOUND, "inbox item not found".to_string()))?;
+            apply_inbox_rating(item, score, &note)?;
+            item.clone()
+        }
+        _ => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "items.json format is not supported".to_string(),
+            ))
+        }
+    };
+    write_inbox_json(&items_file, &parsed).await?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "item": updated,
+    }))
 }
 
 async fn delete_inbox_item(
