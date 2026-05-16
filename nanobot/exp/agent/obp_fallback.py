@@ -19,7 +19,7 @@ class OBPFallbackClient:
 
     def __init__(self) -> None:
         self._provider: LLMProvider | None = None
-        self._key: tuple[str, str, str] | None = None
+        self._key: tuple[str, str, str, str] | None = None
 
     def provider(self, *, env: Mapping[str, str] | None = None) -> tuple[LLMProvider, str] | None:
         source = os.environ if env is None else env
@@ -32,7 +32,12 @@ class OBPFallbackClient:
             or source.get("OBP_PROXY_TOKEN", "").strip()
             or "no-key"
         )
-        key = (base, model, api_key)
+        source_name = (
+            source.get("NANOBOT_OBP_FALLBACK_SOURCE", "").strip()
+            or source.get("NANOBOT_OBP_SOURCE", "").strip()
+            or "default-nanobot-fallback"
+        )
+        key = (base, model, api_key, source_name)
         if self._provider is None or self._key != key:
             from nanobot.providers import openai_compat_provider
 
@@ -40,6 +45,7 @@ class OBPFallbackClient:
                 api_key=api_key,
                 api_base=base,
                 default_model=model,
+                extra_headers={"X-OBP-Source": source_name},
             )
             self._key = key
         return self._provider, model

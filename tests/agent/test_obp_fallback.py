@@ -30,6 +30,28 @@ def test_provider_is_disabled_without_base() -> None:
     assert OBPFallbackClient().provider(env={}) is None
 
 
+def test_provider_tags_obp_source_header(monkeypatch) -> None:
+    from nanobot.providers import openai_compat_provider
+
+    captured: dict[str, object] = {}
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(openai_compat_provider, "OpenAICompatProvider", FakeProvider)
+
+    fallback = OBPFallbackClient().provider(
+        env={
+            "NANOBOT_OBP_FALLBACK_BASE": "http://obp.local/v1",
+            "NANOBOT_OBP_FALLBACK_SOURCE": "unit-fallback",
+        }
+    )
+
+    assert fallback is not None
+    assert captured["extra_headers"] == {"X-OBP-Source": "unit-fallback"}
+
+
 @pytest.mark.asyncio
 async def test_request_returns_none_when_disabled() -> None:
     class Logger:
