@@ -61,10 +61,11 @@ async def test_runner_uses_obp_fallback_on_timeout_like_error(monkeypatch):
     captured: dict[str, object] = {}
 
     class FakeFallbackProvider:
-        def __init__(self, *, api_key, api_base, default_model):
+        def __init__(self, *, api_key, api_base, default_model, extra_headers=None):
             captured["api_key"] = api_key
             captured["api_base"] = api_base
             captured["default_model"] = default_model
+            captured["extra_headers"] = extra_headers
 
         async def chat_with_retry(self, **kwargs):
             captured["kwargs"] = kwargs
@@ -94,6 +95,7 @@ async def test_runner_uses_obp_fallback_on_timeout_like_error(monkeypatch):
     assert result.final_content == "fallback ok"
     assert captured["api_key"] == "proxy-token"
     assert captured["api_base"] == "http://obp.local/v1"
+    assert captured["extra_headers"] == {"X-OBP-Source": "default-nanobot-fallback"}
     kwargs = captured["kwargs"]
     assert kwargs["model"] == "LongCat-Flash-Chat"
     assert kwargs["tools"] is None
