@@ -45,6 +45,7 @@ post_json = HTTP.post_json
 
 OBP_CHAT_URL = os.environ.get("TREND_LLM_URL", "http://127.0.0.1:8000/v1/chat/completions").strip()
 OBP_MODEL = os.environ.get("TREND_LLM_MODEL", "LongCat-Flash-Chat").strip()
+OBP_SOURCE = os.environ.get("TREND_OBP_SOURCE", "trend-radar").strip() or "trend-radar"
 NOISE_KEYWORDS = (
     "恋综", "花少", "综艺", "明星", "粉丝", "塌房", "官宣", "路透", "红毯", "演唱会",
     "哥哥", "姐姐", "姐弟恋", "cp", "CP", "代言", "私生", "站姐", "饭圈",
@@ -206,6 +207,7 @@ def summarize_with_free_model(items: list[dict[str, Any]]) -> list[str]:
             temperature=payload["temperature"],
             max_tokens=payload["max_tokens"],
             timeout=float(os.environ.get("TREND_LLM_TIMEOUT", "24")),
+            source=OBP_SOURCE,
         )
         parsed = extract_json_array(content)
         summaries = [normalize_sentence(x.get("summary") if isinstance(x, dict) else x) for x in parsed]

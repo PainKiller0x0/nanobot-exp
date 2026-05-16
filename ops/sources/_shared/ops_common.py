@@ -172,6 +172,7 @@ def post_chat_completion_content(
     max_tokens: int = 512,
     timeout: float = 24,
     extra: dict[str, Any] | None = None,
+    source: str | None = None,
 ) -> str:
     """Call an OpenAI-compatible chat endpoint and return the first message content."""
     payload: dict[str, Any] = {
@@ -183,10 +184,18 @@ def post_chat_completion_content(
     }
     if extra:
         payload.update(extra)
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    source_name = (source or os.environ.get("OPS_OBP_SOURCE", "")).strip()
+    if source_name:
+        headers["X-OBP-Source"] = source_name
+
     req = Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urlopen(req, timeout=timeout) as resp:
@@ -382,4 +391,3 @@ def sign_nbraw_sha256(body: str, prefix: str = NBRAW_SIGNED_PREFIX) -> str:
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return f"{prefix}{digest}\n\n{body}"
 # --- End article push helpers ---
-
