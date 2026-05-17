@@ -10,7 +10,8 @@ use std::{
 use axum::{
     body::{Body, Bytes},
     extract::{Path as AxumPath, State},
-    http::{header, HeaderMap, Method, StatusCode, Uri},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri},
+    middleware,
     response::{Html, IntoResponse, Response},
     routing::{any, delete, get, post},
     Json, Router,
@@ -37,6 +38,12 @@ use sidecar_manager::ManagedSidecarStatus;
 use system_metrics::{
     json_f64, json_u64, read_cpu_info, read_disk_root, read_loadavg, read_meminfo_mb,
 };
+
+const X_ROBOTS_TAG: HeaderName = HeaderName::from_static("x-robots-tag");
+const NOINDEX_HEADER_VALUE: HeaderValue =
+    HeaderValue::from_static("noindex, nofollow, noarchive, nosnippet");
+const ROBOTS_TXT: &str = "User-agent: *\nAllow: /\n\n# 8093 is a private Nanobot dashboard. Every response carries X-Robots-Tag: noindex.\n";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SidecarStats {
     total_runs: u64,
@@ -270,6 +277,7 @@ async fn main() {
         .route("/", get(dashboard))
         .route("/lof", get(index))
         .route("/lof/", get(index))
+        .route("/robots.txt", get(robots_txt))
         .route("/health", get(health))
         .route("/api/status", get(api_status))
         .route("/api/system", get(api_system))
@@ -316,7 +324,8 @@ async fn main() {
         .route("/trends/*path", any(proxy_trends_path))
         .route("/api/run", post(api_run))
         .route("/api/trigger", post(api_trigger))
-        .with_state(app_state.clone());
+        .with_state(app_state.clone())
+        .layer(middleware::map_response(add_noindex_headers));
 
     tokio::spawn(auto_refresh_loop(app_state.clone()));
 
@@ -326,6 +335,22 @@ async fn main() {
         .await
         .expect("bind failed");
     axum::serve(listener, app).await.expect("server failed");
+}
+
+async fn add_noindex_headers(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(X_ROBOTS_TAG, NOINDEX_HEADER_VALUE);
+    response
+}
+
+async fn robots_txt() -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(X_ROBOTS_TAG, NOINDEX_HEADER_VALUE)
+        .body(Body::from(ROBOTS_TXT))
+        .unwrap_or_else(|_| Response::new(Body::from(ROBOTS_TXT)))
 }
 
 async fn health() -> impl IntoResponse {
@@ -409,7 +434,14 @@ async fn api_rate_inbox(
     AxumPath(ref_id): AxumPath<String>,
     Json(req): Json<InboxRatingRequest>,
 ) -> Response {
-    match rate_inbox_item(&state.inbox_dir, &ref_id, req.score, req.note.unwrap_or_default()).await {
+    match rate_inbox_item(
+        &state.inbox_dir,
+        &ref_id,
+        req.score,
+        req.note.unwrap_or_default(),
+    )
+    .await
+    {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err((status, message)) => (
             status,
@@ -1856,12 +1888,21 @@ fn apply_inbox_rating(
     note: &str,
 ) -> Result<(), (StatusCode, String)> {
     let Some(obj) = item.as_object_mut() else {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "inbox item is not an object".to_string()));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "inbox item is not an object".to_string(),
+        ));
     };
     let score = score.clamp(0, 100);
     if !obj.contains_key("auto_decision_score") {
-        let auto_score = obj.get("decision_score").cloned().unwrap_or(serde_json::Value::Null);
-        let auto_label = obj.get("decision_label").cloned().unwrap_or(serde_json::Value::Null);
+        let auto_score = obj
+            .get("decision_score")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let auto_label = obj
+            .get("decision_label")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let auto_reasons = obj
             .get("decision_reasons")
             .cloned()
@@ -1891,7 +1932,10 @@ fn apply_inbox_rating(
         obj.insert("auto_base_reasons".to_string(), base_reasons);
     }
     if !obj.contains_key("profile_version") {
-        obj.insert("profile_version".to_string(), serde_json::json!("taste-v0.2"));
+        obj.insert(
+            "profile_version".to_string(),
+            serde_json::json!("taste-v0.2"),
+        );
     }
     let clean_note = note.trim();
     let mut reasons = vec![serde_json::json!(format!("手动评分覆盖：{score}/100"))];
@@ -1904,7 +1948,10 @@ fn apply_inbox_rating(
         }
     }
     obj.insert("manual_score".to_string(), serde_json::json!(score));
-    obj.insert("manual_score_note".to_string(), serde_json::json!(clean_note));
+    obj.insert(
+        "manual_score_note".to_string(),
+        serde_json::json!(clean_note),
+    );
     obj.insert(
         "manual_score_at".to_string(),
         serde_json::json!(shanghai_now().to_rfc3339()),
@@ -1914,7 +1961,10 @@ fn apply_inbox_rating(
         "decision_label".to_string(),
         serde_json::json!(inbox_decision_label(score)),
     );
-    obj.insert("decision_reasons".to_string(), serde_json::Value::Array(reasons));
+    obj.insert(
+        "decision_reasons".to_string(),
+        serde_json::Value::Array(reasons),
+    );
     Ok(())
 }
 
