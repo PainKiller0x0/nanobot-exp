@@ -30,8 +30,8 @@ mod system_metrics;
 
 use lof_domain::{is_trading_session, run_native_report, BoardData};
 use pages::{
-    common_js, dashboard, evolution_page, inbox_page, index, personal_ops_page, shell_js,
-    sidecars_page, workbench_page,
+    common_js, dashboard, inbox_page, index, personal_ops_page, shell_js, sidecars_page,
+    workbench_page,
 };
 use reverse_proxy::reverse_proxy;
 use sidecar_manager::ManagedSidecarStatus;
@@ -284,7 +284,7 @@ async fn main() {
         .route("/api/dashboard-history", get(api_dashboard_history))
         .route("/api/auto-compact", get(api_auto_compact))
         .route("/sidecars", get(sidecars_page))
-        .route("/evolution", get(evolution_page))
+        .route("/evolution", get(evolution_gone))
         .route("/inbox", get(inbox_page))
         .route("/workbench", get(workbench_page))
         .route("/workbench/", get(workbench_page))
@@ -351,6 +351,17 @@ async fn robots_txt() -> Response {
         .header(X_ROBOTS_TAG, NOINDEX_HEADER_VALUE)
         .body(Body::from(ROBOTS_TXT))
         .unwrap_or_else(|_| Response::new(Body::from(ROBOTS_TXT)))
+}
+
+async fn evolution_gone() -> Response {
+    Response::builder()
+        .status(StatusCode::GONE)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(X_ROBOTS_TAG, NOINDEX_HEADER_VALUE)
+        .body(Body::from(
+            "This historical dashboard URL has been removed. Use /api/evolution for private JSON data.\n",
+        ))
+        .unwrap_or_else(|_| Response::new(Body::from("Gone\n")))
 }
 
 async fn health() -> impl IntoResponse {

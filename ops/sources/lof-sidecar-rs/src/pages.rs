@@ -44,7 +44,7 @@ pub(crate) async fn dashboard() -> Html<String> {
     <article class="panel card wide fade" style="animation-delay:.10s"><h2>&#x6295;&#x8d44;&#x96f7;&#x8fbe;</h2><div id="lofRadar"></div></article>
     <article class="panel card fade" style="animation-delay:.12s"><h2>&#x9700;&#x8981;&#x4f60;&#x770b;</h2><div class="list" id="attention"></div></article>
     <details class="panel card full fade statusFold" style="animation-delay:.14s" open><summary><h2>运行状态</h2><span class="foldHint"></span></summary><div class="opsMiniGrid"><div class="opsMini"><h3>&#x7cfb;&#x7edf;&#x4f53;&#x611f;</h3><div class="metric" id="systemMetrics"></div></div><div class="opsMini"><h3>&#x670d;&#x52a1;&#x5065;&#x5eb7;</h3><div class="metric" id="sidecarMetrics"></div></div><div class="opsMini"><h3>&#x5b9a;&#x65f6;&#x4efb;&#x52a1;</h3><div class="metric" id="notifyMetrics"></div></div></div></details>
-    <article class="panel card full fade" style="animation-delay:.16s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/today">个人中枢<span>今日内容、任务追踪、模型路由先看这里</span></a><a href="/workbench">内容工作台<span>RSS、知识收件箱、热点雷达合并阅读</span></a><a href="/lof">投资看板<span>LOF 实时估值、溢价、报告和手动刷新</span></a><a href="/sidecars">系统运维<span>服务健康、能力矩阵、日志和命令入口</span></a><a href="/model-routes">模型成本<span>OBP 路由、Pro 原因、付费/免费消耗</span></a><a href="/evolution">进化日志<span>能力变化、性能证据、修复记录</span></a></div></article>
+    <article class="panel card full fade" style="animation-delay:.16s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/today">个人中枢<span>今日内容、任务追踪、模型路由先看这里</span></a><a href="/workbench">内容工作台<span>RSS、知识收件箱、热点雷达合并阅读</span></a><a href="/lof">投资看板<span>LOF 实时估值、溢价、报告和手动刷新</span></a><a href="/sidecars">系统运维<span>服务健康、能力矩阵、日志和命令入口</span></a><a href="/model-routes">模型成本<span>OBP 路由、Pro 原因、付费/免费消耗</span></a><a href="/api/evolution" target="_blank" rel="noopener">进化日志<span>能力变化、性能证据、修复记录</span></a></div></article>
     <article class="panel card full fade" style="animation-delay:.18s"><h2>&#x4fe1;&#x606f;&#x96f7;&#x8fbe;</h2><div class="list infoGrid" id="infoRadar"></div></article>
     <details class="panel card full fade detailCard" style="animation-delay:.20s"><summary><h2>7 &#x5929;&#x5386;&#x53f2;</h2><span class="foldHint"></span></summary><div class="detailBody" id="historyPanel"></div></details>
     <details class="panel card full fade detailCard" style="animation-delay:.21s"><summary><h2>记忆压缩</h2><span class="foldHint"></span></summary><div class="detailBody" id="compactPanel"></div></details>
@@ -394,47 +394,6 @@ pub(crate) async fn common_js() -> Response {
         .into_response()
 }
 
-pub(crate) async fn evolution_page() -> impl IntoResponse {
-    Html(
-        r##"<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Nanobot 进化日志</title>
-<style>
-:root{--bg:#f4efe6;--panel:#fffdf8;--text:#1f241d;--muted:#68705f;--line:#ddd4c3;--accent:#b8642b;--accent2:#297f72;--ok:#18864b;--shadow:0 20px 60px rgba(73,50,24,.14)}
-[data-theme="dark"]{--bg:#111816;--panel:#1d2621;--text:#edf5ea;--muted:#a8b5a4;--line:#334038;--accent:#f0a35c;--accent2:#77c7b7;--ok:#77d39b;--shadow:0 22px 70px rgba(0,0,0,.36)}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(900px 520px at 0 -10%,rgba(184,100,43,.22),transparent 58%),radial-gradient(760px 460px at 100% 0,rgba(41,127,114,.18),transparent 55%),var(--bg);color:var(--text);font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:1120px;margin:0 auto;padding:26px 16px 42px}.hero{display:grid;grid-template-columns:1.3fr .7fr;gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:22px}.eyebrow{color:var(--accent2);font-size:12px;font-weight:900;letter-spacing:.16em}.title{font-family:Georgia,"Noto Serif SC",serif;font-size:44px;line-height:1.04;margin:8px 0 10px;letter-spacing:-.04em}.sub{color:var(--muted);line-height:1.75;margin:0}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}.btn{border:1px solid var(--line);border-radius:999px;padding:10px 14px;background:var(--text);color:var(--bg);font-weight:900;text-decoration:none;cursor:pointer}.btn.secondary{background:transparent;color:var(--text)}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{border:1px solid var(--line);border-radius:18px;padding:14px;background:rgba(255,255,255,.18)}.k{font-size:12px;color:var(--muted)}.v{font-size:30px;font-weight:950;letter-spacing:-.04em}.grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:14px}.event{position:relative;overflow:hidden}.event:before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--accent)}.eventHead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-left:8px}.date{font-weight:950;color:var(--accent2);white-space:nowrap}.name{font-size:22px;font-weight:950}.cat{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:5px 9px;color:var(--accent);font-size:12px;font-weight:900}.impact{color:var(--muted);line-height:1.65;margin:8px 0 12px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-left:8px}.metric{border:1px solid var(--line);border-radius:16px;padding:12px;background:rgba(255,255,255,.16)}.metric b{display:block;margin-bottom:6px}.arrow{color:var(--accent2);font-weight:950}.mini{font-size:12px;color:var(--muted);line-height:1.5}.tags{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0 0 8px}.tag{border:1px solid var(--line);border-radius:999px;padding:5px 8px;font-size:12px;color:var(--muted)}.links{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 0 8px}.links a{color:var(--accent2);font-weight:900;text-decoration:none}.links a:hover{text-decoration:underline}.empty{color:var(--muted);padding:24px}.foot{margin-top:14px;color:var(--muted);font-size:13px}@media(max-width:820px){.hero{grid-template-columns:1fr}.title{font-size:34px}.stats{grid-template-columns:1fr}.eventHead{display:block}.date{margin-top:8px}}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <section class="hero">
-    <div class="panel">
-      <div class="eyebrow">EVOLUTION LOG</div>
-      <h1 class="title">Nanobot 进化日志</h1>
-      <p class="sub">这里不是情绪价值，是证据账本：能力新增、性能变好、重复错误减少、偏好被固化，都会沉淀成可检查的记录。</p>
-      <div class="toolbar"><a class="btn" href="/">回到驾驶舱</a><a class="btn secondary" href="/sidecars">能力总控</a><a class="btn secondary" href="/api/evolution" target="_blank">JSON</a><button class="btn secondary" onclick="toggleTheme()">明暗</button></div>
-    </div>
-    <div class="panel"><div class="stats" id="stats"><div class="empty">加载中...</div></div></div>
-  </section>
-  <section class="grid" id="events"></section>
-  <div class="foot" id="foot"></div>
-</div>
-<script src="/assets/nb-common.js"></script>
-<script>
-window.toggleTheme=NB.bindTheme('evolutionTheme',{also:['sidecarTheme']});
-const esc=NB.esc, stat=NB.stat;
-function render(d){const s=d.summary||{};document.getElementById('stats').innerHTML=stat('总记录',s.total??0,'所有已沉淀变化')+stat('近 7 天',s.recent_7d??0,'最近还在变强的证据')+stat('分类',Object.keys(s.categories||{}).length,'性能 / 稳定性 / 治理等');const items=d.items||[];document.getElementById('events').innerHTML=items.length?items.map(item=>`<article class="panel event"><div class="eventHead"><div><div class="name">${esc(item.title)}</div><div class="impact">${esc(item.impact)}</div><span class="cat">${esc(item.category)}</span></div><div class="date">${esc(item.date)}</div></div><div class="metrics">${(item.metrics||[]).map(m=>`<div class="metric"><b>${esc(m.label)}</b><div class="mini">之前：${esc(m.before)}</div><div class="arrow">→ ${esc(m.after)}</div><div class="mini">${esc(m.note)}</div></div>`).join('')}</div><div class="tags">${(item.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div><div class="links">${(item.links||[]).map(l=>`<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join('')}<span class="mini">证据：${esc(item.evidence)}</span></div></article>`).join(''):'<div class="panel empty">暂无进化记录。</div>';document.getElementById('foot').textContent='最后刷新：'+(d.now||'-')+'；数据源：/root/.nanobot/evolution.json。'}
-fetch('/api/evolution',{cache:'no-store'}).then(r=>r.json()).then(render).catch(e=>{document.getElementById('events').innerHTML='<div class="panel empty">加载失败：'+esc(e.message)+'</div>'});
-</script>
-</body>
-</html>
-"##,
-    )
-}
-
 pub(crate) async fn sidecars_page() -> impl IntoResponse {
     Html(
         r##"<!doctype html>
@@ -459,7 +418,7 @@ pub(crate) async fn sidecars_page() -> impl IntoResponse {
     <div class="toolbar">
       <button onclick="loadAll()">&#x5237;&#x65b0;&#x72b6;&#x6001;</button>
       <button onclick="toggleTheme()">&#x5207;&#x6362;&#x660e;&#x6697;</button>
-      <a class="btn" href="/">&#x56de;&#x5230;&#x9a7e;&#x9a76;&#x8231;</a><a class="btn" href="/evolution">进化日志</a><a class="btn" href="/lof">LOF &#x770b;&#x677f;</a><a class="btn" href="/api/capabilities" target="_blank">能力 JSON</a><a class="btn" href="/api/sidecars" target="_blank">服务 JSON</a>
+      <a class="btn" href="/">&#x56de;&#x5230;&#x9a7e;&#x9a76;&#x8231;</a><a class="btn" href="/api/evolution" target="_blank" rel="noopener">进化日志</a><a class="btn" href="/lof">LOF &#x770b;&#x677f;</a><a class="btn" href="/api/capabilities" target="_blank">能力 JSON</a><a class="btn" href="/api/sidecars" target="_blank">服务 JSON</a>
     </div>
   </section>
   <section class="stats" id="stats"></section>
