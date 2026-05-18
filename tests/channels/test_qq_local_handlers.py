@@ -110,3 +110,60 @@ async def test_local_handler_chunks_long_replies(monkeypatch) -> None:
 
     assert len(sent) == 3
     assert "".join(sent) == "a" * 450
+
+
+@pytest.mark.asyncio
+async def test_knowledge_inbox_full_backread_prefers_one_shot(monkeypatch) -> None:
+    sent: list[str] = []
+    args_seen: list[list[str]] = []
+
+    async def fake_send_text_only(**kwargs):
+        sent.append(kwargs["content"])
+
+    async def fake_run(args: list[str]) -> str:
+        args_seen.append(args)
+        return "x" * 450
+
+    monkeypatch.setattr(local_handlers.local_commands, "run_knowledge_inbox_command", fake_run)
+
+    assert await local_handlers.try_handle_knowledge_inbox_query(
+        chat_id="chat",
+        is_group=False,
+        message_id="m1",
+        content="\u8865\u8bfb 1",
+        text_chunk_max_len=200,
+        send_text_only=fake_send_text_only,
+    )
+
+    assert args_seen == [["backread", "1", "--full"]]
+    assert sent == ["x" * 450]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_inbox_full_backread_falls_back_to_chunks(monkeypatch) -> None:
+    sent: list[str] = []
+    attempts = 0
+
+    async def fake_send_text_only(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("too large")
+        sent.append(kwargs["content"])
+
+    async def fake_run(args: list[str]) -> str:
+        return "x" * 450
+
+    monkeypatch.setattr(local_handlers.local_commands, "run_knowledge_inbox_command", fake_run)
+
+    assert await local_handlers.try_handle_knowledge_inbox_query(
+        chat_id="chat",
+        is_group=False,
+        message_id="m1",
+        content="\u8865\u8bfb 1",
+        text_chunk_max_len=200,
+        send_text_only=fake_send_text_only,
+    )
+
+    assert len(sent) == 3
+    assert "".join(sent) == "x" * 450

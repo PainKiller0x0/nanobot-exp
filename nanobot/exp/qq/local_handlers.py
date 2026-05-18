@@ -20,6 +20,10 @@ def _chunk_limit(text_chunk_max_len: int | None) -> int:
     return max(200, int(text_chunk_max_len or 1200))
 
 
+def _is_full_backread_args(args: list[str]) -> bool:
+    return bool(args) and args[0] == "backread" and "--full" in args
+
+
 async def _send_reply_chunks(
     *,
     reply: str,
@@ -28,7 +32,26 @@ async def _send_reply_chunks(
     message_id: str,
     text_chunk_max_len: int | None,
     send_text_only: SendTextOnly,
+    one_shot: bool = False,
+    logger: Any | None = None,
 ) -> None:
+    if one_shot and reply.strip():
+        try:
+            await send_text_only(
+                chat_id=chat_id,
+                is_group=is_group,
+                msg_id=message_id,
+                content=reply,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - match signed article fallback behavior.
+            if logger is not None:
+                logger.warning(
+                    "QQ local one-shot send failed, fallback to chunking chat_id={} err={}",
+                    chat_id,
+                    exc,
+                )
+
     for chunk in split_message(reply, _chunk_limit(text_chunk_max_len)):
         if chunk.strip():
             await send_text_only(
@@ -91,6 +114,8 @@ async def try_handle_knowledge_inbox_query(
         message_id=message_id,
         text_chunk_max_len=text_chunk_max_len,
         send_text_only=send_text_only,
+        one_shot=_is_full_backread_args(args),
+        logger=logger,
     )
     if logger is not None:
         logger.info("QQ knowledge inbox fast path handled args={} message_id={}", args, message_id)
