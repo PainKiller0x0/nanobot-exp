@@ -17,7 +17,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 SHANGHAI = timezone(timedelta(hours=8))
@@ -540,7 +540,7 @@ def redirect_loop_fallback(url: str, exc: HTTPError) -> FetchedPage | None:
         f"> {description}",
         "",
         f"- 原始链接：{url}",
-        f"- 抓取状态：302 redirect loop",
+        "- 抓取状态：302 redirect loop",
         f"- 说明：{short(message, 220)}",
         "",
         f"[打开原文]({url})",
@@ -1059,6 +1059,278 @@ def find_item(ref: str) -> dict[str, Any] | None:
     return None
 
 
+
+RSS_BASE_URL_CANDIDATES = [
+    os.environ.get("WECHAT_RSS_BASE_URL", "").strip(),
+    "http://127.0.0.1:8091",
+    "http://wechat-rss-sidecar:8091",
+]
+BACKREAD_WEB_BASE = os.environ.get("NANOBOT_BACKREAD_WEB_BASE", "http://150.158.121.88:8093")
+
+
+def rss_request(path: str, *, expect_json: bool = True, timeout: int = 12) -> Any:
+    last_error: Exception | None = None
+    for base_url in RSS_BASE_URL_CANDIDATES:
+        if not base_url:
+            continue
+        req = Request(base_url.rstrip("/") + path, headers={"User-Agent": USER_AGENT})
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                body = resp.read(MAX_FETCH_BYTES).decode("utf-8", errors="replace")
+                return json.loads(body) if expect_json else body
+        except Exception as exc:  # noqa: BLE001 - try the next sidecar address.
+            last_error = exc
+    if last_error is not None:
+        raise RuntimeError(str(last_error)) from last_error
+    raise RuntimeError("RSS sidecar base URL not configured")
+
+
+def rss_timeline(days: int = 7, limit: int = 80) -> list[dict[str, Any]]:
+    params = urlencode({"days": max(1, min(days, 30)), "limit": max(1, min(limit, 200))})
+    payload = rss_request(f"/api/timeline?{params}")
+    items = payload.get("items") if isinstance(payload, dict) else []
+    if not isinstance(items, list):
+        return []
+    rows = [x for x in items if isinstance(x, dict)]
+    rows.sort(
+        key=lambda x: (
+            str(x.get("published_at") or ""),
+            str(x.get("published_at_local") or ""),
+            str(x.get("inserted_at") or ""),
+            int(x.get("id") or 0),
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+def rss_article(entry_id: int) -> dict[str, Any]:
+    raw = rss_request(f"/api/articles/{entry_id}")
+    item = raw.get("item") if isinstance(raw, dict) else {}
+    if not isinstance(item, dict):
+        item = {}
+    try:
+        markdown = str(rss_request(f"/api/articles/{entry_id}/markdown", expect_json=False)).strip()
+    except Exception:
+        markdown = ""
+    if not markdown:
+        markdown = str(
+            item.get("article_markdown")
+            or item.get("content_markdown")
+            or item.get("summary")
+            or ""
+        ).strip()
+    return {"item": item, "markdown": markdown}
+
+
+def compact_match_text(text: Any) -> str:
+    return re.sub(r"[\s，。！？!?、:：；;,.\-_/\\|\[\]()（）【】《》<>\"'`]+", "", str(text or "").lower())
+
+
+def match_tokens(text: str) -> list[str]:
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9_+.-]{1,}|\d+|[\u4e00-\u9fff]{2,}", text.lower())
+    stop = {"这个", "那个", "一下", "一篇", "文章", "补读", "补看", "帮我", "看看", "清单", "列表"}
+    return [t for t in tokens if t not in stop]
+
+
+def clip_multiline(text: Any, limit: int = 1200) -> str:
+    value = clean_ws(str(text or ""))
+    value = re.sub(r"\n{3,}", "\n\n", value).strip()
+    if len(value) <= limit:
+        return value
+    return value[: max(1, limit - 20)].rstrip() + "\n...（已截断）"
+
+
+def backread_candidates(days: int = 7, limit: int = 80) -> tuple[list[dict[str, Any]], str | None]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    rss_error: str | None = None
+    try:
+        for item in rss_timeline(days=days, limit=limit):
+            entry_id = str(item.get("id") or "").strip()
+            title = clean_ws(str(item.get("title") or ""))
+            if not entry_id or not title:
+                continue
+            url = str(item.get("link") or item.get("url") or "").strip()
+            dedupe = f"rss:{entry_id}" if entry_id else compact_match_text(title + url)
+            if dedupe in seen:
+                continue
+            seen.add(dedupe)
+            candidates.append({
+                "kind": "rss",
+                "id": entry_id,
+                "ref": f"rss:{entry_id}",
+                "title": title,
+                "source": item.get("subscription_name") or item.get("source") or "RSS",
+                "time": item.get("published_at_local") or item.get("published_at") or item.get("inserted_at") or "",
+                "url": url,
+                "summary": item.get("summary") or item.get("description") or "",
+            })
+    except Exception as exc:  # noqa: BLE001 - inbox fallback should still work.
+        rss_error = str(exc)
+
+    for item in sorted_items(limit):
+        title = clean_ws(str(item.get("title") or item.get("url") or ""))
+        if not title:
+            continue
+        item_id = str(item.get("id") or "")
+        url = str(item.get("final_url") or item.get("url") or "")
+        dedupe = compact_match_text(url or title)
+        if dedupe and dedupe in seen:
+            continue
+        if dedupe:
+            seen.add(dedupe)
+        candidates.append({
+            "kind": "inbox",
+            "id": item_id,
+            "ref": item_id,
+            "title": title,
+            "source": item.get("host") or "知识收件箱",
+            "time": item.get("captured_at") or "",
+            "url": url,
+            "summary": item.get("summary") or item.get("description") or "",
+            "item": item,
+        })
+    return candidates[: max(1, min(limit, 200))], rss_error
+
+
+def score_backread_candidate(query: str, candidate: dict[str, Any]) -> int:
+    raw = (query or "").strip()
+    if not raw:
+        return 0
+    q = compact_match_text(raw)
+    ident = compact_match_text(candidate.get("id"))
+    ref = compact_match_text(candidate.get("ref"))
+    title = compact_match_text(candidate.get("title"))
+    source = compact_match_text(candidate.get("source"))
+    url = compact_match_text(candidate.get("url"))
+    hay = f"{title}{source}{url}{ident}{ref}"
+    score = 0
+    if q and q in {ident, ref}:
+        score += 240
+    elif q and (ident.startswith(q) or ref.startswith(q)):
+        score += 180
+    if q and q in title:
+        score += 130 + min(40, len(q))
+    elif q and q in hay:
+        score += 80
+    for token in match_tokens(raw):
+        t = compact_match_text(token)
+        if not t:
+            continue
+        if t in title:
+            score += 35
+        elif t in source:
+            score += 22
+        elif t in hay:
+            score += 12
+    return score
+
+
+def resolve_backread_target(ref: str, *, days: int = 7, limit: int = 80) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
+    candidates, warning = backread_candidates(days=days, limit=limit)
+    query = (ref or "").strip()
+    if not query:
+        return None, candidates, warning
+    if query.isdigit():
+        idx = int(query)
+        if 1 <= idx <= len(candidates):
+            return candidates[idx - 1], candidates, warning
+    exact = compact_match_text(query)
+    for candidate in candidates:
+        if exact in {compact_match_text(candidate.get("ref")), compact_match_text(candidate.get("id"))}:
+            return candidate, candidates, warning
+    ranked = sorted(
+        ((score_backread_candidate(query, candidate), candidate) for candidate in candidates),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    if ranked and ranked[0][0] > 0:
+        return ranked[0][1], candidates, warning
+    return None, candidates, warning
+
+
+def render_backread_list(days: int = 7, limit: int = 8) -> str:
+    candidates, warning = backread_candidates(days=days, limit=max(limit * 3, 30))
+    shown = candidates[: max(1, min(limit, 20))]
+    if not shown:
+        msg = "📭 最近没有找到可补读内容。"
+        if warning:
+            msg += f"\nRSS 读取提示：{short(warning, 120)}"
+        return msg
+    lines = [f"📚 补读清单（最近 {days} 天）"]
+    for idx, item in enumerate(shown, 1):
+        source = clean_ws(str(item.get("source") or item.get("kind") or "-"))
+        title = short(item.get("title"), 42)
+        time = short(item.get("time"), 32)
+        lines.append(f"{idx}. [{source}] {title}")
+        lines.append(f"   {time} · {item.get('ref')}")
+    if warning:
+        lines.append(f"RSS 提示：{short(warning, 120)}")
+    lines.append("用法：补读 1 / 补读 标题关键词")
+    return "\n".join(lines)
+
+
+def render_backread(ref: str, *, days: int = 7, limit: int = 80, chars: int = 1400) -> str:
+    target, candidates, warning = resolve_backread_target(ref, days=days, limit=limit)
+    if not target:
+        lines = [f"没找到可补读内容：{ref}"]
+        if warning:
+            lines.append(f"RSS 读取提示：{short(warning, 120)}")
+        if candidates:
+            lines.append("可以先发“补读清单”，或换一个标题关键词。")
+        return "\n".join(lines)
+
+    kind = target.get("kind")
+    title = clean_ws(str(target.get("title") or "未命名"))
+    source = clean_ws(str(target.get("source") or kind or "-"))
+    time = clean_ws(str(target.get("time") or ""))
+    url = clean_ws(str(target.get("url") or ""))
+    body = ""
+    detail_url = ""
+    if kind == "rss":
+        entry_id = int(target.get("id") or 0)
+        try:
+            article = rss_article(entry_id)
+            item = article.get("item") or {}
+            if isinstance(item, dict):
+                title = clean_ws(str(item.get("title") or title))
+                source = clean_ws(str(item.get("subscription_name") or source))
+                time = clean_ws(str(item.get("published_at_local") or item.get("published_at") or time))
+                url = clean_ws(str(item.get("link") or url))
+            body = str(article.get("markdown") or "").strip()
+        except Exception as exc:  # noqa: BLE001 - still return timeline metadata.
+            body = clean_ws(str(target.get("summary") or ""))
+            detail_url = f"RSS 正文读取失败：{short(exc, 120)}"
+        detail_url = detail_url or f"{BACKREAD_WEB_BASE.rstrip('/')}/rss/"
+    else:
+        item = target.get("item") if isinstance(target.get("item"), dict) else find_item(str(target.get("id") or ""))
+        if item:
+            path = Path(str(item.get("markdown_path") or ""))
+            if path.exists():
+                body = path.read_text(encoding="utf-8", errors="replace")
+            else:
+                body = clean_ws(str(item.get("summary") or item.get("description") or ""))
+        detail_url = f"{BACKREAD_WEB_BASE.rstrip('/')}/inbox"
+
+    plain_body = plain_markdown_for_summary(body or target.get("summary") or "", limit=4000)
+    plain_body = re.sub(r"^[\s.。…·]+", "", plain_body)
+    summary = first_sentences(plain_body, limit=260)
+    preview = clip_multiline(body or target.get("summary") or "", chars)
+    lines = [f"📖 补读：{title}", f"来源：{source}"]
+    if time:
+        lines.append(f"时间：{time}")
+    lines.append(f"编号：{target.get('ref')}")
+    if url:
+        lines.append(f"原文：[打开链接]({url})")
+    if detail_url:
+        lines.append(f"看板：{detail_url}")
+    if summary:
+        lines.extend(["", "摘要：", summary])
+    if preview:
+        lines.extend(["", "预览：", preview])
+    return "\n".join(lines)
+
 def resolve_item_key(ref: str, items: dict[str, dict[str, Any]]) -> str | None:
     ref = (ref or "").strip()
     if not ref:
@@ -1322,6 +1594,16 @@ def main() -> int:
     p_brief = sub.add_parser("brief")
     p_brief.add_argument("--limit", type=int, default=8)
 
+    p_backread_list = sub.add_parser("backread-list")
+    p_backread_list.add_argument("--days", type=int, default=7)
+    p_backread_list.add_argument("--limit", type=int, default=8)
+
+    p_backread = sub.add_parser("backread")
+    p_backread.add_argument("ref")
+    p_backread.add_argument("--days", type=int, default=7)
+    p_backread.add_argument("--limit", type=int, default=80)
+    p_backread.add_argument("--chars", type=int, default=1400)
+
     args = parser.parse_args()
     try:
         if args.command == "capture":
@@ -1339,6 +1621,15 @@ def main() -> int:
             print(render_rate(args.ref, args.score, note=args.note))
         elif args.command == "brief":
             print(render_brief(max(1, min(args.limit, 30))))
+        elif args.command == "backread-list":
+            print(render_backread_list(days=max(1, min(args.days, 30)), limit=max(1, min(args.limit, 20))))
+        elif args.command == "backread":
+            print(render_backread(
+                args.ref,
+                days=max(1, min(args.days, 30)),
+                limit=max(10, min(args.limit, 200)),
+                chars=max(400, min(args.chars, 5000)),
+            ))
     except Exception as exc:  # noqa: BLE001 - QQ should receive a compact failure.
         print(f"知识收件箱失败：{exc}", file=sys.stderr)
         return 2

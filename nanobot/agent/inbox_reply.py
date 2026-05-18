@@ -28,6 +28,10 @@ def handle_inbox_intent(intent: dict[str, Any], user_id: str | None = None) -> s
         output = _run_tool(args, user_id=user_id)
     elif action == "brief":
         output = _run_tool(["brief", "--limit", "8"], user_id=user_id)
+    elif action == "backread-list":
+        output = _run_tool(["backread-list", "--limit", "8"], user_id=user_id)
+    elif action == "backread":
+        output = _run_tool(["backread", str(intent.get("query") or ""), "--chars", "1600"], user_id=user_id)
     elif action == "list":
         output = _run_tool(["list", "--limit", "8"], user_id=user_id)
     else:

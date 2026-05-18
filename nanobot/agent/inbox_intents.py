@@ -46,6 +46,14 @@ BRIEF_QUERIES = {
     "收件箱简报",
     "今天先看什么资料",
 }
+BACKREAD_LIST_QUERIES = {
+    "补读",
+    "补读清单",
+    "补读列表",
+    "可补读清单",
+    "明天可补读",
+}
+BACKREAD_RE = re.compile(r"^(?:帮我|给我|麻烦)?(?:补读|补看|回看|再看一下)\s*[:：]?\s*(.*?)\s*$")
 
 
 def extract_inbox_intent(text: str) -> dict[str, Any] | None:
@@ -58,6 +66,15 @@ def extract_inbox_intent(text: str) -> dict[str, Any] | None:
         return {"action": "list"}
     if compact in BRIEF_QUERIES:
         return {"action": "brief"}
+    if compact in BACKREAD_LIST_QUERIES:
+        return {"action": "backread-list"}
+
+    backread = BACKREAD_RE.match(raw)
+    if backread:
+        query = backread.group(1).strip(" ，,。:：")
+        if query in {"", "清单", "列表"}:
+            return {"action": "backread-list"}
+        return {"action": "backread", "query": query}
 
     url = extract_url(raw)
     if not url:

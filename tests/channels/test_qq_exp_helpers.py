@@ -41,6 +41,12 @@ def test_knowledge_inbox_does_not_steal_wechat_discussion() -> None:
     assert match_knowledge_inbox_command(url) == ["capture", url]
 
 
+def test_knowledge_inbox_backread_fast_path() -> None:
+    assert match_knowledge_inbox_command("补读清单") == ["backread-list", "--limit", "8"]
+    assert match_knowledge_inbox_command("补读 刘冰那篇") == ["backread", "刘冰那篇", "--chars", "1600"]
+    assert match_knowledge_inbox_command("帮我补读 1") == ["backread", "1", "--chars", "1600"]
+
+
 def test_signature_helpers_strip_and_ack() -> None:
     assert strip_silent_marker("hello (NOOUTPUTKEEP_SILENT)") == "hello"
     body, ack = extract_wechat_ack_marker("正文\n<!-- NBACK_WECHAT sub:3 entry:99 -->")

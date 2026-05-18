@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 _GENERIC_URL_RE = re.compile(r"https?://[^\s<>\]）)\"']+")
 _INBOX_SPECIAL_HOSTS = ("mp.weixin.qq.com", "yage-ai.kit.com", "jintiankansha.me")
+_BACKREAD_RE = re.compile(r"^(?:帮我|给我|麻烦)?(?:补读|补看|回看|再看一下)\s*[:：]?\s*(.*?)\s*$")
 
 
 def _compact(content: str) -> str:
@@ -89,6 +90,14 @@ def match_knowledge_inbox_command(content: str) -> list[str] | None:
             for k in ("待读简报", "收件箱简报", "稍后看简报", "收件箱今天先看什么", "待读先看什么")
         ):
             return ["brief", "--limit", "8"]
+        if compact in {"补读", "补读清单", "补读列表", "可补读清单", "明天可补读"}:
+            return ["backread-list", "--limit", "8"]
+        backread = _BACKREAD_RE.match(text)
+        if backread:
+            query = backread.group(1).strip(" ，,。:：")
+            if query in {"", "清单", "列表"}:
+                return ["backread-list", "--limit", "8"]
+            return ["backread", query, "--chars", "1600"]
         if any(k in compact for k in ("收件箱", "待读列表", "链接清单", "稍后看清单")):
             return ["list", "--limit", "8"]
         return None

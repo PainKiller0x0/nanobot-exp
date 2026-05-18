@@ -38,3 +38,9 @@ def test_list_and_brief_queries_need_no_url() -> None:
 def test_unrelated_message_falls_through() -> None:
     assert extract_inbox_intent("帮我写一段总结") is None
     assert extract_inbox_intent("你看看这个") is None
+
+
+def test_backread_queries_need_no_url() -> None:
+    assert extract_inbox_intent("补读清单") == {"action": "backread-list"}
+    assert extract_inbox_intent("补读 刘冰那篇") == {"action": "backread", "query": "刘冰那篇"}
+    assert extract_inbox_intent("帮我补读 1") == {"action": "backread", "query": "1"}

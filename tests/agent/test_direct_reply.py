@@ -43,6 +43,23 @@ def test_knowledge_inbox_decide_uses_skill_without_llm(monkeypatch) -> None:
     assert "--question" in calls[0][0]
 
 
+def test_knowledge_inbox_backread_uses_skill_without_llm(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(args, *, user_id=None):
+        calls.append((args, user_id))
+        return "📖 补读：Example"
+
+    monkeypatch.setattr(inbox_reply, "_run_tool", fake_run)
+
+    out = build_direct_reply(_msg("补读 刘冰那篇"), model="test-model", start_time=0)
+
+    assert out is not None
+    assert "补读" in out.content
+    assert "未调用 LLM" in out.content
+    assert calls == [(["backread", "刘冰那篇", "--chars", "1600"], "user")]
+
+
 def test_memory_query_returns_direct_reply_without_llm() -> None:
     out = build_direct_reply(
         _msg("\u5185\u5b58\u600e\u4e48\u6837"),
