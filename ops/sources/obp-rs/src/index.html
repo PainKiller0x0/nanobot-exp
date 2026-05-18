@@ -118,9 +118,24 @@
         </section>
 
         <section class="panel p-4">
-          <h2 class="font-black text-lg mb-3">最近调用</h2>
+          <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+            <div>
+              <h2 class="font-black text-lg">最近调用</h2>
+              <p class="text-xs text-slate-500 mt-1" x-text="recentFilterSummary"></p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-xs font-black text-slate-500">实际模型</span>
+              <select x-model="modelFilter" class="input mono text-xs" style="width:auto;min-width:14rem;max-width:100%">
+                <option value="">全部实际模型</option>
+                <template x-for="item in modelOptions" :key="item.name">
+                  <option :value="item.name" x-text="item.name + ' · ' + item.count + '条'"></option>
+                </template>
+              </select>
+              <button x-show="modelFilter" @click="modelFilter=''" class="btn">清除</button>
+            </div>
+          </div>
           <div class="space-y-2 max-h-96 overflow-auto">
-            <template x-for="log in logs.slice().reverse()" :key="log.ts + log.channel + log.model + log.latency_ms">
+            <template x-for="log in filteredLogs" :key="log.ts + log.channel + log.model + log.latency_ms">
               <div class="rounded-xl border border-stone-200 dark:border-slate-800 bg-stone-50 dark:bg-slate-950 p-3">
                 <div class="flex justify-between gap-2 text-xs"><span class="mono text-slate-500" x-text="log.time"></span><span :class="String(log.status).startsWith('2')?'text-emerald-600':'text-rose-600'" x-text="log.status"></span></div>
                 <div class="mt-1 font-bold" x-text="routeSummary(log)"></div>
@@ -129,6 +144,7 @@
               </div>
             </template>
             <div x-show="logs.length===0" class="text-center text-sm text-slate-500 py-8">暂无调用日志</div>
+            <div x-show="logs.length>0 && filteredLogs.length===0" class="text-center text-sm text-slate-500 py-8">当前模型筛选下没有记录</div>
           </div>
         </section>
       </section>
@@ -292,7 +308,7 @@
   <script>
     function detectBase(){const path=location.pathname.replace(/\/+/g,'/');const hit=path.match(/^(.*?\/obp)(?:\/|$)/);return hit?hit[1].replace(/(\/obp)+$/,'/obp'):''}
     function joinPath(base,path){const joined=(String(base||'').replace(/\/+$/,'')+'/'+String(path||'').replace(/^\/+/,'')).replace(/\/+/g,'/');return joined.replace(/(\/obp)(?:\/obp)+/g,'$1')}
-    function app(){return{dark:(localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage.obp_theme)==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,ledgerMode:'paid',lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
+    function app(){return{dark:(localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage.obp_theme)==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,ledgerMode:'paid',modelFilter:'',lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
       get apiUrl(){return location.origin + joinPath(this.base,'/v1')},
       get chatUrl(){return location.origin + joinPath(this.base,'/v1/chat/completions')},
       get anthropicUrl(){return location.origin + joinPath(this.base,'/anthropic/v1/messages')},
@@ -324,6 +340,24 @@
       get successRate(){const t=this.stats.total?.requests||0;return t?Math.round((this.stats.total.success||0)*1000/t)/10+'%':'-'},
       get budgetPct(){const hard=Number(this.router.monthly_hard_limit_rmb||0);return hard?Math.min(100,Math.round((Number(this.paidMonth.cost_cny||0)/hard)*100)):0},
       get groupNames(){return [...new Set((this.channels||[]).map(c=>c.group).filter(Boolean))]},
+      get modelOptions(){
+        const counts={};
+        for(const log of (this.logs||[])){
+          const model=log?.model||'unknown';
+          counts[model]=(counts[model]||0)+1;
+        }
+        return Object.entries(counts).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
+      },
+      get filteredLogs(){
+        const selected=String(this.modelFilter||'').trim();
+        return (this.logs||[]).slice().reverse().filter(log=>!selected||(log?.model||'unknown')===selected);
+      },
+      get recentFilterSummary(){
+        const total=(this.logs||[]).length;
+        const shown=this.filteredLogs.length;
+        const suffix=this.modelFilter?`，正在看实际调用 ${this.modelFilter} 的任务`:'，按实际模型筛选可以追踪每个模型被哪些任务调用';
+        return `${shown}/${total} 条最近记录${suffix}`;
+      },
       init(){this.refresh();this._unlockScroll=this.$watch(() => this.showExternal||this.showChannels||this.showForm||this.showAuth, locked => this.lockBodyScroll(locked));setInterval(()=>this.refresh(),5000)},
       async api(path, options={}){const prefixes=[this.base,''].filter((v,i,a)=>a.indexOf(v)===i);let last;for(const prefix of prefixes){const r=await fetch(joinPath(prefix,path),{credentials:'include',cache:'no-store',...options});last=r;if(r.status!==404||!prefix)return r}return last},
       async refresh(){try{const r=await this.api('/admin/channels');if(!r.ok)throw new Error(r.status===401?'需要登录或登录已过期':'HTTP '+r.status);const d=await r.json();this.channels=d.channels||[];this.stats=d.stats||{total:{}};this.router={...this.defaultRouter(),...(d.router||{})};this.pricing=d.pricing||{};this.logs=d.logs||[];this.keywordText=(this.router.pro_keywords&&this.router.pro_keywords.length?this.router.pro_keywords:this.defaultKeywords).join('，');this.externalModelText=(this.router.external_allowed_models&&this.router.external_allowed_models.length?this.router.external_allowed_models:this.defaultExternalModels).join('\n');this.loadError='';this.lastRefresh=new Date().toLocaleTimeString()}catch(e){this.loadError='刷新：读取失败（'+e.message+'）'}},
