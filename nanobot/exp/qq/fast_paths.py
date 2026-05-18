@@ -97,7 +97,7 @@ def match_knowledge_inbox_command(content: str) -> list[str] | None:
             query = backread.group(1).strip(" ，,。:：")
             if query in {"", "清单", "列表"}:
                 return ["backread-list", "--limit", "8"]
-            return ["backread", query, "--chars", "1600"]
+            return ["backread", query, "--full"]
         if any(k in compact for k in ("收件箱", "待读列表", "链接清单", "稍后看清单")):
             return ["list", "--limit", "8"]
         return None

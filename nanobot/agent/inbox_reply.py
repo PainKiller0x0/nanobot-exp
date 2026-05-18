@@ -31,13 +31,15 @@ def handle_inbox_intent(intent: dict[str, Any], user_id: str | None = None) -> s
     elif action == "backread-list":
         output = _run_tool(["backread-list", "--limit", "8"], user_id=user_id)
     elif action == "backread":
-        output = _run_tool(["backread", str(intent.get("query") or ""), "--chars", "1600"], user_id=user_id)
+        output = _run_tool(["backread", str(intent.get("query") or ""), "--full"], user_id=user_id)
     elif action == "list":
         output = _run_tool(["list", "--limit", "8"], user_id=user_id)
     else:
         return "知识收件箱暂时没识别这个动作。"
 
-    output = _clip(output.strip() or "知识收件箱已处理。")
+    output = output.strip() or "知识收件箱已处理。"
+    if action != "backread":
+        output = _clip(output)
     if "知识收件箱失败" in output:
         return output
     return f"{output}\n\n看板：{_DASHBOARD_URL}\n（未调用 LLM）"

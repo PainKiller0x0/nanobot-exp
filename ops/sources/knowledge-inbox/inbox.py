@@ -1271,7 +1271,7 @@ def render_backread_list(days: int = 7, limit: int = 8) -> str:
     return "\n".join(lines)
 
 
-def render_backread(ref: str, *, days: int = 7, limit: int = 80, chars: int = 1400) -> str:
+def render_backread(ref: str, *, days: int = 7, limit: int = 80, chars: int = 0) -> str:
     target, candidates, warning = resolve_backread_target(ref, days=days, limit=limit)
     if not target:
         lines = [f"没找到可补读内容：{ref}"]
@@ -1316,7 +1316,9 @@ def render_backread(ref: str, *, days: int = 7, limit: int = 80, chars: int = 14
     plain_body = plain_markdown_for_summary(body or target.get("summary") or "", limit=4000)
     plain_body = re.sub(r"^[\s.。…·]+", "", plain_body)
     summary = first_sentences(plain_body, limit=260)
-    preview = clip_multiline(body or target.get("summary") or "", chars)
+    full_body = str(body or target.get("summary") or "").strip()
+    preview = full_body if chars <= 0 else clip_multiline(full_body, chars)
+    body_label = "正文" if chars <= 0 else "预览"
     lines = [f"📖 补读：{title}", f"来源：{source}"]
     if time:
         lines.append(f"时间：{time}")
@@ -1328,7 +1330,7 @@ def render_backread(ref: str, *, days: int = 7, limit: int = 80, chars: int = 14
     if summary:
         lines.extend(["", "摘要：", summary])
     if preview:
-        lines.extend(["", "预览：", preview])
+        lines.extend(["", f"{body_label}：", preview])
     return "\n".join(lines)
 
 def resolve_item_key(ref: str, items: dict[str, dict[str, Any]]) -> str | None:
@@ -1602,7 +1604,8 @@ def main() -> int:
     p_backread.add_argument("ref")
     p_backread.add_argument("--days", type=int, default=7)
     p_backread.add_argument("--limit", type=int, default=80)
-    p_backread.add_argument("--chars", type=int, default=1400)
+    p_backread.add_argument("--chars", type=int, default=0)
+    p_backread.add_argument("--full", action="store_true")
 
     args = parser.parse_args()
     try:
@@ -1628,7 +1631,7 @@ def main() -> int:
                 args.ref,
                 days=max(1, min(args.days, 30)),
                 limit=max(10, min(args.limit, 200)),
-                chars=max(400, min(args.chars, 5000)),
+                chars=0 if args.full or args.chars <= 0 else max(400, min(args.chars, 5000)),
             ))
     except Exception as exc:  # noqa: BLE001 - QQ should receive a compact failure.
         print(f"知识收件箱失败：{exc}", file=sys.stderr)

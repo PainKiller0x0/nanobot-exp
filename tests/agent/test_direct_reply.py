@@ -57,7 +57,7 @@ def test_knowledge_inbox_backread_uses_skill_without_llm(monkeypatch) -> None:
     assert out is not None
     assert "补读" in out.content
     assert "未调用 LLM" in out.content
-    assert calls == [(["backread", "刘冰那篇", "--chars", "1600"], "user")]
+    assert calls == [(["backread", "刘冰那篇", "--full"], "user")]
 
 
 def test_memory_query_returns_direct_reply_without_llm() -> None:
