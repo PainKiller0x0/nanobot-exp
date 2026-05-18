@@ -59,6 +59,14 @@ WECHAT_USER_AGENT = (
 WECHAT_HOSTS = {"mp.weixin.qq.com"}
 WECHAT_ENV_MARKERS = ("环境异常", "当前环境异常", "完成验证后即可继续访问", "去验证")
 
+SHARED_DIR = Path(__file__).resolve().parents[1] / "_shared"
+if SHARED_DIR.exists() and str(SHARED_DIR) not in sys.path:
+    sys.path.insert(0, str(SHARED_DIR))
+try:
+    from ops_common import clean_article_markdown as _clean_article_markdown
+except Exception:  # pragma: no cover - keep the standalone tool usable.
+    _clean_article_markdown = None
+
 INTEREST_KEYWORDS = {
     "ai", "llm", "agent", "openai", "claude", "gemini", "rust", "python", "nanobot",
     "sidecar", "podman", "k8s", "k3s", "memory", "内存", "服务器", "自动化", "工具",
@@ -1141,6 +1149,24 @@ def clip_multiline(text: Any, limit: int = 1200) -> str:
     return value[: max(1, limit - 20)].rstrip() + "\n...（已截断）"
 
 
+def clean_backread_markdown(markdown: Any, title: str = "") -> str:
+    """Apply RSS-push cleanup before sending a backread article."""
+    text = str(markdown or "")
+    if _clean_article_markdown is not None:
+        return _clean_article_markdown(text, title)
+    text = re.sub(r"<img\b[^>]*>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"!\[[^\]]*]\([^)]+\)", "", text)
+    source_labels = "|".join([
+        r"\u6587\u7ae0\u539f\u6587",
+        r"\u539f\u6587",
+        r"\u539f\u6587\u94fe\u63a5",
+        "Original:?",
+        "Open Link",
+    ])
+    text = re.sub(rf"(?im)^\s*(?:{source_labels})\s*$", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 def backread_candidates(days: int = 7, limit: int = 80) -> tuple[list[dict[str, Any]], str | None]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1312,6 +1338,9 @@ def render_backread(ref: str, *, days: int = 7, limit: int = 80, chars: int = 0)
             else:
                 body = clean_ws(str(item.get("summary") or item.get("description") or ""))
         detail_url = f"{BACKREAD_WEB_BASE.rstrip('/')}/inbox"
+
+    if kind == "rss":
+        body = clean_backread_markdown(body, title)
 
     plain_body = plain_markdown_for_summary(body or target.get("summary") or "", limit=4000)
     plain_body = re.sub(r"^[\s.。…·]+", "", plain_body)
