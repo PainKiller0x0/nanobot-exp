@@ -124,23 +124,33 @@
               <p class="text-xs text-slate-500 mt-1" x-text="recentFilterSummary"></p>
             </div>
             <div class="flex flex-wrap items-center gap-2">
-              <span class="text-xs font-black text-slate-500">实际模型</span>
-              <select x-model="modelFilter" class="input mono text-xs" style="width:auto;min-width:14rem;max-width:100%">
-                <option value="">全部实际模型</option>
-                <template x-for="item in modelOptions" :key="item.name">
-                  <option :value="item.name" x-text="item.name + ' · ' + item.count + '条'"></option>
+              <span class="text-xs font-black text-slate-500">&#26469;&#28304;</span>
+              <select x-model="sourceFilter" class="input mono text-xs" style="width:auto;min-width:10rem;max-width:100%">
+                <option value="">&#20840;&#37096;&#26469;&#28304;</option>
+                <template x-for="item in sourceOptions" :key="item.name">
+                  <option :value="item.name" x-text="sourceLabel({source:item.name}) + ' \u00b7 ' + item.count + '\u6761'"></option>
                 </template>
               </select>
-              <button x-show="modelFilter" @click="modelFilter=''" class="btn">清除</button>
+              <span class="text-xs font-black text-slate-500">&#23454;&#38469;&#27169;&#22411;</span>
+              <select x-model="modelFilter" class="input mono text-xs" style="width:auto;min-width:14rem;max-width:100%">
+                <option value="">&#20840;&#37096;&#23454;&#38469;&#27169;&#22411;</option>
+                <template x-for="item in modelOptions" :key="item.name">
+                  <option :value="item.name" x-text="item.name + ' \u00b7 ' + item.count + '\u6761'"></option>
+                </template>
+              </select>
+              <button x-show="modelFilter||sourceFilter" @click="modelFilter='';sourceFilter=''" class="btn">&#28165;&#38500;</button>
             </div>
           </div>
           <div class="space-y-2 max-h-96 overflow-auto">
             <template x-for="log in filteredLogs" :key="log.ts + log.channel + log.model + log.latency_ms">
               <div class="rounded-xl border border-stone-200 dark:border-slate-800 bg-stone-50 dark:bg-slate-950 p-3">
-                <div class="flex justify-between gap-2 text-xs"><span class="mono text-slate-500" x-text="log.time"></span><span :class="String(log.status).startsWith('2')?'text-emerald-600':'text-rose-600'" x-text="log.status"></span></div>
+                <div class="flex justify-between gap-2 text-xs">
+                  <div class="flex flex-wrap items-center gap-2"><span class="mono text-slate-500" x-text="log.time"></span><span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-black" :class="sourceBadgeClass(log)" x-text="'\u6765\u6e90\uff1a' + sourceLabel(log)"></span></div>
+                  <span :class="String(log.status).startsWith('2')?'text-emerald-600':'text-rose-600'" x-text="log.status"></span>
+                </div>
                 <div class="mt-1 font-bold" x-text="routeSummary(log)"></div>
-                <div class="text-xs text-slate-500 mt-1" x-text="(log.source||'unknown-source') + ' / ' + log.channel + ' / ' + routeReasonText(log)"></div>
-                <div class="text-xs text-slate-500 mt-1" x-text="'tokens ' + fmt(log.total_tokens) + ' / 缓存 ' + fmt(log.cached_tokens) + ' / 成本 ' + money(log.cost_cny)"></div>
+                <div class="text-xs text-slate-500 mt-1" x-text="'\u6e20\u9053\uff1a' + log.channel + ' / ' + routeReasonText(log)"></div>
+                <div class="text-xs text-slate-500 mt-1" x-text="'tokens ' + fmt(log.total_tokens) + ' / \u7f13\u5b58 ' + fmt(log.cached_tokens) + ' / \u6210\u672c ' + money(log.cost_cny)"></div>
               </div>
             </template>
             <div x-show="logs.length===0" class="text-center text-sm text-slate-500 py-8">暂无调用日志</div>
@@ -308,7 +318,7 @@
   <script>
     function detectBase(){const path=location.pathname.replace(/\/+/g,'/');const hit=path.match(/^(.*?\/obp)(?:\/|$)/);return hit?hit[1].replace(/(\/obp)+$/,'/obp'):''}
     function joinPath(base,path){const joined=(String(base||'').replace(/\/+$/,'')+'/'+String(path||'').replace(/^\/+/,'')).replace(/\/+/g,'/');return joined.replace(/(\/obp)(?:\/obp)+/g,'$1')}
-    function app(){return{dark:(localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage.obp_theme)==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,ledgerMode:'paid',modelFilter:'',lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
+    function app(){return{dark:(localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage.obp_theme)==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,ledgerMode:'paid',modelFilter:'',sourceFilter:'',lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
       get apiUrl(){return location.origin + joinPath(this.base,'/v1')},
       get chatUrl(){return location.origin + joinPath(this.base,'/v1/chat/completions')},
       get anthropicUrl(){return location.origin + joinPath(this.base,'/anthropic/v1/messages')},
@@ -340,6 +350,14 @@
       get successRate(){const t=this.stats.total?.requests||0;return t?Math.round((this.stats.total.success||0)*1000/t)/10+'%':'-'},
       get budgetPct(){const hard=Number(this.router.monthly_hard_limit_rmb||0);return hard?Math.min(100,Math.round((Number(this.paidMonth.cost_cny||0)/hard)*100)):0},
       get groupNames(){return [...new Set((this.channels||[]).map(c=>c.group).filter(Boolean))]},
+      get sourceOptions(){
+        const counts={};
+        for(const log of (this.logs||[])){
+          const source=log?.source||'unknown-source';
+          counts[source]=(counts[source]||0)+1;
+        }
+        return Object.entries(counts).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
+      },
       get modelOptions(){
         const counts={};
         for(const log of (this.logs||[])){
@@ -349,14 +367,18 @@
         return Object.entries(counts).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
       },
       get filteredLogs(){
-        const selected=String(this.modelFilter||'').trim();
-        return (this.logs||[]).slice().reverse().filter(log=>!selected||(log?.model||'unknown')===selected);
+        const selectedModel=String(this.modelFilter||'').trim();
+        const selectedSource=String(this.sourceFilter||'').trim();
+        return (this.logs||[]).slice().reverse().filter(log=>(!selectedModel||(log?.model||'unknown')===selectedModel)&&(!selectedSource||(log?.source||'unknown-source')===selectedSource));
       },
       get recentFilterSummary(){
         const total=(this.logs||[]).length;
         const shown=this.filteredLogs.length;
-        const suffix=this.modelFilter?`，正在看实际调用 ${this.modelFilter} 的任务`:'，按实际模型筛选可以追踪每个模型被哪些任务调用';
-        return `${shown}/${total} 条最近记录${suffix}`;
+        const filters=[];
+        if(this.sourceFilter)filters.push('\u6765\u6e90 ' + this.sourceLabel({source:this.sourceFilter}));
+        if(this.modelFilter)filters.push('\u5b9e\u9645\u6a21\u578b ' + this.modelFilter);
+        const suffix=filters.length?'\uff0c\u6b63\u5728\u770b ' + filters.join(' / '):'\uff0c\u6309\u6765\u6e90\u548c\u5b9e\u9645\u6a21\u578b\u7b5b\u9009\u53ef\u4ee5\u8ffd\u8e2a\u6bcf\u4e2a nanobot \u7684\u8c03\u7528';
+        return `${shown}/${total} \u6761\u6700\u8fd1\u8bb0\u5f55${suffix}`;
       },
       init(){this.refresh();this._unlockScroll=this.$watch(() => this.showExternal||this.showChannels||this.showForm||this.showAuth, locked => this.lockBodyScroll(locked));setInterval(()=>this.refresh(),5000)},
       async api(path, options={}){const prefixes=[this.base,''].filter((v,i,a)=>a.indexOf(v)===i);let last;for(const prefix of prefixes){const r=await fetch(joinPath(prefix,path),{credentials:'include',cache:'no-store',...options});last=r;if(r.status!==404||!prefix)return r}return last},
@@ -366,6 +388,17 @@
       splitList(s){return String(s||'').split(/[，,;；\n]+/).map(x=>x.trim()).filter(Boolean)},
       fmt(v){return new Intl.NumberFormat('zh-CN').format(Math.round(Number(v||0)))},
       money(v){return '¥'+Number(v||0).toFixed(4)},
+      sourceLabel(log){
+        const source=String(log?.source||'unknown-source').trim()||'unknown-source';
+        const labels={'default-nanobot':'\u9ed8\u8ba4 nanobot','guangzhou-nanobot':'\u5e7f\u5dde nanobot','unknown-source':'\u672a\u77e5\u6765\u6e90'};
+        return labels[source]?`${labels[source]} (${source})`:source;
+      },
+      sourceBadgeClass(log){
+        const source=String(log?.source||'unknown-source');
+        if(source==='guangzhou-nanobot')return 'border-sky-500/40 bg-sky-500/10 text-sky-300 dark:text-sky-200';
+        if(source==='default-nanobot')return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300 dark:text-emerald-200';
+        return 'border-amber-500/40 bg-amber-500/10 text-amber-300 dark:text-amber-200';
+      },
       routeLabel(log){
         const reason=String(log?.route_reason||'').toLowerCase();
         if(reason.startsWith('free longcat task pattern matched:'))return '免费 LongCat';
