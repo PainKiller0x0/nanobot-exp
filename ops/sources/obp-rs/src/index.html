@@ -390,12 +390,13 @@
       money(v){return '¥'+Number(v||0).toFixed(4)},
       sourceLabel(log){
         const source=String(log?.source||'unknown-source').trim()||'unknown-source';
-        const labels={'default-nanobot':'\u9ed8\u8ba4 nanobot','guangzhou-nanobot':'\u5e7f\u5dde nanobot','unknown-source':'\u672a\u77e5\u6765\u6e90'};
+        const labels={'default-nanobot':'\u9ed8\u8ba4 nanobot','default-nanobot-internal':'\u9ed8\u8ba4 nanobot \u5185\u90e8\u4efb\u52a1','guangzhou-nanobot':'\u5e7f\u5dde nanobot','unknown-source':'\u672a\u77e5\u6765\u6e90'};
         return labels[source]?`${labels[source]} (${source})`:source;
       },
       sourceBadgeClass(log){
         const source=String(log?.source||'unknown-source');
         if(source==='guangzhou-nanobot')return 'border-sky-500/40 bg-sky-500/10 text-sky-300 dark:text-sky-200';
+        if(source==='default-nanobot-internal')return 'border-lime-500/40 bg-lime-500/10 text-lime-300 dark:text-lime-200';
         if(source==='default-nanobot')return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300 dark:text-emerald-200';
         return 'border-amber-500/40 bg-amber-500/10 text-amber-300 dark:text-amber-200';
       },

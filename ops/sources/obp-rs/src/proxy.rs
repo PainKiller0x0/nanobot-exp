@@ -117,6 +117,21 @@ fn sanitize_source(source: &str) -> String {
     }
 }
 
+fn effective_request_source(source: String, decision: &RouteDecision) -> String {
+    if source != "unknown-source" {
+        return source;
+    }
+    if is_internal_free_longcat_reason(&decision.reason) {
+        return "default-nanobot-internal".to_string();
+    }
+    source
+}
+
+fn is_internal_free_longcat_reason(reason: &str) -> bool {
+    let lower = reason.to_lowercase();
+    lower.starts_with("free longcat") && lower.contains("heartbeat")
+}
+
 const PRO_HINTS: &[&str] = &[
     "compact",
     "compression",
@@ -289,6 +304,7 @@ async fn handle_proxy(
         &requested_model,
         &route_hints,
     );
+    let source = effective_request_source(source, &decision);
     let attempts = build_attempts(&state, &channels, &router, &decision, protocol).await;
     if attempts.is_empty() {
         record_failure(
@@ -1218,6 +1234,32 @@ mod tests {
         assert_eq!(decision.group, "longcat");
         assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
         assert!(decision.reason.contains("free longcat"));
+    }
+
+    #[test]
+    fn heartbeat_without_source_is_labeled_as_default_internal_task() {
+        let router = RouterConfig::default();
+        let body = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {"role": "system", "content": "Read heartbeat.md and report if there is anything to do."},
+                {"role": "user", "content": "Review the following HEARTBEAT.md and decide whether there are active tasks."}
+            ]
+        });
+        let source = request_source(&HeaderMap::new(), Some(&body));
+        let decision = route_decision(
+            &router,
+            &UsageStats::default(),
+            Some(&body),
+            "deepseek-v4-flash",
+            &RouteHints::default(),
+        );
+
+        assert_eq!(source, "unknown-source");
+        assert_eq!(
+            effective_request_source(source, &decision),
+            "default-nanobot-internal"
+        );
     }
 
     #[test]
