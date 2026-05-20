@@ -212,6 +212,39 @@ Nanobot core 不应该负责：
 
 如果一个功能可以表达为 `HTTP API + CLI/script + dashboard`，通常应该做成 sidecar 或 skill，而不是继续改 core。
 
+
+## Article Rendering And Backread
+
+Article cleanup is a shared seam, not a per-command detail. The Python skill side
+uses `ops/sources/_shared/ops_common.py` as the common module:
+
+- `clean_article_markdown` strips tracker images, naked URLs, source-link residue,
+  HTML tags and duplicate titles before QQ delivery.
+- `format_article_push_body` remains the one-shot RSS push formatter and appends
+  the final clean `[article source](...)` link.
+- `ops/sources/knowledge-inbox/inbox.py` must call `clean_article_markdown` for
+  RSS backread bodies instead of carrying its own cleanup regex. This keeps
+  article-tail fixes local to `_shared`.
+
+The Rust RSS sidecar keeps an equivalent formatter in
+`ops/sources/wechat-rss-rs/src/qq_article_format.rs` for API-backed delivery. If
+article formatting rules change, update the Python shared helper and the Rust
+formatter together, with one regression test on each side when practical.
+
+QQ backread flow is intentionally simple:
+
+```text
+QQ message -> exp.qq.fast_paths -> exp.qq.local_commands
+           -> knowledge-inbox skill -> RSS sidecar API
+           -> exp.qq.local_handlers one-shot send, chunk fallback only on send failure
+```
+
+Full backread sends metadata plus the cleaned body. It does not show the
+first-sentences heuristic summary, because that summary is only an extractive
+preview and reads like duplicated body text before a full article. If a true
+summary is needed later, add it as an explicit LongCat-powered command rather
+than making every full backread pay the latency tax.
+
 当前仍然必须承认的 `nanobot-exp` 本体/运行时补丁：
 
 - Agent OBP fallback：`AgentRunner` 只保留超时/timeout-like 分支判断，OBP provider 缓存、环境变量、无工具请求降级和 token cap 放在 `nanobot/exp/agent/obp_fallback.py`。
