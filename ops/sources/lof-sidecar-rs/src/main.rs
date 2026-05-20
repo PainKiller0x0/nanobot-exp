@@ -16,7 +16,7 @@ use axum::{
     routing::{any, delete, get, post},
     Json, Router,
 };
-use chrono::{DateTime, Duration as ChronoDuration, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -42,7 +42,7 @@ use system_metrics::{
 const X_ROBOTS_TAG: HeaderName = HeaderName::from_static("x-robots-tag");
 const NOINDEX_HEADER_VALUE: HeaderValue =
     HeaderValue::from_static("noindex, nofollow, noarchive, nosnippet");
-const ROBOTS_TXT: &str = "User-agent: *\nAllow: /\n\n# 8093 is a private Nanobot dashboard. Every response carries X-Robots-Tag: noindex.\n";
+const ROBOTS_TXT: &str = "User-agent: *\nDisallow: /\n\n# 8093 is a private Nanobot dashboard. Every response carries X-Robots-Tag: noindex.\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SidecarStats {
@@ -299,7 +299,7 @@ async fn main() {
         .route("/api/inbox/:id/rating", post(api_rate_inbox))
         .route("/api/internal/render-text", post(api_internal_render_text))
         .route("/api/capabilities", get(api_capabilities))
-        .route("/api/evolution", get(api_evolution))
+        .route("/api/evolution", get(evolution_gone))
         .route("/api/notify-jobs", get(api_notify_jobs))
         .route("/api/today", get(api_today))
         .route("/api/task-trace", get(api_task_trace))
@@ -349,6 +349,7 @@ async fn robots_txt() -> Response {
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(X_ROBOTS_TAG, NOINDEX_HEADER_VALUE)
+        .header(header::CACHE_CONTROL, "no-store, max-age=0")
         .body(Body::from(ROBOTS_TXT))
         .unwrap_or_else(|_| Response::new(Body::from(ROBOTS_TXT)))
 }
@@ -358,8 +359,9 @@ async fn evolution_gone() -> Response {
         .status(StatusCode::GONE)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(X_ROBOTS_TAG, NOINDEX_HEADER_VALUE)
+        .header(header::CACHE_CONTROL, "no-store, max-age=0")
         .body(Body::from(
-            "This historical dashboard URL has been removed. Use /api/evolution for private JSON data.\n",
+            "This historical dashboard URL has been removed. Private evolution data is no longer exposed over HTTP.\n",
         ))
         .unwrap_or_else(|_| Response::new(Body::from("Gone\n")))
 }
@@ -850,9 +852,6 @@ async fn api_capabilities(State(state): State<AppState>) -> impl IntoResponse {
     Json(capability_registry_snapshot(&state).await)
 }
 
-async fn api_evolution() -> impl IntoResponse {
-    Json(evolution_snapshot().await)
-}
 
 macro_rules! proxy_pair {
     ($root_fn:ident, $path_fn:ident, $upstream:literal, $prefix:literal) => {
@@ -2127,73 +2126,6 @@ async fn inbox_snapshot(inbox_dir: &Path) -> serde_json::Value {
     })
 }
 
-async fn evolution_snapshot() -> serde_json::Value {
-    let mut items = load_evolution_events().await;
-    items.sort_by_key(|item| {
-        item.get("date")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
-    });
-    items.reverse();
-
-    let cutoff = (shanghai_now().date_naive() - ChronoDuration::days(7))
-        .format("%Y-%m-%d")
-        .to_string();
-    let recent_7d = items
-        .iter()
-        .filter(|item| {
-            item.get("date")
-                .and_then(|v| v.as_str())
-                .is_some_and(|date| date >= cutoff.as_str())
-        })
-        .count();
-    let mut categories: HashMap<String, usize> = HashMap::new();
-    for item in &items {
-        let category = item
-            .get("category")
-            .and_then(|v| v.as_str())
-            .unwrap_or("未分类")
-            .to_string();
-        *categories.entry(category).or_insert(0) += 1;
-    }
-
-    serde_json::json!({
-        "ok": true,
-        "now": shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-        "summary": {
-            "total": items.len(),
-            "recent_7d": recent_7d,
-            "categories": categories,
-        },
-        "items": items,
-    })
-}
-
-async fn load_evolution_events() -> Vec<serde_json::Value> {
-    let path = std::env::var("EVOLUTION_LOG_CONFIG")
-        .unwrap_or_else(|_| "/root/.nanobot/evolution.json".to_string());
-    let text = tokio::fs::read_to_string(&path)
-        .await
-        .unwrap_or_else(|_| DEFAULT_EVOLUTION_LOG.to_string());
-    serde_json::from_str::<Vec<serde_json::Value>>(&text)
-        .unwrap_or_else(|_| serde_json::from_str(DEFAULT_EVOLUTION_LOG).unwrap_or_default())
-}
-
-const DEFAULT_EVOLUTION_LOG: &str = r#"[
-  {
-    "date": "2026-05-03",
-    "title": "Evolution log bootstrap",
-    "category": "observability",
-    "evidence": "built-in fallback",
-    "impact": "The service can explain how it changes even if /root/.nanobot/evolution.json is missing.",
-    "metrics": [
-      {"label": "visibility", "before": "implicit", "after": "observable", "note": "replace this fallback with evolution.json"}
-    ],
-    "links": [{"label": "API", "url": "/api/evolution"}],
-    "tags": ["evolution"]
-  }
-]"#;
 
 async fn api_run(State(state): State<AppState>, Json(req): Json<RunRequest>) -> impl IntoResponse {
     let tag = req.tag.unwrap_or_else(|| "收盘".to_string());

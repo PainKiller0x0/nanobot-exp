@@ -430,23 +430,18 @@
   {
     "id": "evolution-log",
     "name": "进化日志",
-    "description": "记录 nanobot 能力、性能、稳定性和偏好固化的可观测证据。",
+    "description": "历史进化记录只保留本地，不再公开展示，避免搜索引擎索引私有运行记录。",
     "category": "记忆",
     "kind": "dashboard",
     "service_id": "lof",
-    "entry_url": "/evolution",
-    "enabled": true,
+    "entry_url": "",
+    "enabled": false,
     "trigger_phrases": [
       "你最近进化了吗",
       "进化日志",
       "你变强了吗"
     ],
-    "commands": [
-      {
-        "label": "查看进化 API",
-        "command": "curl -fsS http://127.0.0.1:8093/api/evolution"
-      }
-    ],
+    "commands": [],
     "data_paths": [
       "/root/.nanobot/evolution.json"
     ],
@@ -458,7 +453,7 @@
     "mcp_tools": [
       "evolution.list"
     ],
-    "notes": "把“变强了”落实为可检查的时间线、指标和证据。"
+    "notes": "私有运行数据。/evolution 和 /api/evolution 会返回 410 Gone，防止搜索引擎继续抓取。"
   },
   {
     "id": "browser-operator",

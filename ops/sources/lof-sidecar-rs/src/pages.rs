@@ -44,7 +44,7 @@ pub(crate) async fn dashboard() -> Html<String> {
     <article class="panel card wide fade" style="animation-delay:.10s"><h2>&#x6295;&#x8d44;&#x96f7;&#x8fbe;</h2><div id="lofRadar"></div></article>
     <article class="panel card fade" style="animation-delay:.12s"><h2>&#x9700;&#x8981;&#x4f60;&#x770b;</h2><div class="list" id="attention"></div></article>
     <details class="panel card full fade statusFold" style="animation-delay:.14s" open><summary><h2>运行状态</h2><span class="foldHint"></span></summary><div class="opsMiniGrid"><div class="opsMini"><h3>&#x7cfb;&#x7edf;&#x4f53;&#x611f;</h3><div class="metric" id="systemMetrics"></div></div><div class="opsMini"><h3>&#x670d;&#x52a1;&#x5065;&#x5eb7;</h3><div class="metric" id="sidecarMetrics"></div></div><div class="opsMini"><h3>&#x5b9a;&#x65f6;&#x4efb;&#x52a1;</h3><div class="metric" id="notifyMetrics"></div></div></div></details>
-    <article class="panel card full fade" style="animation-delay:.16s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/today">个人中枢<span>今日内容、任务追踪、模型路由先看这里</span></a><a href="/workbench">内容工作台<span>RSS、知识收件箱、热点雷达合并阅读</span></a><a href="/lof">投资看板<span>LOF 实时估值、溢价、报告和手动刷新</span></a><a href="/sidecars">系统运维<span>服务健康、能力矩阵、日志和命令入口</span></a><a href="/model-routes">模型成本<span>OBP 路由、Pro 原因、付费/免费消耗</span></a><a href="/api/evolution" target="_blank" rel="noopener">进化日志<span>能力变化、性能证据、修复记录</span></a></div></article>
+    <article class="panel card full fade" style="animation-delay:.16s"><h2>&#x5feb;&#x901f;&#x5165;&#x53e3;</h2><div class="quick"><a href="/today">个人中枢<span>今日内容、任务追踪、模型路由先看这里</span></a><a href="/workbench">内容工作台<span>RSS、知识收件箱、热点雷达合并阅读</span></a><a href="/lof">投资看板<span>LOF 实时估值、溢价、报告和手动刷新</span></a><a href="/sidecars">系统运维<span>服务健康、能力矩阵、日志和命令入口</span></a><a href="/model-routes">模型成本<span>OBP 路由、Pro 原因、付费/免费消耗</span></a></div></article>
     <article class="panel card full fade" style="animation-delay:.18s"><h2>&#x4fe1;&#x606f;&#x96f7;&#x8fbe;</h2><div class="list infoGrid" id="infoRadar"></div></article>
     <details class="panel card full fade detailCard" style="animation-delay:.20s"><summary><h2>7 &#x5929;&#x5386;&#x53f2;</h2><span class="foldHint"></span></summary><div class="detailBody" id="historyPanel"></div></details>
     <details class="panel card full fade detailCard" style="animation-delay:.21s"><summary><h2>记忆压缩</h2><span class="foldHint"></span></summary><div class="detailBody" id="compactPanel"></div></details>
@@ -418,7 +418,7 @@ pub(crate) async fn sidecars_page() -> impl IntoResponse {
     <div class="toolbar">
       <button onclick="loadAll()">&#x5237;&#x65b0;&#x72b6;&#x6001;</button>
       <button onclick="toggleTheme()">&#x5207;&#x6362;&#x660e;&#x6697;</button>
-      <a class="btn" href="/">&#x56de;&#x5230;&#x9a7e;&#x9a76;&#x8231;</a><a class="btn" href="/api/evolution" target="_blank" rel="noopener">进化日志</a><a class="btn" href="/lof">LOF &#x770b;&#x677f;</a><a class="btn" href="/api/capabilities" target="_blank">能力 JSON</a><a class="btn" href="/api/sidecars" target="_blank">服务 JSON</a>
+      <a class="btn" href="/">&#x56de;&#x5230;&#x9a7e;&#x9a76;&#x8231;</a><a class="btn" href="/lof">LOF &#x770b;&#x677f;</a><a class="btn" href="/api/capabilities" target="_blank">能力 JSON</a><a class="btn" href="/api/sidecars" target="_blank">服务 JSON</a>
     </div>
   </section>
   <section class="stats" id="stats"></section>

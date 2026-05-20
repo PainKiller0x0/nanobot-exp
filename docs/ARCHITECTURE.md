@@ -54,7 +54,7 @@ Design rules:
   127.0.0.1    127.0.0.1  127.0.0.1   Radar     same process
   :8091        :8081      :8000       :8095
 
-  /workbench、/inbox、/evolution、/assets/nb-shell.js、
+  /workbench、/inbox、/assets/nb-shell.js、
   /assets/nb-common.js 由 LOF dashboard 同进程提供，
   不再额外增加常驻服务。
 
@@ -78,7 +78,7 @@ Design rules:
 - `/sidecars`、`/api/sidecars`、`/api/capabilities`：能力总控台和服务矩阵。
 - `/workbench`：内容工作台，聚合 RSS、知识收件箱和热点雷达，本地标记已读/收藏。
 - `/inbox` 和 `/api/inbox`：知识收件箱预览、删除和 JSON。
-- `/evolution` 和 `/api/evolution`：进化日志。
+- `/evolution` 和 `/api/evolution`：已关闭，返回 `410 Gone`，历史进化数据只保留在本地文件。
 - `/assets/nb-shell.js`：sidecar 统一导航壳、主题同步和跨页面入口。
 - `/assets/nb-common.js`：sidecar 页面共享 JS helper。
 - `/rss/`、`/reflexio/`、`/obp/`、`/trends/`：反代到内部 sidecar，并注入统一导航壳。
@@ -97,7 +97,7 @@ Design rules:
 | `nanobot` | Nanobot Core | Podman | `8080` | 无 | QQ/WeChat 入口、agent loop、dream |
 | `rss` | RSS Sidecar | Podman | `8091` | `/rss/` | 微信文章、鸭哥 AI、Markdown 预览、广告过滤 |
 | `qq` | QQ Bridge | systemd | `8092` | 无 | QQ API 直连探测、签名发送支持 |
-| `lof` | LOF Dashboard | systemd | `8093` | `/lof` | QDII/LOF 看板；同进程还提供 `/` 今日驾驶舱、公网反代、服务总控、知识收件箱预览、进化日志 |
+| `lof` | LOF Dashboard | systemd | `8093` | `/lof` | QDII/LOF 看板；同进程还提供 `/` 今日驾驶舱、公网反代、服务总控、知识收件箱预览 |
 | `notify` | Notify Bridge | systemd | `8094` | 无 | cron 调度、重试状态、QQ 通知分发 |
 | `trend` | Trend Radar | systemd | `8095` | `/trends/` | NewsNow 热榜、搜索、话题分析、MCP 风格工具 |
 | `reflexio` | Reflexio | systemd | `8081` | `/reflexio/` | 记忆和反思看板 |
@@ -309,7 +309,7 @@ ops/sources/_shared/ops_common.py
 - 内部 sidecar 反代。
 - 能力总控台、服务矩阵和健康聚合。
 - 内容工作台 `/workbench`：聚合 RSS、知识收件箱、热点雷达；已读/收藏只存在浏览器 `localStorage`，不写服务器状态。
-- 知识收件箱 `/inbox`、进化日志 `/evolution` 和对应 JSON API。
+- 知识收件箱 `/inbox` 和 `/api/inbox`；进化日志 HTTP 入口已关闭，避免搜索引擎索引私有运行记录。
 - `/assets/nb-shell.js` 承载统一侧边/浮动导航壳、明暗主题同步和反代页面注入。
 - `/assets/nb-common.js` 承载 sidecar 页面共享前端 helper：HTML escape、东八区时间、host 解析、主题绑定、统计卡片、短列表、复制按钮和命令块。
 
@@ -317,7 +317,7 @@ ops/sources/_shared/ops_common.py
 
 - Rust 内部 `sidecar_manager.rs` 负责读取服务注册表、探测 systemd/http/tcp、输出 `/api/sidecars` 聚合状态。
 - Rust 内部 `system_metrics.rs` 负责内存、CPU、磁盘和 loadavg 读取，驾驶舱只消费 JSON。
-- Rust 内部 `pages.rs` 负责驾驶舱、内容工作台、知识收件箱、进化日志和服务矩阵页面 HTML，避免页面字符串继续压在 `main.rs`。
+- Rust 内部 `pages.rs` 负责驾驶舱、内容工作台、知识收件箱和服务矩阵页面 HTML，避免页面字符串继续压在 `main.rs`。
 - Rust 内部 `reverse_proxy.rs` 负责内部 sidecar 反代、统一导航壳注入和响应头透传。
 - Rust 内部 `lof_domain.rs` 负责 QDII 代码列表、HaoETF 解析、交易时段判断、溢价历史、套利报告和看板数据构造。
 - `nb-shell.js` 负责“壳”：导航、全局主题同步、反代 HTML 注入和统一视觉变量。
