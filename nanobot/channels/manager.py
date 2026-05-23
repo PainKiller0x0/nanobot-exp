@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import time
+import hashlib
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -36,8 +39,8 @@ _SEND_RETRY_DELAYS = (1, 2, 4)
 _BOOL_CAMEL_ALIASES: dict[str, str] = {
     "send_progress": "sendProgress",
     "send_tool_hints": "sendToolHints",
+    "show_reasoning": "showReasoning",
 }
-
 
 class ChannelManager:
     """
@@ -55,14 +58,17 @@ class ChannelManager:
         bus: MessageBus,
         *,
         session_manager: "SessionManager | None" = None,
+        webui_runtime_model_name: Callable[[], str | None] | None = None,
     ):
         self.config = config
         self.bus = bus
         self._session_manager = session_manager
+        self._webui_runtime_model_name = webui_runtime_model_name
         self.channels: dict[str, BaseChannel] = {}
         self._dispatch_task: asyncio.Task | None = None
         self._send_queues: dict[tuple[str, str], asyncio.Queue[tuple[BaseChannel, OutboundMessage]]] = {}
         self._send_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._origin_reply_fingerprints: dict[tuple[str, str, str], str] = {}
 
         self._init_channels()
 
@@ -90,11 +96,14 @@ class ChannelManager:
                 kwargs: dict[str, Any] = {}
                 # Only the WebSocket channel currently hosts the embedded webui
                 # surface; other channels stay oblivious to these knobs.
-                if cls.name == "websocket" and self._session_manager is not None:
-                    kwargs["session_manager"] = self._session_manager
-                    static_path = _default_webui_dist()
-                    if static_path is not None:
-                        kwargs["static_dist_path"] = static_path
+                if cls.name == "websocket":
+                    if self._session_manager is not None:
+                        kwargs["session_manager"] = self._session_manager
+                        static_path = _default_webui_dist()
+                        if static_path is not None:
+                            kwargs["static_dist_path"] = static_path
+                    if self._webui_runtime_model_name is not None:
+                        kwargs["runtime_model_name"] = self._webui_runtime_model_name
                 channel = cls(section, self.bus, **kwargs)
                 channel.transcription_provider = transcription_provider
                 channel.transcription_api_key = transcription_key
@@ -105,6 +114,9 @@ class ChannelManager:
                 )
                 channel.send_tool_hints = self._resolve_bool_override(
                     section, "send_tool_hints", self.config.channels.send_tool_hints,
+                )
+                channel.show_reasoning = self._resolve_bool_override(
+                    section, "show_reasoning", self.config.channels.show_reasoning,
                 )
                 self.channels[name] = channel
                 logger.info("{} channel enabled", cls.display_name)
@@ -141,10 +153,12 @@ class ChannelManager:
                     allow = cfg.get("allowFrom")
             else:
                 allow = getattr(cfg, "allow_from", None)
-            if allow == []:
-                raise SystemExit(
-                    f'Error: "{name}" has empty allowFrom (denies all). '
-                    f'Set ["*"] to allow everyone, or add specific user IDs.'
+            if allow is None:
+                # allowFrom omitted → pairing-only mode.  Unapproved senders
+                # receive a pairing code instead of being silently ignored.
+                logger.info(
+                    '"{}" has no allowFrom; unapproved users will receive a pairing code',
+                    name,
                 )
 
     def _should_send_progress(self, channel_name: str, *, tool_hint: bool = False) -> bool:
@@ -176,8 +190,8 @@ class ChannelManager:
         """Start a channel and log any exceptions."""
         try:
             await channel.start()
-        except Exception as e:
-            logger.error("Failed to start channel {}: {}", name, e)
+        except Exception:
+            logger.exception("Failed to start channel {}", name)
 
     async def start_all(self) -> None:
         """Start all channels and the outbound dispatcher."""
@@ -224,24 +238,52 @@ class ChannelManager:
         # Stop dispatcher
         if self._dispatch_task:
             self._dispatch_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._dispatch_task
-            except asyncio.CancelledError:
-                pass
-        for task in list(getattr(self, "_send_tasks", {}).values()):
+
+        send_tasks = getattr(self, "_send_tasks", {})
+        for task in send_tasks.values():
             task.cancel()
-        if getattr(self, "_send_tasks", None):
-            await asyncio.gather(*self._send_tasks.values(), return_exceptions=True)
-            self._send_tasks.clear()
-            self._send_queues.clear()
+        for task in send_tasks.values():
+            with suppress(asyncio.CancelledError):
+                await task
+        send_tasks.clear()
+        getattr(self, "_send_queues", {}).clear()
 
         # Stop all channels
         for name, channel in self.channels.items():
             try:
                 await channel.stop()
                 logger.info("Stopped {} channel", name)
-            except Exception as e:
-                logger.error("Error stopping {}: {}", name, e)
+            except Exception:
+                logger.exception("Error stopping {}", name)
+
+    @staticmethod
+    def _fingerprint_content(content: str) -> str:
+        normalized = " ".join(content.split())
+        return hashlib.sha1(normalized.encode("utf-8")).hexdigest() if normalized else ""
+
+    def _should_suppress_outbound(self, msg: OutboundMessage) -> bool:
+        metadata = msg.metadata or {}
+        if metadata.get("_progress"):
+            return False
+        fingerprint = self._fingerprint_content(msg.content)
+        if not fingerprint:
+            return False
+
+        origin_message_id = metadata.get("origin_message_id")
+        if isinstance(origin_message_id, str) and origin_message_id:
+            key = (msg.channel, msg.chat_id, origin_message_id)
+            if self._origin_reply_fingerprints.get(key) == fingerprint:
+                return True
+            self._origin_reply_fingerprints[key] = fingerprint
+
+        message_id = metadata.get("message_id")
+        if isinstance(message_id, str) and message_id:
+            key = (msg.channel, msg.chat_id, message_id)
+            self._origin_reply_fingerprints[key] = fingerprint
+
+        return False
 
     async def _dispatch_outbound(self) -> None:
         """Dispatch outbound messages to the appropriate channel."""
@@ -262,6 +304,23 @@ class ChannelManager:
                         timeout=1.0
                     )
 
+                if (
+                    msg.metadata.get("_reasoning_delta")
+                    or msg.metadata.get("_reasoning_end")
+                    or msg.metadata.get("_reasoning")
+                ):
+                    # Reasoning rides its own plugin channel: only delivered
+                    # when the destination channel opts in via ``show_reasoning``
+                    # and overrides the streaming primitives. Channels without
+                    # a low-emphasis UI affordance keep the base no-op and the
+                    # content silently drops here. ``_reasoning`` (one-shot)
+                    # is accepted for backward compatibility with hooks that
+                    # haven't migrated to delta/end yet.
+                    channel = self.channels.get(msg.channel)
+                    if channel is not None and channel.show_reasoning:
+                        await self._send_with_retry(channel, msg)
+                    continue
+
                 if msg.metadata.get("_progress"):
                     if msg.metadata.get("_tool_hint") and not self._should_send_progress(
                         msg.channel, tool_hint=True,
@@ -275,6 +334,13 @@ class ChannelManager:
                 if msg.metadata.get("_retry_wait"):
                     continue
 
+                if (
+                    msg.metadata.get("_runtime_model_updated")
+                    and msg.channel == "websocket"
+                    and "websocket" not in self.channels
+                ):
+                    continue
+
                 # Coalesce consecutive _stream_delta messages for the same (channel, chat_id)
                 # to reduce API calls and improve streaming latency
                 if msg.metadata.get("_stream_delta") and not msg.metadata.get("_stream_end"):
@@ -283,6 +349,16 @@ class ChannelManager:
 
                 channel = self.channels.get(msg.channel)
                 if channel:
+                    # Duplicate suppression is scoped to a known source message
+                    # so repeated content from separate turns is still delivered.
+                    if (
+                        not msg.metadata.get("_stream_delta")
+                        and not msg.metadata.get("_stream_end")
+                        and not msg.metadata.get("_streamed")
+                    ):
+                        if self._should_suppress_outbound(msg):
+                            logger.info("Suppressing duplicate outbound message to {}:{}", msg.channel, msg.chat_id)
+                            continue
                     await self._enqueue_send(channel, msg)
                 else:
                     logger.warning("Unknown channel: {}", msg.channel)
@@ -292,53 +368,61 @@ class ChannelManager:
             except asyncio.CancelledError:
                 break
 
-    def _ensure_send_worker_state(self) -> None:
-        """Initialize async send worker fields for tests that bypass __init__."""
+    def _send_queue_key(self, msg: OutboundMessage) -> tuple[str, str]:
+        return (msg.channel, msg.chat_id)
+
+    async def _enqueue_send(self, channel: BaseChannel, msg: OutboundMessage) -> None:
+        """Serialize sends per chat while adding queue timing metadata."""
+        key = self._send_queue_key(msg)
         if not hasattr(self, "_send_queues"):
             self._send_queues = {}
         if not hasattr(self, "_send_tasks"):
             self._send_tasks = {}
+        queue = self._send_queues.setdefault(key, asyncio.Queue())
+        metadata = dict(msg.metadata or {})
+        if metadata.get("_turn_id"):
+            metadata["_send_queued_perf"] = time.perf_counter()
+            metadata["_send_queue_depth"] = queue.qsize()
+            msg = dataclasses.replace(msg, metadata=metadata)
+        await queue.put((channel, msg))
 
-    async def _enqueue_send(self, channel: BaseChannel, msg: OutboundMessage) -> None:
-        """Queue sends per target so one slow channel API cannot block dispatch."""
-        self._ensure_send_worker_state()
-        key = (msg.channel, str(msg.chat_id))
-        queue = self._send_queues.get(key)
-        if queue is None:
-            queue = asyncio.Queue(maxsize=100)
-            self._send_queues[key] = queue
         task = self._send_tasks.get(key)
         if task is None or task.done():
             self._send_tasks[key] = asyncio.create_task(self._send_worker(key))
-        if msg.metadata.get("_turn_id"):
-            meta = dict(msg.metadata)
-            meta["_send_queued_perf"] = time.perf_counter()
-            meta["_send_queue_depth"] = queue.qsize()
-            msg = dataclasses.replace(msg, metadata=meta)
-        await queue.put((channel, msg))
 
     async def _send_worker(self, key: tuple[str, str]) -> None:
-        """Serialize outbound sends for one channel/chat target."""
         queue = self._send_queues[key]
-        while True:
-            channel, msg = await queue.get()
-            try:
-                await self._send_with_retry(channel, msg)
-            finally:
-                queue.task_done()
-
-    @staticmethod
-    def _stream_flag(msg: OutboundMessage, key: str) -> bool:
-        return bool((msg.metadata or {}).get(key))
-
-    @classmethod
-    def _is_stream_event(cls, msg: OutboundMessage) -> bool:
-        return cls._stream_flag(msg, "_stream_delta") or cls._stream_flag(msg, "_stream_end")
+        try:
+            while True:
+                channel, msg = await queue.get()
+                try:
+                    await self._send_with_retry(channel, msg)
+                finally:
+                    queue.task_done()
+                if queue.empty():
+                    break
+        except asyncio.CancelledError:
+            raise
+        finally:
+            current = self._send_tasks.get(key)
+            if current is asyncio.current_task():
+                self._send_tasks.pop(key, None)
+                if queue.empty():
+                    self._send_queues.pop(key, None)
 
     @staticmethod
     async def _send_once(channel: BaseChannel, msg: OutboundMessage) -> None:
         """Send one outbound message without retry policy."""
-        if ChannelManager._is_stream_event(msg):
+        if msg.metadata.get("_reasoning_end"):
+            await channel.send_reasoning_end(msg.chat_id, msg.metadata)
+        elif msg.metadata.get("_reasoning_delta"):
+            await channel.send_reasoning_delta(msg.chat_id, msg.content, msg.metadata)
+        elif msg.metadata.get("_reasoning"):
+            # Back-compat: one-shot reasoning. BaseChannel translates this
+            # to a single delta + end pair so plugins only implement the
+            # streaming primitives.
+            await channel.send_reasoning(msg)
+        elif msg.metadata.get("_stream_delta") or msg.metadata.get("_stream_end"):
             await channel.send_delta(msg.chat_id, msg.content, msg.metadata)
         elif not msg.metadata.get("_streamed"):
             await channel.send(msg)
@@ -369,12 +453,14 @@ class ChannelManager:
 
             # Check if this message belongs to the same stream
             same_target = (next_msg.channel, next_msg.chat_id) == target_key
+            is_delta = next_msg.metadata and next_msg.metadata.get("_stream_delta")
+            is_end = next_msg.metadata and next_msg.metadata.get("_stream_end")
 
-            if same_target and self._stream_flag(next_msg, "_stream_delta") and not final_metadata.get("_stream_end"):
+            if same_target and is_delta and not final_metadata.get("_stream_end"):
                 # Accumulate content
                 combined_content += next_msg.content
                 # If we see _stream_end, remember it and stop coalescing this stream
-                if self._stream_flag(next_msg, "_stream_end"):
+                if is_end:
                     final_metadata["_stream_end"] = True
                     # Stream ended - stop coalescing this stream
                     break
@@ -391,76 +477,25 @@ class ChannelManager:
         )
         return merged, non_matching
 
-    async def _send_delivery_alert(
-        self,
-        channel: BaseChannel,
-        msg: OutboundMessage,
-        max_attempts: int,
-        err: Exception,
-    ) -> None:
-        if msg.channel != "qq":
-            return
-        if msg.metadata.get("_delivery_alert"):
-            return
-        if msg.metadata.get("_progress") or self._is_stream_event(msg):
-            return
-
-        alert = OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=(
-                f"⚠️ 消息发送失败（已重试{max_attempts}次）\n"
-                f"渠道: {msg.channel}\n"
-                f"错误: {type(err).__name__}: {err}"
-            ),
-            metadata={"_delivery_alert": True},
-        )
-
-        try:
-            await self._send_once(channel, alert)
-            logger.warning(
-                "Fallback delivery alert sent to {}:{} after send failure",
-                msg.channel,
-                msg.chat_id,
-            )
-        except Exception as alert_err:
-            logger.error(
-                "Fallback delivery alert also failed for {}:{}: {} - {}",
-                msg.channel,
-                msg.chat_id,
-                type(alert_err).__name__,
-                alert_err,
-            )
-
     async def _send_with_retry(self, channel: BaseChannel, msg: OutboundMessage) -> None:
         """Send a message with retry on failure using exponential backoff.
 
         Note: CancelledError is re-raised to allow graceful shutdown.
         """
         max_attempts = max(self.config.channels.send_max_retries, 1)
-        send_start = time.perf_counter()
 
         for attempt in range(max_attempts):
             try:
                 await self._send_once(channel, msg)
-                self._log_turn_send(msg, attempts=attempt + 1, send_start=send_start)
                 return  # Send succeeded
             except asyncio.CancelledError:
                 raise  # Propagate cancellation for graceful shutdown
             except Exception as e:
                 if attempt == max_attempts - 1:
-                    logger.error(
-                        "Failed to send to {} after {} attempts: {} - {}",
-                        msg.channel, max_attempts, type(e).__name__, e
+                    logger.exception(
+                        "Failed to send to {} after {} attempts",
+                        msg.channel, max_attempts
                     )
-                    self._log_turn_send(
-                        msg,
-                        attempts=max_attempts,
-                        send_start=send_start,
-                        failed=True,
-                        error=e,
-                    )
-                    await self._send_delivery_alert(channel, msg, max_attempts, e)
                     return
                 delay = _SEND_RETRY_DELAYS[min(attempt, len(_SEND_RETRY_DELAYS) - 1)]
                 logger.warning(
@@ -471,82 +506,6 @@ class ChannelManager:
                     await asyncio.sleep(delay)
                 except asyncio.CancelledError:
                     raise  # Propagate cancellation during sleep
-
-    @staticmethod
-    def _elapsed_meta_ms(meta: dict[str, Any], key: str, *, end: float | None = None) -> int:
-        try:
-            start = float(meta.get(key) or 0)
-        except (TypeError, ValueError):
-            return 0
-        if start <= 0:
-            return 0
-        return int(((end if end is not None else time.perf_counter()) - start) * 1000)
-
-    def _log_turn_send(
-        self,
-        msg: OutboundMessage,
-        *,
-        attempts: int,
-        send_start: float,
-        failed: bool = False,
-        error: Exception | None = None,
-    ) -> None:
-        meta = msg.metadata or {}
-        if self._stream_flag(msg, "_stream_delta") and not self._stream_flag(msg, "_stream_end"):
-            return
-        turn_id = meta.get("_turn_id")
-        if not turn_id:
-            return
-        now = time.perf_counter()
-        send_ms = int((now - send_start) * 1000)
-        queue_ms = self._elapsed_meta_ms(meta, "_send_queued_perf", end=send_start)
-        total_ms = self._elapsed_meta_ms(meta, "_turn_started_perf", end=now)
-        if failed:
-            logger.warning(
-                "Turn send failed turn_id={} channel={} chat_id={} attempts={} "
-                "queue_ms={} send_ms={} total_ms={} error={}:{}",
-                turn_id,
-                msg.channel,
-                msg.chat_id,
-                attempts,
-                queue_ms,
-                send_ms,
-                total_ms,
-                type(error).__name__ if error else "",
-                error or "",
-            )
-            return
-        logger.info(
-            "Turn send turn_id={} channel={} chat_id={} attempts={} queue_ms={} "
-            "send_ms={} total_ms={} queue_depth={} content_chars={}",
-            turn_id,
-            msg.channel,
-            msg.chat_id,
-            attempts,
-            queue_ms,
-            send_ms,
-            total_ms,
-            meta.get("_send_queue_depth", 0),
-            len(msg.content or ""),
-        )
-        logger.info(
-            "Turn latency ledger turn_id={} channel={} chat_id={} path={} "
-            "prep_ms={} prompt_ms={} llm_ms={} persist_ms={} first_delta_ms={} "
-            "queue_ms={} send_ms={} total_ms={} content_chars={}",
-            turn_id,
-            msg.channel,
-            msg.chat_id,
-            meta.get("_turn_path", ""),
-            meta.get("_turn_prep_ms", 0),
-            meta.get("_turn_prompt_ms", 0),
-            meta.get("_turn_llm_ms", 0),
-            meta.get("_turn_persist_ms", 0),
-            meta.get("_turn_first_delta_ms", 0),
-            queue_ms,
-            send_ms,
-            total_ms,
-            len(msg.content or ""),
-        )
 
     def get_channel(self, name: str) -> BaseChannel | None:
         """Get a channel by name."""

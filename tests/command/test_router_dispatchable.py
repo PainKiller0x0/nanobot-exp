@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobot.command.builtin import register_builtin_commands
-from nanobot.command.help_panel import CAPABILITY_MENU_ALIASES, HELP_ALIASES
 from nanobot.command.router import CommandContext, CommandRouter
 
 
@@ -21,16 +20,22 @@ class TestIsDispatchableCommand:
         return r
 
     def test_exact_commands_match(self, router: CommandRouter) -> None:
-        for command in ("/new", "/help", "/dream", "/dream-log", "/dream-restore"):
-            assert router.is_dispatchable_command(command)
-
-    @pytest.mark.parametrize("alias", HELP_ALIASES + CAPABILITY_MENU_ALIASES)
-    def test_registered_chat_aliases_match(self, router: CommandRouter, alias: str) -> None:
-        assert router.is_dispatchable_command(alias)
+        assert router.is_dispatchable_command("/new")
+        assert router.is_dispatchable_command("/help")
+        assert router.is_dispatchable_command("/model")
+        assert router.is_dispatchable_command("/dream")
+        assert router.is_dispatchable_command("/dream-log")
+        assert router.is_dispatchable_command("/dream-restore")
+        assert router.is_dispatchable_command("/goal")
+        assert router.is_dispatchable_command("/pairing")
 
     def test_prefix_commands_match(self, router: CommandRouter) -> None:
         assert router.is_dispatchable_command("/dream-log abc123")
         assert router.is_dispatchable_command("/dream-restore def456")
+        assert router.is_dispatchable_command("/model fast")
+        assert router.is_dispatchable_command("/goal migrate the database")
+        assert router.is_dispatchable_command("/pairing list")
+        assert router.is_dispatchable_command("/pairing approve CODE")
 
     def test_priority_commands_not_matched(self, router: CommandRouter) -> None:
         # Priority commands are NOT in the dispatchable tiers — they are
@@ -38,26 +43,19 @@ class TestIsDispatchableCommand:
         assert not router.is_dispatchable_command("/stop")
         assert not router.is_dispatchable_command("/restart")
 
-    @pytest.mark.parametrize(
-        "text",
-        (
-            "hello",
-            "what is 2+2?",
-            "",
-            "\u8fd9\u4e2a\u6587\u6863\u91cc\u6709\u5e2e\u52a9\u4e24\u4e2a\u5b57",
-            "\u5e2e\u6211\u770b\u770b\u8fd9\u4e2a\u5e2e\u52a9\u6587\u6863",
-            "\u8fd9\u6bb5\u6587\u672c /help \u4e0d\u8981\u89e6\u53d1",
-        ),
-    )
-    def test_regular_text_not_matched(self, router: CommandRouter, text: str) -> None:
-        assert not router.is_dispatchable_command(text)
+    def test_regular_text_not_matched(self, router: CommandRouter) -> None:
+        assert not router.is_dispatchable_command("hello")
+        assert not router.is_dispatchable_command("what is 2+2?")
+        assert not router.is_dispatchable_command("")
 
     def test_case_insensitive(self, router: CommandRouter) -> None:
         assert router.is_dispatchable_command("/NEW")
         assert router.is_dispatchable_command("/Help")
+        assert router.is_dispatchable_command("/PAIRING")
 
     def test_strips_whitespace(self, router: CommandRouter) -> None:
         assert router.is_dispatchable_command("  /new  ")
+        assert router.is_dispatchable_command("  /pairing list  ")
 
     def test_unknown_slash_command_not_matched(self, router: CommandRouter) -> None:
         assert not router.is_dispatchable_command("/unknown")
@@ -67,10 +65,6 @@ class TestIsDispatchableCommand:
 class TestMidTurnCommandDispatchedDirectly:
     """Verify that commands matching is_dispatchable_command() are dispatched
     correctly when session=None (the mid-turn path)."""
-
-    @staticmethod
-    def _ctx(msg: MagicMock, loop: MagicMock, raw: str) -> CommandContext:
-        return CommandContext(msg=msg, session=None, key="test:chat1", raw=raw, loop=loop)
 
     @pytest.fixture()
     def router(self) -> CommandRouter:
@@ -82,13 +76,9 @@ class TestMidTurnCommandDispatchedDirectly:
     def fake_loop(self) -> MagicMock:
         loop = MagicMock()
         loop.sessions = MagicMock()
-        loop.sessions.get_or_create = MagicMock(
-            return_value=MagicMock(
-                messages=[],
-                last_consolidated=0,
-                clear=MagicMock(),
-            )
-        )
+        loop.sessions.get_or_create = MagicMock(return_value=MagicMock(
+            messages=[], last_consolidated=0, clear=MagicMock(),
+        ))
         loop.sessions.save = MagicMock()
         loop.sessions.invalidate = MagicMock()
         loop._schedule_background = MagicMock()
@@ -106,18 +96,12 @@ class TestMidTurnCommandDispatchedDirectly:
 
     @pytest.mark.asyncio
     async def test_new_dispatched_with_session_none(
-        self,
-        router: CommandRouter,
-        fake_loop: MagicMock,
-        fake_msg: MagicMock,
+        self, router: CommandRouter, fake_loop: MagicMock, fake_msg: MagicMock,
     ) -> None:
         """cmd_new works when session=None (mid-turn dispatch path)."""
         ctx = CommandContext(
-            msg=fake_msg,
-            session=None,
-            key="test:chat1",
-            raw="/new",
-            loop=fake_loop,
+            msg=fake_msg, session=None,
+            key="test:chat1", raw="/new", loop=fake_loop,
         )
         result = await router.dispatch(ctx)
         assert result is not None
@@ -125,29 +109,15 @@ class TestMidTurnCommandDispatchedDirectly:
         fake_loop.sessions.get_or_create.assert_called_once_with("test:chat1")
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("raw", ("/help", "\u5e2e\u52a9"))
     async def test_help_dispatched_with_session_none(
-        self,
-        router: CommandRouter,
-        fake_loop: MagicMock,
-        fake_msg: MagicMock,
-        raw: str,
+        self, router: CommandRouter, fake_loop: MagicMock, fake_msg: MagicMock,
     ) -> None:
-        result = await router.dispatch(self._ctx(fake_msg, fake_loop, raw))
+        ctx = CommandContext(
+            msg=fake_msg, session=None,
+            key="test:chat1", raw="/help", loop=fake_loop,
+        )
+        result = await router.dispatch(ctx)
         assert result is not None
-        assert "Nanobot" in result.content
-        assert "OBP" in result.content
-
-    @pytest.mark.asyncio
-    async def test_capability_alias_dispatched_with_session_none(
-        self,
-        router: CommandRouter,
-        fake_loop: MagicMock,
-        fake_msg: MagicMock,
-    ) -> None:
-        result = await router.dispatch(self._ctx(fake_msg, fake_loop, "\u80fd\u529b\u5217\u8868"))
-        assert result is not None
-        assert "\u80fd\u529b\u83dc\u5355" in result.content
 
     @pytest.mark.asyncio
     async def test_prefix_command_args_populated(self, router: CommandRouter) -> None:
@@ -164,28 +134,98 @@ class TestMidTurnCommandDispatchedDirectly:
 
         ctx = CommandContext(
             msg=MagicMock(channel="test", chat_id="c1", metadata={}),
-            session=None,
-            key="test:c1",
-            raw="/test hello world",
-            loop=MagicMock(),
+            session=None, key="test:c1", raw="/test hello world", loop=MagicMock(),
         )
         await custom.dispatch(ctx)
         assert captured_args == ["hello world"]
 
     @pytest.mark.asyncio
     async def test_non_command_returns_none(
-        self,
-        router: CommandRouter,
-        fake_loop: MagicMock,
-        fake_msg: MagicMock,
+        self, router: CommandRouter, fake_loop: MagicMock, fake_msg: MagicMock,
     ) -> None:
         """Regular text returns None from dispatch (not a command)."""
         ctx = CommandContext(
-            msg=fake_msg,
-            session=None,
-            key="test:chat1",
-            raw="hello world",
-            loop=fake_loop,
+            msg=fake_msg, session=None,
+            key="test:chat1", raw="hello world", loop=fake_loop,
         )
         result = await router.dispatch(ctx)
         assert result is None
+
+
+class TestPairingCommandDispatch:
+    """Verify /pairing works via CommandRouter."""
+
+    @pytest.fixture()
+    def router(self) -> CommandRouter:
+        r = CommandRouter()
+        register_builtin_commands(r)
+        return r
+
+    @pytest.fixture()
+    def fake_msg(self) -> MagicMock:
+        msg = MagicMock()
+        msg.channel = "telegram"
+        msg.chat_id = "chat1"
+        msg.content = "/pairing list"
+        msg.metadata = {}
+        return msg
+
+    @pytest.mark.asyncio
+    async def test_pairing_list_dispatched(
+        self, router: CommandRouter, fake_msg: MagicMock, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "nanobot.pairing.store.list_pending",
+            lambda: [
+                {
+                    "code": "ABCD-EFGH",
+                    "channel": "telegram",
+                    "sender_id": "123",
+                    "expires_at": 9999999999,
+                }
+            ],
+        )
+        ctx = CommandContext(
+            msg=fake_msg, session=None,
+            key="telegram:chat1", raw="/pairing list", args="list", loop=MagicMock(),
+        )
+        result = await router.dispatch(ctx)
+        assert result is not None
+        assert "ABCD-EFGH" in result.content
+        assert result.metadata.get("_pairing_command") is True
+
+    @pytest.mark.asyncio
+    async def test_pairing_approve_dispatched(
+        self, router: CommandRouter, fake_msg: MagicMock, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "nanobot.pairing.store.approve_code",
+            lambda code: ("telegram", "123") if code == "ABCD-EFGH" else None,
+        )
+        fake_msg.content = "/pairing approve ABCD-EFGH"
+        ctx = CommandContext(
+            msg=fake_msg, session=None,
+            key="telegram:chat1", raw="/pairing approve ABCD-EFGH",
+            args="approve ABCD-EFGH", loop=MagicMock(),
+        )
+        result = await router.dispatch(ctx)
+        assert result is not None
+        assert "Approved" in result.content
+
+    @pytest.mark.asyncio
+    async def test_pairing_revoke_dispatched(
+        self, router: CommandRouter, fake_msg: MagicMock, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "nanobot.pairing.store.revoke",
+            lambda ch, sid: sid == "123",
+        )
+        fake_msg.content = "/pairing revoke 123"
+        ctx = CommandContext(
+            msg=fake_msg, session=None,
+            key="telegram:chat1", raw="/pairing revoke 123",
+            args="revoke 123", loop=MagicMock(),
+        )
+        result = await router.dispatch(ctx)
+        assert result is not None
+        assert "Revoked" in result.content

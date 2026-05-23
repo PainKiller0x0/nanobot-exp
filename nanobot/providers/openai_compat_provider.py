@@ -24,8 +24,7 @@ if os.environ.get("LANGFUSE_SECRET_KEY") and importlib.util.find_spec("langfuse"
     from langfuse.openai import AsyncOpenAI
 else:
     if os.environ.get("LANGFUSE_SECRET_KEY"):
-        import logging
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "LANGFUSE_SECRET_KEY is set but langfuse is not installed; "
             "install with `pip install langfuse` to enable tracing"
         )
@@ -60,6 +59,15 @@ _KIMI_THINKING_MODELS: frozenset[str] = frozenset({
     "kimi-k2.6",
     "k2.6-code-preview",
 })
+# Thinking-capable MiMo models per Xiaomi docs (see
+# tests/providers/test_xiaomi_mimo_thinking.py). mimo-v2-flash is omitted
+# because it does not support thinking.
+_MIMO_THINKING_MODELS: frozenset[str] = frozenset({
+    "mimo-v2.5-pro",
+    "mimo-v2.5",
+    "mimo-v2-pro",
+    "mimo-v2-omni",
+})
 _OPENAI_COMPAT_REQUEST_TIMEOUT_S = 120.0
 
 # Maps ProviderSpec.thinking_style → extra_body builder.
@@ -87,6 +95,22 @@ def _is_kimi_thinking_model(model_name: str) -> bool:
     if name in _KIMI_THINKING_MODELS:
         return True
     if "/" in name and name.rsplit("/", 1)[1] in _KIMI_THINKING_MODELS:
+        return True
+    return False
+
+
+def _is_mimo_thinking_model(model_name: str) -> bool:
+    """Return True if model_name refers to a MiMo thinking-capable model.
+
+    Mirrors _is_kimi_thinking_model: gateway providers (e.g. OpenRouter
+    routing ``xiaomi/mimo-v2.5-pro``) have no ``thinking_style`` on their
+    spec, so the spec-driven branch in _build_kwargs misses them. The
+    model-name path catches those cases.
+    """
+    name = model_name.lower()
+    if name in _MIMO_THINKING_MODELS:
+        return True
+    if "/" in name and name.rsplit("/", 1)[1] in _MIMO_THINKING_MODELS:
         return True
     return False
 
@@ -518,47 +542,6 @@ class OpenAICompatProvider(LLMProvider):
                 clean["content"] = self._coerce_content_to_string(clean.get("content"))
         return self._enforce_role_alternation(sanitized)
 
-    def _drop_deepseek_incomplete_reasoning_history(
-        self,
-        messages: list[dict[str, Any]],
-        reasoning_effort: str | None,
-    ) -> list[dict[str, Any]]:
-        if (
-            not self._spec
-            or self._spec.name != "deepseek"
-            or not reasoning_effort
-            or reasoning_effort.lower() == "none"
-        ):
-            return messages
-
-        bad_idx = None
-        for idx, msg in enumerate(messages):
-            if (
-                msg.get("role") == "assistant"
-                and msg.get("tool_calls")
-                and not msg.get("reasoning_content")
-            ):
-                bad_idx = idx
-        if bad_idx is None:
-            return messages
-
-        keep_from = None
-        for idx in range(bad_idx + 1, len(messages)):
-            if messages[idx].get("role") == "user":
-                keep_from = idx
-                break
-
-        if keep_from is None:
-            trimmed = messages[:bad_idx]
-        else:
-            prefix = [msg for msg in messages[:keep_from] if msg.get("role") == "system"]
-            trimmed = prefix + messages[keep_from:]
-        logger.warning(
-            "Dropped {} DeepSeek thinking history message(s) with incomplete reasoning_content",
-            len(messages) - len(trimmed),
-        )
-        return trimmed
-
     # ------------------------------------------------------------------
     # Build kwargs
     # ------------------------------------------------------------------
@@ -599,10 +582,6 @@ class OpenAICompatProvider(LLMProvider):
         if spec and spec.strip_model_prefix:
             model_name = model_name.split("/")[-1]
 
-        messages = self._drop_deepseek_incomplete_reasoning_history(
-            messages,
-            reasoning_effort,
-        )
         kwargs: dict[str, Any] = {
             "model": model_name,
             "messages": self._sanitize_messages(self._sanitize_empty_content(messages)),
@@ -663,26 +642,43 @@ class OpenAICompatProvider(LLMProvider):
                 {"thinking": {"type": "enabled" if thinking_enabled else "disabled"}}
             )
 
+        # Model-level thinking injection for MiMo thinking-capable models.
+        # Same shape as Kimi: gateway providers (OpenRouter, etc.) lack the
+        # xiaomi_mimo spec's thinking_style, so the spec-driven branch above
+        # misses them — match by model name to catch "xiaomi/mimo-v2.5-pro"
+        # and friends. (Direct xiaomi_mimo requests are also covered here;
+        # both branches write the same payload, so the dict update is a
+        # safe no-op for already-handled cases.)
+        if reasoning_effort is not None and _is_mimo_thinking_model(model_name):
+            thinking_enabled = semantic_effort not in ("none", "minimal")
+            kwargs.setdefault("extra_body", {}).update(
+                {"thinking": {"type": "enabled" if thinking_enabled else "disabled"}}
+            )
+
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice or "auto"
 
-        # Backfill reasoning_content on legacy assistant messages.
-        # DeepSeek V4 (and potentially others) rejects thinking-mode
-        # requests that contain assistant messages without reasoning_content
-        # — even on turns that had no tool calls. This happens when a
-        # session was started with a non-thinking model or without
-        # reasoning_effort, then the user switches thinking mode on
-        # mid-session. Injecting an empty string satisfies the API
-        # without altering semantics (the model treats it as "no
-        # thinking happened on that turn").
-        thinking_active = (
-            (spec and spec.thinking_style and reasoning_effort is not None
-             and semantic_effort not in ("none", "minimal"))
-            or (reasoning_effort is not None and _is_kimi_thinking_model(model_name)
-                and semantic_effort not in ("none", "minimal"))
+        # Backfill reasoning_content="" on assistants missing it: DeepSeek
+        # thinking mode rejects history otherwise (#3554, #3584); "" reads
+        # as "no thinking that turn". DeepSeek-V4/reasoner reason natively,
+        # so backfill even without explicit reasoning_effort.
+        explicit_thinking = (
+            reasoning_effort is not None
+            and semantic_effort not in ("none", "minimal")
+            and (
+                (spec and spec.thinking_style)
+                or _is_kimi_thinking_model(model_name)
+                or _is_mimo_thinking_model(model_name)
+            )
         )
-        if thinking_active:
+        implicit_deepseek_thinking = (
+            spec is not None
+            and spec.name == "deepseek"
+            and semantic_effort not in ("none", "minimal", "minimum")
+            and any(t in model_name.lower() for t in ("deepseek-v4", "deepseek-reasoner"))
+        )
+        if explicit_thinking or implicit_deepseek_thinking:
             for msg in kwargs["messages"]:
                 if msg.get("role") == "assistant" and "reasoning_content" not in msg:
                     msg["reasoning_content"] = ""
@@ -1309,6 +1305,7 @@ class OpenAICompatProvider(LLMProvider):
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_thinking_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
         idle_timeout_s = int(os.environ.get("NANOBOT_STREAM_IDLE_TIMEOUT_S", "90"))
         try:
@@ -1372,10 +1369,19 @@ class OpenAICompatProvider(LLMProvider):
                 except StopAsyncIteration:
                     break
                 chunks.append(chunk)
-                if on_content_delta and chunk.choices:
-                    text = getattr(chunk.choices[0].delta, "content", None)
-                    if text:
-                        await on_content_delta(text)
+                if chunk.choices:
+                    delta_obj = chunk.choices[0].delta
+                    if on_content_delta:
+                        text = getattr(delta_obj, "content", None)
+                        if text:
+                            await on_content_delta(text)
+                    if on_thinking_delta:
+                        reasoning = getattr(delta_obj, "reasoning_content", None) or getattr(
+                            delta_obj, "reasoning", None,
+                        )
+                        r_text = self._extract_text_content(reasoning)
+                        if r_text:
+                            await on_thinking_delta(r_text)
             return self._parse_chunks(chunks)
         except asyncio.TimeoutError:
             return LLMResponse(

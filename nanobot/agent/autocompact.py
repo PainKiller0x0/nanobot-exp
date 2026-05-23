@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Collection
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 from loguru import logger
@@ -30,7 +32,11 @@ class AutoCompact:
         self._ttl = session_ttl_minutes
         self._archiving: set[str] = set()
         self._summaries: dict[str, tuple[str, datetime]] = {}
-        self._event_file = self.sessions.workspace / "auto_compact_events.jsonl"
+        try:
+            workspace = self.sessions.workspace
+        except AttributeError:
+            workspace = Path(tempfile.gettempdir()) / "nanobot"
+        self._event_file = Path(workspace) / "auto_compact_events.jsonl"
 
     @staticmethod
     def _parse_dt(value: Any) -> datetime | None:
@@ -53,8 +59,7 @@ class AutoCompact:
 
     @staticmethod
     def _format_summary(text: str, last_active: datetime) -> str:
-        idle_min = int((datetime.now() - last_active).total_seconds() / 60)
-        return f"Inactive for {idle_min} minutes.\nPrevious conversation summary: {text}"
+        return f"Previous conversation summary (last active {last_active.isoformat()}):\n{text}"
 
     @classmethod
     def _message_preview(cls, messages: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -241,13 +246,11 @@ class AutoCompact:
             logger.info("Auto-compact: reloading session {} (archiving={})", key, key in self._archiving)
             session = self.sessions.get_or_create(key)
         # Hot path: summary from in-memory dict (process hasn't restarted).
-        # Also clean metadata copy so stale _last_summary never leaks to disk.
         entry = self._summaries.pop(key, None)
         if entry:
-            session.metadata.pop("_last_summary", None)
             return session, self._format_summary(entry[0], entry[1])
-        if "_last_summary" in session.metadata:
-            meta = session.metadata.pop("_last_summary")
-            self.sessions.save(session)
+        # Cold path: summary persisted in session metadata (process restarted).
+        meta = session.metadata.get("_last_summary")
+        if isinstance(meta, dict):
             return session, self._format_summary(meta["text"], datetime.fromisoformat(meta["last_active"]))
         return session, None

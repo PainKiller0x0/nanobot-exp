@@ -1,6 +1,6 @@
 [project]
 name = "nanobot-ai"
-version = "0.1.5.post3"
+version = "0.2.0"
 description = "A lightweight personal AI assistant framework"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
@@ -61,6 +61,7 @@ dependencies = [
     "openpyxl>=3.1.0,<4.0.0",
     "python-pptx>=1.0.0,<2.0.0",
     "filelock>=3.25.2",
+    "boto3>=1.43.0",
 ]
 
 [project.optional-dependencies]
@@ -108,6 +109,11 @@ dev = [
 [project.scripts]
 nanobot = "nanobot.cli.commands:app"
 
+# Third-party tool plugins register here.  Built-in tools are discovered
+# automatically via pkgutil scanning in ToolLoader.discover().
+# [project.entry-points."nanobot.tools"]
+# my_plugin = "my_package.plugins:MyTool"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -115,12 +121,16 @@ build-backend = "hatchling.build"
 [tool.hatch.metadata]
 allow-direct-references = true
 
+[tool.hatch.build.hooks.custom]
+# Implementation lives in the conventional `hatch_build.py` at the repo root.
+
 [tool.hatch.build]
 include = [
     "nanobot/**/*.py",
     "nanobot/templates/**/*.md",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
+    "nanobot/web/dist/**/*",
 ]
 # Build-time generated assets that live under .gitignore'd paths but must ship
 # in the wheel/sdist. `artifacts` bypasses the VCS filter (unlike `include`).
@@ -142,7 +152,9 @@ packages = ["nanobot"]
 [tool.hatch.build.targets.sdist]
 include = [
     "nanobot/",
+    "nanobot/web/dist/",
     "bridge/",
+    "hatch_build.py",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",

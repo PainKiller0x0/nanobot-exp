@@ -54,11 +54,14 @@ SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/stop", "\u505c\u6b62\u5f53\u524d\u4efb\u52a1"),
     ("/restart", "\u91cd\u542f nanobot"),
     ("/status", "\u67e5\u770b\u8fd0\u884c\u72b6\u6001"),
+    ("/model [preset]", "\u67e5\u770b\u6216\u5207\u6362\u6a21\u578b\u9884\u8bbe"),
     ("/history [n]", "\u67e5\u770b\u6700\u8fd1 n \u6761\u5bf9\u8bdd"),
+    ("/goal <goal>", "\u5f00\u542f\u957f\u76ee\u6807\u4efb\u52a1"),
     ("/dream", "\u624b\u52a8\u89e6\u53d1\u8bb0\u5fc6\u6574\u7406"),
     ("/dream-log", "\u67e5\u770b\u6700\u8fd1\u8bb0\u5fc6\u53d8\u66f4"),
     ("/dream-restore", "\u56de\u6eda\u8bb0\u5fc6\u7248\u672c"),
     ("/help", "\u663e\u793a\u8fd9\u4e2a\u9762\u677f"),
+    ("/pairing [list|approve|deny|revoke]", "\u7ba1\u7406\u804a\u5929\u914d\u5bf9\u8bf7\u6c42"),
 )
 
 HELP_ALIASES: tuple[str, ...] = (

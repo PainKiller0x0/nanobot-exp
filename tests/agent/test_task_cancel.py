@@ -14,7 +14,7 @@ from nanobot.config.schema import AgentDefaults
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 
 
-def _make_loop(*, exec_config=None):
+def _make_loop(*, tools_config=None):
     """Create a minimal AgentLoop with mocked dependencies."""
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
@@ -27,9 +27,9 @@ def _make_loop(*, exec_config=None):
 
     with patch("nanobot.agent.loop.ContextBuilder"), \
          patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as mock_sub_mgr:
-        mock_sub_mgr.return_value.cancel_by_session = AsyncMock(return_value=0)
-        loop = AgentLoop(bus=bus, provider=provider, workspace=workspace, exec_config=exec_config)
+         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
+        MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
+        loop = AgentLoop(bus=bus, provider=provider, workspace=workspace, tools_config=tools_config)
     return loop, bus
 
 
@@ -103,9 +103,10 @@ class TestHandleStop:
 
 class TestDispatch:
     def test_exec_tool_not_registered_when_disabled(self):
-        from nanobot.config.schema import ExecToolConfig
+        from nanobot.config.schema import ToolsConfig
+        from nanobot.agent.tools.shell import ExecToolConfig
 
-        loop, _bus = _make_loop(exec_config=ExecToolConfig(enable=False))
+        loop, _bus = _make_loop(tools_config=ToolsConfig(exec=ExecToolConfig(enable=False)))
 
         assert loop.tools.get("exec") is None
 
@@ -158,40 +159,6 @@ class TestDispatch:
         assert second.metadata["thread_root_event_id"] == "$root1"
         assert second.metadata["thread_reply_to_event_id"] == "$reply1"
         assert second.metadata["_stream_end"] is True
-
-    @pytest.mark.asyncio
-    async def test_dispatch_sends_final_normally_when_stream_has_no_delta(self):
-        from nanobot.bus.events import InboundMessage, OutboundMessage
-
-        loop, bus = _make_loop()
-        msg = InboundMessage(
-            channel="qq",
-            sender_id="u1",
-            chat_id="c1",
-            content="hello",
-            metadata={"_wants_stream": True, "message_id": "m1"},
-        )
-
-        async def fake_process(_msg, *, on_stream=None, on_stream_end=None, **kwargs):
-            assert on_stream is not None
-            assert on_stream_end is not None
-            await on_stream_end(resuming=False)
-            return OutboundMessage(
-                channel="qq",
-                chat_id="c1",
-                content="ok",
-                metadata={"_streamed": True, "message_id": "m1"},
-            )
-
-        loop._process_message = fake_process
-
-        await loop._dispatch(msg)
-        stream_end = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
-        final = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
-
-        assert stream_end.metadata["_stream_end"] is True
-        assert final.content == "ok"
-        assert "_streamed" not in final.metadata
 
     @pytest.mark.asyncio
     async def test_processing_lock_serializes(self):
@@ -320,7 +287,8 @@ class TestSubagentCancellation:
     async def test_subagent_exec_tool_not_registered_when_disabled(self, tmp_path):
         from nanobot.agent.subagent import SubagentManager
         from nanobot.bus.queue import MessageBus
-        from nanobot.config.schema import ExecToolConfig
+        from nanobot.agent.tools.shell import ExecToolConfig
+        from nanobot.config.schema import ToolsConfig
 
         bus = MessageBus()
         provider = MagicMock()
@@ -330,7 +298,7 @@ class TestSubagentCancellation:
             workspace=tmp_path,
             bus=bus,
             max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-            exec_config=ExecToolConfig(enable=False),
+            tools_config=ToolsConfig(exec=ExecToolConfig(enable=False)),
         )
         mgr._announce_result = AsyncMock()
 

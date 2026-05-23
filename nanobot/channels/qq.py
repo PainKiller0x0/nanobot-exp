@@ -964,6 +964,13 @@ class QQChannel(BaseChannel):
             user_id = chat_id
             self._chat_type_cache[chat_id] = "c2c"
 
+        if not self.is_allowed(user_id):
+            logger.warning(
+                "QQ access denied for sender {} chat_id={} message_id={}",
+                user_id, chat_id, getattr(data, "id", "unknown"),
+            )
+            return
+
         ack_message = (getattr(self.config, "ack_message", "") or "").strip()
         if ack_message:
             try:

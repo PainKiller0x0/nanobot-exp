@@ -98,6 +98,110 @@ def _fake_chat_stream(text: str = "ok"):
     return _stream()
 
 
+def _fake_chat_stream_reasoning_chunks():
+    """Mimic DeepSeek-style ``chat.completions`` stream: ``reasoning_content`` then ``content``."""
+
+    async def _stream():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=None,
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content="step1",
+                        reasoning=None,
+                        tool_calls=None,
+                    ),
+                ),
+            ],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=None,
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content="step2",
+                        reasoning=None,
+                        tool_calls=None,
+                    ),
+                ),
+            ],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=None,
+                    delta=SimpleNamespace(
+                        content="answer",
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                ),
+            ],
+            usage=None,
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=None,
+                    ),
+                ),
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+            ),
+        )
+
+    return _stream()
+
+
+@pytest.mark.asyncio
+async def test_openai_compat_stream_forwards_reasoning_deltas_deepseek_style() -> None:
+    """Regression: DeepSeek-V4 / reasoner expose ``delta.reasoning_content`` during streaming."""
+    mock_chat = AsyncMock(return_value=_fake_chat_stream_reasoning_chunks())
+    spec = find_by_name("deepseek")
+    thinking: list[str] = []
+    content: list[str] = []
+
+    async def on_thinking(d: str) -> None:
+        thinking.append(d)
+
+    async def on_content(d: str) -> None:
+        content.append(d)
+
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI") as mock_openai:
+        client_instance = mock_openai.return_value
+        client_instance.chat.completions.create = mock_chat
+
+        provider = OpenAICompatProvider(
+            api_key="sk-test",
+            default_model="deepseek-v4-pro",
+            spec=spec,
+        )
+        result = await provider.chat_stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="deepseek-v4-pro",
+            reasoning_effort="high",
+            on_content_delta=on_content,
+            on_thinking_delta=on_thinking,
+        )
+
+    assert thinking == ["step1", "step2"]
+    assert content == ["answer"]
+    assert result.reasoning_content == "step1step2"
+    assert result.content == "answer"
+    mock_chat.assert_awaited_once()
+
+
 class _FakeResponsesError(Exception):
     def __init__(self, status_code: int, text: str):
         super().__init__(text)
@@ -637,7 +741,8 @@ def _tool_call(call_id: str) -> dict:
     }
 
 
-def test_deepseek_thinking_drops_tool_history_missing_reasoning_content() -> None:
+def test_deepseek_thinking_backfills_missing_reasoning_content_on_tool_history() -> None:
+    """Backfill reasoning_content="" instead of dropping the turn (#3554, #3584)."""
     kwargs = _deepseek_kwargs([
         {"role": "system", "content": "system"},
         {"role": "user", "content": "can we use wechat?"},
@@ -646,10 +751,12 @@ def test_deepseek_thinking_drops_tool_history_missing_reasoning_content() -> Non
         {"role": "user", "content": "continue"},
     ])
 
-    assert kwargs["messages"] == [
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "continue"},
+    assert [m["role"] for m in kwargs["messages"]] == [
+        "system", "user", "assistant", "tool", "user",
     ]
+    assistant = kwargs["messages"][2]
+    assert assistant["reasoning_content"] == ""
+    assert assistant["tool_calls"][0]["function"]["name"] == "my"
 
 
 def test_deepseek_thinking_keeps_tool_history_with_reasoning_content() -> None:
@@ -669,20 +776,6 @@ def test_deepseek_thinking_keeps_tool_history_with_reasoning_content() -> None:
     assert assistant["role"] == "assistant"
     assert assistant["reasoning_content"] == "I should inspect supported channels."
     assert kwargs["messages"][2]["role"] == "tool"
-
-
-def test_deepseek_thinking_drops_current_bad_tool_turn_without_followup_user() -> None:
-    kwargs = _deepseek_kwargs([
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "can we use wechat?"},
-        {"role": "assistant", "content": "", "tool_calls": [_tool_call("call_bad")]},
-        {"role": "tool", "tool_call_id": "call_bad", "name": "my", "content": "channels"},
-    ])
-
-    assert kwargs["messages"] == [
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "can we use wechat?"},
-    ]
 
 
 def test_openai_compat_keeps_tool_calls_after_consecutive_assistant_messages() -> None:
@@ -875,6 +968,18 @@ def test_volcengine_thinking_enabled() -> None:
     assert kw["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
+def test_volcengine_uses_max_completion_tokens() -> None:
+    kw = _build_kwargs_for("volcengine", "doubao-seed-2-0-pro")
+    assert kw["max_completion_tokens"] == 1024
+    assert "max_tokens" not in kw
+
+
+def test_volcengine_coding_plan_uses_max_completion_tokens() -> None:
+    kw = _build_kwargs_for("volcengine_coding_plan", "doubao-seed-2-0-pro")
+    assert kw["max_completion_tokens"] == 1024
+    assert "max_tokens" not in kw
+
+
 def test_byteplus_thinking_disabled_for_minimal() -> None:
     kw = _build_kwargs_for("byteplus", "doubao-seed-2-0-pro", reasoning_effort="minimal")
     assert kw["extra_body"] == {"thinking": {"type": "disabled"}}
@@ -930,8 +1035,8 @@ def test_deepseek_backfills_reasoning_content_on_legacy_tool_call_messages() -> 
             assert msg["reasoning_content"] == ""
 
 
-def test_backfill_does_not_touch_messages_when_thinking_off() -> None:
-    """When reasoning_effort is None or minimal, legacy messages must NOT be altered."""
+def test_backfill_does_not_touch_messages_when_thinking_explicitly_off() -> None:
+    """When thinking is explicitly disabled, legacy messages must NOT be altered."""
     spec = find_by_name("deepseek")
     with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
         p = OpenAICompatProvider(api_key="k", default_model="deepseek-v4-pro", spec=spec)
@@ -943,7 +1048,7 @@ def test_backfill_does_not_touch_messages_when_thinking_off() -> None:
         {"role": "tool", "tool_call_id": "tc1", "content": "result"},
         {"role": "user", "content": "thanks"},
     ]
-    for effort in (None, "minimal"):
+    for effort in ("minimal", "none"):
         kw = p._build_kwargs(
             messages=list(messages), tools=None, model="deepseek-v4-pro",
             max_tokens=1024, temperature=0.7,
@@ -952,6 +1057,61 @@ def test_backfill_does_not_touch_messages_when_thinking_off() -> None:
         for msg in kw["messages"]:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 assert "reasoning_content" not in msg
+
+
+def test_deepseek_v4_backfills_incomplete_reasoning_history_when_effort_implicit() -> None:
+    """DeepSeek-V4 reasons natively: backfill even without explicit reasoning_effort."""
+    spec = find_by_name("deepseek")
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        p = OpenAICompatProvider(api_key="k", default_model="deepseek-v4-pro", spec=spec)
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "tc1", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "tc1", "content": "result"},
+        {"role": "user", "content": "thanks"},
+    ]
+
+    kw = p._build_kwargs(
+        messages=list(messages), tools=None, model="deepseek-v4-pro",
+        max_tokens=1024, temperature=0.7,
+        reasoning_effort=None, tool_choice=None,
+    )
+
+    assert [msg["role"] for msg in kw["messages"]] == [
+        "system", "user", "assistant", "tool", "user",
+    ]
+    assert kw["messages"][2]["reasoning_content"] == ""
+    assert kw["messages"][-1]["content"] == "thanks"
+
+
+def test_deepseek_chat_keeps_tool_history_when_effort_implicit() -> None:
+    """Non-thinking deepseek-chat must keep history untouched and must NOT
+    receive backfilled reasoning_content (#3554, #3584)."""
+    spec = find_by_name("deepseek")
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        p = OpenAICompatProvider(api_key="k", default_model="deepseek-chat", spec=spec)
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "tc1", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "tc1", "content": "result"},
+        {"role": "user", "content": "thanks"},
+    ]
+
+    kw = p._build_kwargs(
+        messages=list(messages), tools=None, model="deepseek-chat",
+        max_tokens=1024, temperature=0.7,
+        reasoning_effort=None, tool_choice=None,
+    )
+
+    roles = [msg["role"] for msg in kw["messages"]]
+    assert roles == ["user", "assistant", "tool", "user"]
+    assert kw["messages"][1]["tool_calls"]
+    assert "reasoning_content" not in kw["messages"][1]
 
 
 def test_deepseek_coerces_list_content_to_string() -> None:
@@ -1078,7 +1238,7 @@ def test_kimi_k2_thinking_series_no_thinking_injection() -> None:
 
 
 # ---------------------------------------------------------------------------
-# reasoning_effort="none" — treated as thinking disabled 
+# reasoning_effort="none" — treated as thinking disabled
 # ---------------------------------------------------------------------------
 
 def test_deepseek_thinking_disabled_for_none_string() -> None:
