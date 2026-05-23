@@ -46,6 +46,19 @@ pub(crate) async fn reverse_proxy(
         .unwrap_or("")
         .to_string();
     let response_headers = resp.headers().clone();
+    if content_type.contains("text/event-stream") {
+        let builder = Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header("x-accel-buffering", "no");
+        return forward_proxy_response_headers(builder, &response_headers)
+            .body(Body::from_stream(resp.bytes_stream()))
+            .unwrap_or_else(|_| {
+                response_with_status(StatusCode::BAD_GATEWAY, "response build failed")
+            });
+    }
+
     let bytes = match resp.bytes().await {
         Ok(v) => v,
         Err(_) => return response_with_status(StatusCode::BAD_GATEWAY, "upstream read failed"),
