@@ -1,5 +1,4 @@
 mod config;
-mod protocol;
 mod proxy;
 mod stats;
 
@@ -16,6 +15,7 @@ use axum::{
     Json, Router,
 };
 use reqwest::Client;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{env, net::SocketAddr};
@@ -53,6 +53,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(dashboard))
         .route("/v1/chat/completions", post(handle_openai_proxy))
+        .route("/v1/models", get(list_models))
         .route("/v1/messages", post(handle_anthropic_proxy))
         .route("/anthropic/v1/messages", post(handle_anthropic_proxy))
         .route("/admin/channels", get(get_channels).post(add_channel))
@@ -84,6 +85,34 @@ async fn dashboard() -> impl IntoResponse {
         ],
         Html(include_str!("index.html")),
     )
+}
+
+async fn list_models(State(state): State<Arc<ProxyState>>) -> Json<serde_json::Value> {
+    let channels = state.channels.lock().await;
+    let router = state.router.lock().await;
+    let mut models = BTreeSet::new();
+    for model in &router.external_allowed_models {
+        let model = model.trim();
+        if !model.is_empty() && model != "*" {
+            models.insert(model.to_string());
+        }
+    }
+    for ch in channels.iter().filter(|ch| ch.is_active()) {
+        for model in ch.models.split(',').map(str::trim) {
+            if !model.is_empty() && model != "*" {
+                models.insert(model.to_string());
+            }
+        }
+    }
+    Json(serde_json::json!({
+        "object": "list",
+        "data": models.into_iter().map(|id| serde_json::json!({
+            "id": id,
+            "object": "model",
+            "created": 0,
+            "owned_by": "obp"
+        })).collect::<Vec<_>>()
+    }))
 }
 
 async fn get_channels(State(state): State<Arc<ProxyState>>) -> Json<serde_json::Value> {

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -83,6 +83,31 @@ impl Channel {
         self.model_set().contains(&target)
     }
 
+    pub fn model_match_rank(&self, desired_model: &str, requested_model: &str) -> (u8, u8) {
+        (
+            self.single_model_match_rank(desired_model),
+            self.single_model_match_rank(requested_model),
+        )
+    }
+
+    fn single_model_match_rank(&self, model: &str) -> u8 {
+        let target = model.trim().to_lowercase();
+        if target.is_empty() {
+            return 9;
+        }
+        let models = self.models.trim();
+        if !models.is_empty() && models != "*" && self.model_set().contains(&target) {
+            return 0;
+        }
+        if lookup_mapping(self.mapping_value().as_ref(), model).is_some() {
+            return 1;
+        }
+        if models.is_empty() || models == "*" {
+            return 3;
+        }
+        9
+    }
+
     pub fn mapped_model(&self, requested_model: &str, desired_model: &str) -> String {
         let mapping = self.mapping_value();
         if let Some(mapped) = lookup_mapping(mapping.as_ref(), desired_model) {
@@ -147,6 +172,64 @@ fn lookup_mapping(mapping: Option<&Value>, model: &str) -> Option<String> {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
+pub struct RouteProfile {
+    pub default_model: String,
+    pub pro_model: String,
+    pub emergency_model: String,
+    pub backup_model: String,
+    pub default_group: String,
+    pub pro_group: String,
+    pub emergency_group: String,
+    pub backup_group: String,
+}
+
+impl RouteProfile {
+    pub fn default_stack() -> Self {
+        Self {
+            default_model: "deepseek-v4-flash".to_string(),
+            pro_model: "deepseek-v4-pro".to_string(),
+            emergency_model: "LongCat-Flash-Chat".to_string(),
+            backup_model: "MiniMax-M2.7".to_string(),
+            default_group: "deepseek".to_string(),
+            pro_group: "deepseek".to_string(),
+            emergency_group: "longcat".to_string(),
+            backup_group: "minimax".to_string(),
+        }
+    }
+
+    pub fn gemini_stack() -> Self {
+        Self {
+            default_model: "gemini-flash".to_string(),
+            pro_model: "gemini-pro".to_string(),
+            emergency_model: "gemini-flash".to_string(),
+            backup_model: "gemini-flash".to_string(),
+            default_group: "gemini".to_string(),
+            pro_group: "gemini".to_string(),
+            emergency_group: "gemini".to_string(),
+            backup_group: "gemini".to_string(),
+        }
+    }
+
+    pub fn apply_to(&self, router: &mut RouterConfig) {
+        router.default_model = self.default_model.clone();
+        router.pro_model = self.pro_model.clone();
+        router.emergency_model = self.emergency_model.clone();
+        router.backup_model = self.backup_model.clone();
+        router.default_group = self.default_group.clone();
+        router.pro_group = self.pro_group.clone();
+        router.emergency_group = self.emergency_group.clone();
+        router.backup_group = self.backup_group.clone();
+    }
+}
+
+impl Default for RouteProfile {
+    fn default() -> Self {
+        Self::default_stack()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct RouterConfig {
     pub enabled: bool,
     pub dry_run: bool,
@@ -160,6 +243,12 @@ pub struct RouterConfig {
     pub pro_group: String,
     pub emergency_group: String,
     pub backup_group: String,
+    // Client-side model names that mean "normal/default" or "complex/pro".
+    // They let OBP route old nanobot configs without editing every client.
+    pub default_alias_models: Vec<String>,
+    pub pro_alias_models: Vec<String>,
+    pub route_profiles: BTreeMap<String, RouteProfile>,
+    pub source_route_profiles: BTreeMap<String, String>,
     // Legacy compatibility fields. Routing no longer upgrades to Pro only
     // because the prompt or message history is long.
     pub pro_prompt_chars: usize,
@@ -191,6 +280,18 @@ impl Default for RouterConfig {
             pro_group: "deepseek".to_string(),
             emergency_group: "longcat".to_string(),
             backup_group: String::new(),
+            default_alias_models: vec![
+                "deepseek-v4-flash".to_string(),
+                "gpt-4o-mini".to_string(),
+                "gpt-3.5-turbo".to_string(),
+            ],
+            pro_alias_models: vec![
+                "deepseek-v4-pro".to_string(),
+                "deepseek-reasoner".to_string(),
+                "gpt-4o".to_string(),
+            ],
+            route_profiles: default_route_profiles(),
+            source_route_profiles: default_source_route_profiles(),
             pro_prompt_chars: 0,
             pro_message_count: 0,
             monthly_warn_rmb: 10.0,
@@ -219,6 +320,64 @@ impl Default for RouterConfig {
             ],
         }
     }
+}
+
+impl RouterConfig {
+    pub fn normalized(mut self) -> Self {
+        self.ensure_defaults();
+        self
+    }
+
+    pub fn ensure_defaults(&mut self) {
+        if self.default_alias_models.is_empty() {
+            self.default_alias_models = RouterConfig::default().default_alias_models;
+        }
+        if self.pro_alias_models.is_empty() {
+            self.pro_alias_models = RouterConfig::default().pro_alias_models;
+        }
+        if self.route_profiles.is_empty() {
+            self.route_profiles = default_route_profiles();
+        } else {
+            self.route_profiles
+                .entry("default".to_string())
+                .or_insert_with(RouteProfile::default_stack);
+            self.route_profiles
+                .entry("gemini".to_string())
+                .or_insert_with(RouteProfile::gemini_stack);
+        }
+        if self.source_route_profiles.is_empty() {
+            self.source_route_profiles = default_source_route_profiles();
+        }
+    }
+
+    pub fn effective_for_source(&self, source: &str) -> Self {
+        let mut router = self.clone().normalized();
+        let profile_name = router
+            .source_route_profiles
+            .get(source)
+            .or_else(|| router.source_route_profiles.get("*"))
+            .cloned();
+        if let Some(profile_name) = profile_name {
+            if let Some(profile) = router.route_profiles.get(&profile_name).cloned() {
+                profile.apply_to(&mut router);
+            }
+        }
+        router
+    }
+}
+
+fn default_route_profiles() -> BTreeMap<String, RouteProfile> {
+    BTreeMap::from([
+        ("default".to_string(), RouteProfile::default_stack()),
+        ("gemini".to_string(), RouteProfile::gemini_stack()),
+    ])
+}
+
+fn default_source_route_profiles() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("default-nanobot".to_string(), "gemini".to_string()),
+        ("guangzhou-nanobot".to_string(), "default".to_string()),
+    ])
 }
 
 pub fn load_config<P: AsRef<Path>>(path: P) -> Vec<Channel> {
@@ -250,7 +409,9 @@ pub fn load_router_config<P: AsRef<Path>>(path: P) -> RouterConfig {
         return RouterConfig::default();
     }
     let data = fs::read_to_string(path).unwrap_or_default();
-    serde_json::from_str(&data).unwrap_or_default()
+    serde_json::from_str::<RouterConfig>(&data)
+        .unwrap_or_default()
+        .normalized()
 }
 
 pub fn save_router_config<P: AsRef<Path>>(path: P, router: &RouterConfig) {

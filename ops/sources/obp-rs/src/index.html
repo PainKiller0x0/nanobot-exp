@@ -34,7 +34,7 @@
         <div class="flex flex-wrap items-start gap-2">
           <button @click="refresh()" class="px-3 py-2 rounded-xl bg-slate-900 text-white dark:bg-white dark:text-slate-900 text-sm font-bold">刷新</button>
           <button @click="showAuth=true" class="btn">登录设置</button>
-          <button @click="dark=!dark;const v=dark?'dark':'light';localStorage.obp_theme=v;localStorage.sidecarShellTheme=v;localStorage.dashboardTheme=v" class="btn" x-text="dark?'浅色':'深色'"></button>
+          <button @click="dark=!dark;localStorage.obp_theme=dark?'dark':'light'" class="btn" x-text="dark?'浅色':'深色'"></button>
         </div>
       </div>
       <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
@@ -59,14 +59,9 @@
           <div class="flex flex-wrap justify-between gap-3 mb-3">
             <div>
               <h2 class="font-black text-lg">来源消耗（本月）</h2>
-              <p class="text-xs text-slate-500 mt-1" x-text="'当前口径：' + ledgerLabel + '。已把历史记录回填到 default-nanobot；广州接入后会显示为 guangzhou-nanobot。'"></p>
+              <p class="text-xs text-slate-500 mt-1">已把历史记录回填到 default-nanobot；广州接入后会显示为 guangzhou-nanobot。</p>
             </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <template x-for="mode in ledgerModes" :key="mode.id">
-                <button @click="ledgerMode=mode.id" class="btn" :class="ledgerMode===mode.id?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':''" x-text="mode.label"></button>
-              </template>
-              <span class="badge" x-text="sourceMonthList.length + ' 个来源'"></span>
-            </div>
+            <span class="badge" x-text="sourceMonthList.length + ' 个来源'"></span>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
             <template x-for="item in sourceMonthList" :key="item.name">
@@ -95,7 +90,16 @@
             </div>
             <button @click="saveRouter()" class="px-3 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-bold" x-text="routerSaving?'保存中':'保存路由配置'"></button>
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm" @input="routerDirty=true" @change="routerDirty=true">
+            <label class="field md:col-span-2"><span class="field-label">路由方案 <button class="q" @click.prevent="help('默认方案保持 DeepSeek/LongCat/MiniMax 的稳定组合；Gemini 方案会把默认、高级、应急、保底全部预填为 gemini 组，方便一键切换整套 Gemini 路由。')">?</button></span><select x-model="routePreset" @change="applyRoutePreset(routePreset)" class="input mono"><option value="default">默认</option><option value="gemini">Gemini</option></select><div class="text-xs text-slate-500 mt-1" x-text="routePreset==='gemini'?'将默认/高级/应急/保底都预填到 gemini 组；点保存后生效。':'保持当前默认路由组合；点保存后生效。'"></div></label>
+            <div class="subcard md:col-span-2">
+              <div class="font-black mb-2">来源绑定</div>
+              <p class="text-xs text-slate-500 mb-3">路由方案是策略库；每个 nanobot 通过 X-OBP-Source 单独选择方案，互不影响。</p>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label class="field"><span class="field-label">默认 nanobot</span><select x-model="router.source_route_profiles['default-nanobot']" class="input mono"><template x-for="name in routeProfileNames" :key="name"><option :value="name" x-text="name"></option></template></select></label>
+                <label class="field"><span class="field-label">广州 nanobot</span><select x-model="router.source_route_profiles['guangzhou-nanobot']" class="input mono"><template x-for="name in routeProfileNames" :key="name"><option :value="name" x-text="name"></option></template></select></label>
+              </div>
+            </div>
             <label class="flex items-center gap-2"><input type="checkbox" x-model="router.enabled">启用智能路由</label>
             <label class="flex items-center gap-2"><input type="checkbox" x-model="router.dry_run">Dry-run 只记录不切换</label>
             <label class="field"><span class="field-label">默认模型 <button class="q" @click.prevent="help('普通闲聊和轻任务优先使用的模型名，比如 deepseek-v4-flash。')">?</button></span><input x-model="router.default_model" class="input mono"></label>
@@ -118,70 +122,32 @@
         </section>
 
         <section class="panel p-4">
-          <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
-            <div>
-              <h2 class="font-black text-lg">最近调用</h2>
-              <p class="text-xs text-slate-500 mt-1" x-text="recentFilterSummary"></p>
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-xs font-black text-slate-500">&#26469;&#28304;</span>
-              <select x-model="sourceFilter" class="input mono text-xs" style="width:auto;min-width:10rem;max-width:100%">
-                <option value="">&#20840;&#37096;&#26469;&#28304;</option>
-                <template x-for="item in sourceOptions" :key="item.name">
-                  <option :value="item.name" x-text="sourceLabel({source:item.name}) + ' \u00b7 ' + item.count + '\u6761'"></option>
-                </template>
-              </select>
-              <span class="text-xs font-black text-slate-500">&#23454;&#38469;&#27169;&#22411;</span>
-              <select x-model="modelFilter" class="input mono text-xs" style="width:auto;min-width:14rem;max-width:100%">
-                <option value="">&#20840;&#37096;&#23454;&#38469;&#27169;&#22411;</option>
-                <template x-for="item in modelOptions" :key="item.name">
-                  <option :value="item.name" x-text="item.name + ' \u00b7 ' + item.count + '\u6761'"></option>
-                </template>
-              </select>
-              <button x-show="modelFilter||sourceFilter" @click="modelFilter='';sourceFilter=''" class="btn">&#28165;&#38500;</button>
-            </div>
-          </div>
+          <h2 class="font-black text-lg mb-3">最近调用</h2>
           <div class="space-y-2 max-h-96 overflow-auto">
-            <template x-for="log in filteredLogs" :key="log.ts + log.channel + log.model + log.latency_ms">
+            <template x-for="log in logs.slice().reverse()" :key="log.ts + log.channel + log.model + log.latency_ms">
               <div class="rounded-xl border border-stone-200 dark:border-slate-800 bg-stone-50 dark:bg-slate-950 p-3">
-                <div class="flex justify-between gap-2 text-xs">
-                  <div class="flex flex-wrap items-center gap-2"><span class="mono text-slate-500" x-text="log.time"></span><span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-black" :class="sourceBadgeClass(log)" x-text="'\u6765\u6e90\uff1a' + sourceLabel(log)"></span></div>
-                  <span :class="String(log.status).startsWith('2')?'text-emerald-600':'text-rose-600'" x-text="log.status"></span>
-                </div>
-                <div class="mt-1 font-bold" x-text="routeSummary(log)"></div>
-                <div class="text-xs text-slate-500 mt-1" x-text="'\u6e20\u9053\uff1a' + log.channel + ' / ' + routeReasonText(log)"></div>
-                <div class="text-xs text-slate-500 mt-1" x-text="'tokens ' + fmt(log.total_tokens) + ' / \u7f13\u5b58 ' + fmt(log.cached_tokens) + ' / \u6210\u672c ' + money(log.cost_cny)"></div>
+                <div class="flex justify-between gap-2 text-xs"><span class="mono text-slate-500" x-text="log.time"></span><span :class="String(log.status).startsWith('2')?'text-emerald-600':'text-rose-600'" x-text="log.status"></span></div>
+                <div class="mt-1 font-bold" x-text="(log.requested_model||log.model) + ' → ' + log.model + ' / ' + log.route"></div>
+                <div class="text-xs text-slate-500 mt-1" x-text="(log.source||'unknown-source') + ' / ' + log.channel + ' / ' + (log.route_reason||'-')"></div>
+                <div class="text-xs text-slate-500 mt-1" x-text="'tokens ' + fmt(log.total_tokens) + ' / 缓存 ' + fmt(log.cached_tokens) + ' / 成本 ' + money(log.cost_cny)"></div>
               </div>
             </template>
             <div x-show="logs.length===0" class="text-center text-sm text-slate-500 py-8">暂无调用日志</div>
-            <div x-show="logs.length>0 && filteredLogs.length===0" class="text-center text-sm text-slate-500 py-8">当前模型筛选下没有记录</div>
           </div>
         </section>
       </section>
 
       <aside class="xl:col-span-4 space-y-4">
         <section class="panel p-4">
-          <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
-            <div>
-              <h2 class="font-black text-lg">成本账本</h2>
-              <p class="text-xs text-slate-500 mt-1" x-text="'默认看付费账；LongCat 等免费模型单独归到免费账。当前：' + ledgerLabel"></p>
-            </div>
-            <div class="flex gap-1">
-              <template x-for="mode in ledgerModes" :key="mode.id">
-                <button @click="ledgerMode=mode.id" class="btn" :class="ledgerMode===mode.id?'bg-slate-900 text-white dark:bg-white dark:text-slate-900':''" x-text="mode.label"></button>
-              </template>
-            </div>
-          </div>
+          <h2 class="font-black text-lg mb-3">成本账本</h2>
           <div class="grid grid-cols-2 gap-2 text-sm">
-            <div class="subcard"><div class="k" x-text="ledgerLabel + '请求'"></div><div class="v" x-text="ledgerBucket.requests||0"></div></div>
-            <div class="subcard"><div class="k" x-text="ledgerLabel + '成本'"></div><div class="v text-amber-600" x-text="money(ledgerBucket.cost_cny)"></div></div>
-            <div class="subcard"><div class="k">缓存命中</div><div class="v" x-text="fmt(ledgerBucket.cached_tokens)"></div></div>
-            <div class="subcard"><div class="k">未命中输入</div><div class="v" x-text="fmt(ledgerBucket.uncached_prompt_tokens)"></div></div>
-            <div class="subcard"><div class="k">输入 Token</div><div class="v" x-text="fmt(ledgerBucket.prompt_tokens)"></div></div>
-            <div class="subcard"><div class="k">输出 Token</div><div class="v" x-text="fmt(ledgerBucket.completion_tokens)"></div></div>
+            <div class="subcard"><div class="k">本月请求</div><div class="v" x-text="month.requests||0"></div></div>
+            <div class="subcard"><div class="k">本月成本</div><div class="v text-amber-600" x-text="money(month.cost_cny)"></div></div>
+            <div class="subcard"><div class="k">缓存命中</div><div class="v" x-text="fmt(month.cached_tokens)"></div></div>
+            <div class="subcard"><div class="k">未命中输入</div><div class="v" x-text="fmt(month.uncached_prompt_tokens)"></div></div>
           </div>
           <div class="mt-4 h-3 rounded-full bg-stone-200 dark:bg-slate-800 overflow-hidden"><div class="h-full bg-gradient-to-r from-emerald-500 to-amber-500" :style="'width:'+budgetPct+'%'"></div></div>
-          <div class="text-xs text-slate-500 mt-2" x-text="'付费预算进度：' + budgetPct + '% / 熔断 ' + money(router.monthly_hard_limit_rmb)"></div>
+          <div class="text-xs text-slate-500 mt-2" x-text="'预算进度：' + budgetPct + '% / 熔断 ' + money(router.monthly_hard_limit_rmb)"></div>
         </section>
         <section class="panel p-4">
           <div class="flex items-start justify-between gap-3">
@@ -296,7 +262,7 @@
     <div x-show="showForm" class="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" @wheel.stop @keydown.escape.window="showForm=false">
       <div class="w-full max-w-3xl panel p-5 max-h-[92vh] overflow-auto modal-scroll" @wheel.stop>
         <div class="flex justify-between mb-4"><h3 class="font-black" x-text="isEdit?'编辑渠道':'新增渠道'"></h3><button @click="showForm=false" class="btn">关闭</button></div>
-        <div class="mb-4 flex flex-wrap gap-2 text-xs"><span class="text-slate-500 self-center">预填模板</span><button class="btn" @click="applyPreset('longcat')">LongCat</button><button class="btn" @click="applyPreset('deepseek_flash')">DeepSeek Flash</button><button class="btn" @click="applyPreset('deepseek_pro')">DeepSeek Pro</button><button class="btn" @click="applyPreset('anthropic')">Anthropic</button><button class="btn" @click="applyPreset('openai')">OpenAI 兼容</button></div>
+        <div class="mb-4 flex flex-wrap gap-2 text-xs"><span class="text-slate-500 self-center">预填模板</span><button class="btn" @click="applyPreset('longcat')">LongCat</button><button class="btn" @click="applyPreset('deepseek_flash')">DeepSeek Flash</button><button class="btn" @click="applyPreset('deepseek_pro')">DeepSeek Pro</button><button class="btn" @click="applyPreset('anthropic')">Anthropic</button><button class="btn" @click="applyPreset('gemini_fastapi')">Gemini FastAPI</button><button class="btn" @click="applyPreset('openai')">OpenAI 兼容</button></div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
           <label class="field"><span class="field-label">名称</span><input x-model="form.name" class="input"></label>
           <label class="field"><span class="field-label">类型 <button class="q" @click.prevent="help('OpenAI 兼容会转发 /v1/chat/completions；Anthropic 会用原生 /v1/messages 做连接测试；其他只做基础连通性测试。')">?</button></span><select x-model="form.type" class="input"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic API</option><option value="other">其他</option></select></label>
@@ -318,7 +284,7 @@
   <script>
     function detectBase(){const path=location.pathname.replace(/\/+/g,'/');const hit=path.match(/^(.*?\/obp)(?:\/|$)/);return hit?hit[1].replace(/(\/obp)+$/,'/obp'):''}
     function joinPath(base,path){const joined=(String(base||'').replace(/\/+$/,'')+'/'+String(path||'').replace(/^\/+/,'')).replace(/\/+/g,'/');return joined.replace(/(\/obp)(?:\/obp)+/g,'$1')}
-    function app(){return{dark:(localStorage.sidecarShellTheme||localStorage.dashboardTheme||localStorage.obp_theme)==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,ledgerMode:'paid',modelFilter:'',sourceFilter:'',lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat'],
+    function app(){return{dark:localStorage.obp_theme==='dark',notice:'',loadError:'',_unlockScroll:null,copied:false,lastRefresh:'-',channels:[],stats:{total:{}},router:{},pricing:{},logs:[],showExternal:false,showChannels:false,showForm:false,isEdit:false,form:{},keywordText:'',externalModelText:'',routerSaving:false,testing:false,testResult:null,showAuth:false,authForm:{username:'nanobot',password:'',confirm:''},base:detectBase(),routePreset:'default',routerDirty:false,defaultKeywords:['深度','架构','review','重构','复杂','取舍','设计','迁移','推理','长文','全盘','排障','压缩','记忆','反思'],defaultExternalModels:['deepseek-v4-flash','deepseek-v4-pro','MiniMax-M2.7','LongCat-Flash-Chat','gemini-3.5-flash','gemini-3.1-pro','gemini-flash','gemini-pro'],
       get apiUrl(){return location.origin + joinPath(this.base,'/v1')},
       get chatUrl(){return location.origin + joinPath(this.base,'/v1/chat/completions')},
       get anthropicUrl(){return location.origin + joinPath(this.base,'/anthropic/v1/messages')},
@@ -329,95 +295,30 @@
       get monthKey(){return this.dayKey.slice(0,7)},
       get today(){return this.stats.by_day?.[this.dayKey]||{}},
       get month(){return this.stats.by_month?.[this.monthKey]||{}},
-      get ledgerModes(){return[{id:'paid',label:'付费'},{id:'free',label:'免费'},{id:'total',label:'总账'}]},
-      get ledgerLabel(){return (this.ledgerModes.find(m=>m.id===this.ledgerMode)||this.ledgerModes[0]).label},
-      get activeLedgerStats(){return this.ledgerMode==='total'?this.stats:(this.stats[this.ledgerMode]||{})},
-      get paidMonth(){return this.stats.paid?.by_month?.[this.monthKey]||this.stats.paid?.total||this.month},
-      get ledgerBucket(){
-        if(this.ledgerMode==='total')return this.month;
-        const root=this.activeLedgerStats||{};
-        return root.by_month?.[this.monthKey]||root.total||{};
-      },
       get sourceMonthList(){
-        const root=this.activeLedgerStats||{};
-        const byMonth=root.by_source_month||{};
-        const byTotal=root.by_source||{};
+        const byMonth=this.stats.by_source_month||{};
+        const byTotal=this.stats.by_source||{};
         const names=[...new Set([...Object.keys(byMonth),...Object.keys(byTotal)])];
         return names.map(name=>({name,...(byMonth[name]?.[this.monthKey]||byTotal[name]||{})}))
           .filter(item=>(item.requests||0)>0||(item.total_tokens||0)>0||(item.cost_cny||0)>0)
           .sort((a,b)=>(b.cost_cny||0)-(a.cost_cny||0)||((b.requests||0)-(a.requests||0))||a.name.localeCompare(b.name));
       },
       get successRate(){const t=this.stats.total?.requests||0;return t?Math.round((this.stats.total.success||0)*1000/t)/10+'%':'-'},
-      get budgetPct(){const hard=Number(this.router.monthly_hard_limit_rmb||0);return hard?Math.min(100,Math.round((Number(this.paidMonth.cost_cny||0)/hard)*100)):0},
+      get budgetPct(){const hard=Number(this.router.monthly_hard_limit_rmb||0);return hard?Math.min(100,Math.round((Number(this.month.cost_cny||0)/hard)*100)):0},
       get groupNames(){return [...new Set((this.channels||[]).map(c=>c.group).filter(Boolean))]},
-      get sourceOptions(){
-        const counts={};
-        for(const log of (this.logs||[])){
-          const source=log?.source||'unknown-source';
-          counts[source]=(counts[source]||0)+1;
-        }
-        return Object.entries(counts).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
-      },
-      get modelOptions(){
-        const counts={};
-        for(const log of (this.logs||[])){
-          const model=log?.model||'unknown';
-          counts[model]=(counts[model]||0)+1;
-        }
-        return Object.entries(counts).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
-      },
-      get filteredLogs(){
-        const selectedModel=String(this.modelFilter||'').trim();
-        const selectedSource=String(this.sourceFilter||'').trim();
-        return (this.logs||[]).slice().reverse().filter(log=>(!selectedModel||(log?.model||'unknown')===selectedModel)&&(!selectedSource||(log?.source||'unknown-source')===selectedSource));
-      },
-      get recentFilterSummary(){
-        const total=(this.logs||[]).length;
-        const shown=this.filteredLogs.length;
-        const filters=[];
-        if(this.sourceFilter)filters.push('\u6765\u6e90 ' + this.sourceLabel({source:this.sourceFilter}));
-        if(this.modelFilter)filters.push('\u5b9e\u9645\u6a21\u578b ' + this.modelFilter);
-        const suffix=filters.length?'\uff0c\u6b63\u5728\u770b ' + filters.join(' / '):'\uff0c\u6309\u6765\u6e90\u548c\u5b9e\u9645\u6a21\u578b\u7b5b\u9009\u53ef\u4ee5\u8ffd\u8e2a\u6bcf\u4e2a nanobot \u7684\u8c03\u7528';
-        return `${shown}/${total} \u6761\u6700\u8fd1\u8bb0\u5f55${suffix}`;
-      },
+      get routeProfileNames(){return Object.keys(this.router.route_profiles||this.defaultRouter().route_profiles)},
       init(){this.refresh();this._unlockScroll=this.$watch(() => this.showExternal||this.showChannels||this.showForm||this.showAuth, locked => this.lockBodyScroll(locked));setInterval(()=>this.refresh(),5000)},
       async api(path, options={}){const prefixes=[this.base,''].filter((v,i,a)=>a.indexOf(v)===i);let last;for(const prefix of prefixes){const r=await fetch(joinPath(prefix,path),{credentials:'include',cache:'no-store',...options});last=r;if(r.status!==404||!prefix)return r}return last},
-      async refresh(){try{const r=await this.api('/admin/channels');if(!r.ok)throw new Error(r.status===401?'需要登录或登录已过期':'HTTP '+r.status);const d=await r.json();this.channels=d.channels||[];this.stats=d.stats||{total:{}};this.router={...this.defaultRouter(),...(d.router||{})};this.pricing=d.pricing||{};this.logs=d.logs||[];this.keywordText=(this.router.pro_keywords&&this.router.pro_keywords.length?this.router.pro_keywords:this.defaultKeywords).join('，');this.externalModelText=(this.router.external_allowed_models&&this.router.external_allowed_models.length?this.router.external_allowed_models:this.defaultExternalModels).join('\n');this.loadError='';this.lastRefresh=new Date().toLocaleTimeString()}catch(e){this.loadError='刷新：读取失败（'+e.message+'）'}},
-      defaultRouter(){return{default_group:'deepseek',pro_group:'deepseek',emergency_group:'longcat',backup_group:'',pro_keywords:this.defaultKeywords,external_enabled:true,external_allowed_models:this.defaultExternalModels}},
-      async saveRouter(){this.routerSaving=true;this.router.pro_keywords=this.splitList(this.keywordText);this.router.external_allowed_models=this.splitList(this.externalModelText);const r=await this.api('/admin/router',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.router)});this.routerSaving=false;if(!r.ok){this.help('保存失败：HTTP '+r.status);return}this.help('路由配置已保存');await this.refresh()},
+      async refresh(){try{const r=await this.api('/admin/channels');if(!r.ok)throw new Error(r.status===401?'需要登录或登录已过期':'HTTP '+r.status);const d=await r.json();this.channels=d.channels||[];this.stats=d.stats||{total:{}};if(!this.routerDirty){this.router={...this.defaultRouter(),...(d.router||{})};this.ensureRouteBindings();this.routePreset=this.detectRoutePreset(this.router);this.keywordText=(this.router.pro_keywords&&this.router.pro_keywords.length?this.router.pro_keywords:this.defaultKeywords).join('，');this.externalModelText=(this.router.external_allowed_models&&this.router.external_allowed_models.length?this.router.external_allowed_models:this.defaultExternalModels).join('\n')}this.pricing=d.pricing||{};this.logs=d.logs||[];this.loadError='';this.lastRefresh=new Date().toLocaleTimeString()}catch(e){this.loadError='刷新：读取失败（'+e.message+'）'}},
+      defaultRouter(){return{default_model:'deepseek-v4-flash',pro_model:'deepseek-v4-pro',emergency_model:'LongCat-Flash-Chat',backup_model:'MiniMax-M2.7',default_group:'deepseek',pro_group:'deepseek',emergency_group:'longcat',backup_group:'minimax',default_alias_models:['deepseek-v4-flash','gpt-4o-mini','gpt-3.5-turbo'],pro_alias_models:['deepseek-v4-pro','deepseek-reasoner','gpt-4o'],route_profiles:{default:{default_model:'deepseek-v4-flash',pro_model:'deepseek-v4-pro',emergency_model:'LongCat-Flash-Chat',backup_model:'MiniMax-M2.7',default_group:'deepseek',pro_group:'deepseek',emergency_group:'longcat',backup_group:'minimax'},gemini:{default_model:'gemini-flash',pro_model:'gemini-pro',emergency_model:'gemini-flash',backup_model:'gemini-flash',default_group:'gemini',pro_group:'gemini',emergency_group:'gemini',backup_group:'gemini'}},source_route_profiles:{'default-nanobot':'gemini','guangzhou-nanobot':'default'},pro_keywords:this.defaultKeywords,external_enabled:true,external_allowed_models:this.defaultExternalModels}},
+      routePresets(){const d=this.defaultRouter();return{default:{default_model:d.default_model,pro_model:d.pro_model,emergency_model:d.emergency_model,backup_model:d.backup_model,default_group:d.default_group,pro_group:d.pro_group,emergency_group:d.emergency_group,backup_group:d.backup_group,default_alias_models:d.default_alias_models,pro_alias_models:d.pro_alias_models,external_enabled:true,external_allowed_models:this.defaultExternalModels,pro_keywords:this.defaultKeywords},gemini:{default_model:'gemini-flash',pro_model:'gemini-pro',emergency_model:'gemini-flash',backup_model:'gemini-flash',default_group:'gemini',pro_group:'gemini',emergency_group:'gemini',backup_group:'gemini',default_alias_models:['deepseek-v4-flash','gpt-4o-mini','gpt-3.5-turbo'],pro_alias_models:['deepseek-v4-pro','deepseek-reasoner','gpt-4o'],external_enabled:true,external_allowed_models:this.defaultExternalModels,pro_keywords:this.defaultKeywords}}},
+      detectRoutePreset(router){const g=['default_group','pro_group','emergency_group','backup_group'].every(k=>String(router?.[k]||'').toLowerCase()==='gemini');const m=['default_model','pro_model','emergency_model','backup_model'].every(k=>String(router?.[k]||'').toLowerCase().includes('gemini'));return g&&m?'gemini':'default'},
+      ensureRouteBindings(){this.router.route_profiles={...this.defaultRouter().route_profiles,...(this.router.route_profiles||{})};this.router.source_route_profiles={...this.defaultRouter().source_route_profiles,...(this.router.source_route_profiles||{})}},
+      applyRoutePreset(kind){const preset=this.routePresets()[kind]||this.routePresets().default;this.router={...this.router,...preset,enabled:this.router.enabled,dry_run:this.router.dry_run,monthly_warn_rmb:this.router.monthly_warn_rmb,monthly_downgrade_rmb:this.router.monthly_downgrade_rmb,monthly_hard_limit_rmb:this.router.monthly_hard_limit_rmb,retry_statuses:this.router.retry_statuses};this.keywordText=(this.router.pro_keywords&&this.router.pro_keywords.length?this.router.pro_keywords:this.defaultKeywords).join('，');this.externalModelText=(this.router.external_allowed_models&&this.router.external_allowed_models.length?this.router.external_allowed_models:this.defaultExternalModels).join('\n');this.routerDirty=true;this.help((kind==='gemini'?'Gemini':'默认')+' 路由方案已预填，点击“保存路由配置”后生效')},
+      async saveRouter(){this.routerSaving=true;this.ensureRouteBindings();this.router.pro_keywords=this.splitList(this.keywordText);this.router.external_allowed_models=this.splitList(this.externalModelText);const r=await this.api('/admin/router',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.router)});this.routerSaving=false;if(!r.ok){this.help('保存失败：HTTP '+r.status);return}this.routerDirty=false;this.help('路由配置已保存');await this.refresh()},
       splitList(s){return String(s||'').split(/[，,;；\n]+/).map(x=>x.trim()).filter(Boolean)},
       fmt(v){return new Intl.NumberFormat('zh-CN').format(Math.round(Number(v||0)))},
       money(v){return '¥'+Number(v||0).toFixed(4)},
-      sourceLabel(log){
-        const source=String(log?.source||'unknown-source').trim()||'unknown-source';
-        const labels={'default-nanobot':'\u9ed8\u8ba4 nanobot','default-nanobot-internal':'\u9ed8\u8ba4 nanobot \u5185\u90e8\u4efb\u52a1','guangzhou-nanobot':'\u5e7f\u5dde nanobot','unknown-source':'\u672a\u77e5\u6765\u6e90'};
-        return labels[source]?`${labels[source]} (${source})`:source;
-      },
-      sourceBadgeClass(log){
-        const source=String(log?.source||'unknown-source');
-        if(source==='guangzhou-nanobot')return 'border-sky-500/40 bg-sky-500/10 text-sky-300 dark:text-sky-200';
-        if(source==='default-nanobot-internal')return 'border-lime-500/40 bg-lime-500/10 text-lime-300 dark:text-lime-200';
-        if(source==='default-nanobot')return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300 dark:text-emerald-200';
-        return 'border-amber-500/40 bg-amber-500/10 text-amber-300 dark:text-amber-200';
-      },
-      routeLabel(log){
-        const reason=String(log?.route_reason||'').toLowerCase();
-        if(reason.startsWith('free longcat task pattern matched:'))return '免费 LongCat';
-        const labels={default:'默认',pro:'高级',emergency:'应急',backup:'保底',any:'直通'};
-        return labels[log?.route]||log?.route||'未知路由';
-      },
-      routeSummary(log){
-        const requested=log?.requested_model||log?.model||'unknown';
-        const actual=log?.model||requested;
-        const modelPart=requested&&actual&&requested!==actual?`请求 ${requested} → 实际 ${actual}`:`模型 ${actual||requested}`;
-        return `${modelPart} / ${this.routeLabel(log)}`;
-      },
-      routeReasonText(log){
-        const reason=String(log?.route_reason||'-');
-        const prefix='free longcat task pattern matched:';
-        if(reason.toLowerCase().startsWith(prefix))return '免费任务命中：' + reason.slice(prefix.length).trim();
-        return reason;
-      },
       bucketList(map){return Object.entries(map||{}).map(([name,b])=>({name,...b})).sort((a,b)=>(b.cost_cny||0)-(a.cost_cny||0)||((b.requests||0)-(a.requests||0))).slice(0,8)},
       async copy(t){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(t)}else{const ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();document.execCommand('copy');ta.remove()}this.help('已复制到剪贴板')}catch(e){this.help('复制失败，可以手动选中后复制')}},
       help(t){this.notice=t;clearTimeout(this._noticeTimer);this._noticeTimer=setTimeout(()=>this.notice='',4200)},
@@ -425,7 +326,7 @@
       typeLabel(t){return {openai:'OpenAI 兼容',anthropic:'Anthropic API',other:'其他'}[t||'openai']||t},
       openAdd(){this.isEdit=false;this.form={};this.applyPreset('longcat');this.testResult=null;this.showForm=true},
       openEdit(ch){this.isEdit=true;this.form=JSON.parse(JSON.stringify(ch));this.testResult=null;this.showForm=true},
-      applyPreset(kind){const keepKey=this.form?.key||'';const presets={longcat:{name:'LongCat',type:'openai',key:keepKey,base:'https://api.longcat.chat/openai',models:'LongCat-Flash-Chat',model_mapping:JSON.stringify({'gpt-4o':'LongCat-Flash-Chat','gpt-4o-mini':'LongCat-Flash-Chat','gpt-3.5-turbo':'LongCat-Flash-Chat','deepseek-v4-flash':'LongCat-Flash-Chat','deepseek-v4-pro':'LongCat-Flash-Chat','coding-plan':'LongCat-Flash-Chat'},null,2),role:'emergency',group:'longcat',priority:100,cost_model:'longcat'},deepseek_flash:{name:'DeepSeek V4 Flash',type:'openai',key:keepKey,base:'https://api.deepseek.com',models:'deepseek-v4-flash',model_mapping:'',role:'default',group:'deepseek',priority:50,cost_model:'deepseek-v4-flash'},deepseek_pro:{name:'DeepSeek V4 Pro',type:'openai',key:keepKey,base:'https://api.deepseek.com',models:'deepseek-v4-pro',model_mapping:'',role:'pro',group:'deepseek',priority:60,cost_model:'deepseek-v4-pro-discount'},anthropic:{name:'Anthropic',type:'anthropic',key:keepKey,base:'https://api.anthropic.com',models:'claude-3-5-haiku-latest',model_mapping:'',role:'backup',group:'anthropic',priority:100,cost_model:'anthropic'},openai:{name:'OpenAI Compatible',type:'openai',key:keepKey,base:'https://api.example.com',models:'gpt-4o-mini',model_mapping:'',role:'default',group:'default-pool',priority:100,cost_model:''}};this.form={...(this.form||{}),...presets[kind]};this.testResult=null},
+      applyPreset(kind){const keepKey=this.form?.key||'';const presets={longcat:{name:'LongCat',type:'openai',key:keepKey,base:'https://api.longcat.chat/openai',models:'LongCat-Flash-Chat',model_mapping:JSON.stringify({'gpt-4o':'LongCat-Flash-Chat','gpt-4o-mini':'LongCat-Flash-Chat','gpt-3.5-turbo':'LongCat-Flash-Chat','deepseek-v4-flash':'LongCat-Flash-Chat','deepseek-v4-pro':'LongCat-Flash-Chat','coding-plan':'LongCat-Flash-Chat'},null,2),role:'emergency',group:'longcat',priority:100,cost_model:'longcat'},deepseek_flash:{name:'DeepSeek V4 Flash',type:'openai',key:keepKey,base:'https://api.deepseek.com',models:'deepseek-v4-flash',model_mapping:'',role:'default',group:'deepseek',priority:50,cost_model:'deepseek-v4-flash'},deepseek_pro:{name:'DeepSeek V4 Pro',type:'openai',key:keepKey,base:'https://api.deepseek.com',models:'deepseek-v4-pro',model_mapping:'',role:'pro',group:'deepseek',priority:60,cost_model:'deepseek-v4-pro-discount'},anthropic:{name:'Anthropic',type:'anthropic',key:keepKey,base:'https://api.anthropic.com',models:'claude-3-5-haiku-latest',model_mapping:'',role:'backup',group:'anthropic',priority:100,cost_model:'anthropic'},gemini_fastapi:{name:'Gemini FastAPI Singapore',type:'openai',key:keepKey,base:'http://127.0.0.1:18080/v1',models:'gemini-3.5-flash,gemini-3.1-pro,gemini-flash,gemini-pro',model_mapping:JSON.stringify({'gemini-flash':'gemini-3.5-flash','gemini-pro':'gemini-3.1-pro','gpt-4o-mini':'gemini-3.5-flash','gpt-4o':'gemini-3.1-pro'},null,2),role:'backup',group:'gemini',priority:90,cost_model:'free-gemini-web'},openai:{name:'OpenAI Compatible',type:'openai',key:keepKey,base:'https://api.example.com',models:'gpt-4o-mini',model_mapping:'',role:'default',group:'default-pool',priority:100,cost_model:''}};this.form={...(this.form||{}),...presets[kind]};this.testResult=null},
       async testChannel(ch){this.testing=true;this.testResult=null;try{const r=await this.api('/admin/channels/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ch)});const d=await r.json();this.testResult=d;this.help(d.ok?'测试通过':'测试失败：'+(d.message||('HTTP '+d.status)));await this.refresh()}catch(e){this.testResult={ok:false,status:0,message:String(e),latency_ms:0};this.help('测试失败：'+e.message)}finally{this.testing=false}},
       async saveChannel(){const r=await this.api(this.isEdit?'/admin/channels/'+this.form.id:'/admin/channels',{method:this.isEdit?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.form)});if(!r.ok){this.help('保存失败：HTTP '+r.status);return}this.showForm=false;this.help('渠道已保存');await this.refresh()},
       async deleteChannel(id){if(!confirm('确定删除这个渠道吗？'))return;const r=await this.api('/admin/channels/'+id,{method:'DELETE'});if(!r.ok){this.help('删除失败：HTTP '+r.status);return}await this.refresh()},

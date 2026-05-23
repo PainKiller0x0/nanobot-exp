@@ -852,7 +852,6 @@ async fn api_capabilities(State(state): State<AppState>) -> impl IntoResponse {
     Json(capability_registry_snapshot(&state).await)
 }
 
-
 macro_rules! proxy_pair {
     ($root_fn:ident, $path_fn:ident, $upstream:literal, $prefix:literal) => {
         async fn $root_fn(
@@ -927,6 +926,7 @@ async fn proxy_obp_root(
     if !is_obp_proxy_authorized(&headers) {
         return obp_unauthorized_response(&headers, &method);
     }
+    let headers = prepare_obp_upstream_headers(headers);
     reverse_proxy(
         &state.http,
         "http://127.0.0.1:8000",
@@ -951,6 +951,7 @@ async fn proxy_obp_path(
     if !is_obp_proxy_authorized(&headers) {
         return obp_unauthorized_response(&headers, &method);
     }
+    let headers = prepare_obp_upstream_headers(headers);
     reverse_proxy(
         &state.http,
         "http://127.0.0.1:8000",
@@ -962,6 +963,16 @@ async fn proxy_obp_path(
         body,
     )
     .await
+}
+
+fn prepare_obp_upstream_headers(mut headers: HeaderMap) -> HeaderMap {
+    if let Some(token) = current_obp_secret("OBP_PROXY_TOKEN") {
+        if let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) {
+            headers.insert(header::AUTHORIZATION, value);
+        }
+    }
+    headers.remove(header::COOKIE);
+    headers
 }
 
 async fn obp_login_page() -> Html<&'static str> {
@@ -2125,7 +2136,6 @@ async fn inbox_snapshot(inbox_dir: &Path) -> serde_json::Value {
         "items": items,
     })
 }
-
 
 async fn api_run(State(state): State<AppState>, Json(req): Json<RunRequest>) -> impl IntoResponse {
     let tag = req.tag.unwrap_or_else(|| "收盘".to_string());
