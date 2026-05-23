@@ -1245,13 +1245,14 @@ class AgentLoop:
                 turn_id,
                 direct.content[:80],
             )
-            direct = self._attach_turn_metadata(
-                direct,
-                turn_id,
-                turn_start,
-                path="direct",
-                process_ms=total_ms,
-            )
+            if (msg.metadata or {}).get("_turn_id"):
+                direct = self._attach_turn_metadata(
+                    direct,
+                    turn_id,
+                    turn_start,
+                    path="direct",
+                    process_ms=total_ms,
+                )
             self._log_turn_summary(
                 turn_id=turn_id,
                 channel=msg.channel,
@@ -1269,13 +1270,14 @@ class AgentLoop:
         ctx = CommandContext(msg=msg, session=session, key=key, raw=raw, loop=self)
         if result := await self.commands.dispatch(ctx):
             total_ms = self._elapsed_ms(turn_start)
-            result = self._attach_turn_metadata(
-                result,
-                turn_id,
-                turn_start,
-                path="command",
-                process_ms=total_ms,
-            )
+            if (msg.metadata or {}).get("_turn_id"):
+                result = self._attach_turn_metadata(
+                    result,
+                    turn_id,
+                    turn_start,
+                    path="command",
+                    process_ms=total_ms,
+                )
             self._log_turn_summary(
                 turn_id=turn_id,
                 channel=msg.channel,
