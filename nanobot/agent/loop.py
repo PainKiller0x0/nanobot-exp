@@ -816,6 +816,7 @@ class AgentLoop:
             async with lock, gate:
                 try:
                     on_stream = on_stream_end = None
+                    stream_had_delta = False
                     if msg.metadata.get("_wants_stream"):
                         # Split one answer into distinct stream segments.
                         stream_base_id = f"{msg.session_key}:{time.time_ns()}"
@@ -837,8 +838,10 @@ class AgentLoop:
                             ))
 
                         async def on_stream(delta: str) -> None:
-                            nonlocal first_stream_logged
+                            nonlocal first_stream_logged, stream_had_delta
                             meta = msg.metadata or {}
+                            if delta:
+                                stream_had_delta = True
                             if delta and not first_stream_logged:
                                 first_stream_logged = True
                                 logger.info(
@@ -861,6 +864,14 @@ class AgentLoop:
                         pending_queue=pending,
                     )
                     if response is not None:
+                        if response.metadata.get("_streamed") and not stream_had_delta:
+                            meta = dict(response.metadata or {})
+                            meta.pop("_streamed", None)
+                            response = dataclasses.replace(response, metadata=meta)
+                            logger.warning(
+                                "Streaming requested but no non-empty delta was emitted; sending final response normally turn_id={}",
+                                meta.get("_turn_id", ""),
+                            )
                         await self.bus.publish_outbound(response)
                     elif msg.channel == "cli":
                         await self.bus.publish_outbound(OutboundMessage(

@@ -27,8 +27,8 @@ def _make_loop(*, exec_config=None):
 
     with patch("nanobot.agent.loop.ContextBuilder"), \
          patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
-        MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
+         patch("nanobot.agent.loop.SubagentManager") as mock_sub_mgr:
+        mock_sub_mgr.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(bus=bus, provider=provider, workspace=workspace, exec_config=exec_config)
     return loop, bus
 
@@ -158,6 +158,40 @@ class TestDispatch:
         assert second.metadata["thread_root_event_id"] == "$root1"
         assert second.metadata["thread_reply_to_event_id"] == "$reply1"
         assert second.metadata["_stream_end"] is True
+
+    @pytest.mark.asyncio
+    async def test_dispatch_sends_final_normally_when_stream_has_no_delta(self):
+        from nanobot.bus.events import InboundMessage, OutboundMessage
+
+        loop, bus = _make_loop()
+        msg = InboundMessage(
+            channel="qq",
+            sender_id="u1",
+            chat_id="c1",
+            content="hello",
+            metadata={"_wants_stream": True, "message_id": "m1"},
+        )
+
+        async def fake_process(_msg, *, on_stream=None, on_stream_end=None, **kwargs):
+            assert on_stream is not None
+            assert on_stream_end is not None
+            await on_stream_end(resuming=False)
+            return OutboundMessage(
+                channel="qq",
+                chat_id="c1",
+                content="ok",
+                metadata={"_streamed": True, "message_id": "m1"},
+            )
+
+        loop._process_message = fake_process
+
+        await loop._dispatch(msg)
+        stream_end = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+        final = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+
+        assert stream_end.metadata["_stream_end"] is True
+        assert final.content == "ok"
+        assert "_streamed" not in final.metadata
 
     @pytest.mark.asyncio
     async def test_processing_lock_serializes(self):
