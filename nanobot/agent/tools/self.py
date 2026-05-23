@@ -304,6 +304,8 @@ class MyTool(Tool):
     def _inspect(self, key: str | None) -> str:
         if not key:
             return self._inspect_all()
+        if key == "model":
+            return self._inspect_model()
         top = key.split(".")[0]
         if top in self._DENIED_ATTRS or top.startswith("__"):
             return f"Error: '{top}' is not accessible"
@@ -324,12 +326,43 @@ class MyTool(Tool):
             return f"Error: '{key}' not found"
         return self._format_value(obj, key)
 
+
+    def _inspect_model(self) -> str:
+        requested = getattr(self._loop, "model", None)
+        provider = getattr(self._loop, "provider", None)
+        route = getattr(provider, "_last_obp_route", None)
+        if isinstance(route, dict) and route.get("actual_model"):
+            actual = route.get("actual_model")
+            requested_route = route.get("requested_model") or requested
+            route_name = route.get("route") or "-"
+            group = route.get("group") or "-"
+            channel = route.get("channel") or "-"
+            if actual and requested_route and str(actual).lower() != str(requested_route).lower():
+                return (
+                    "model: actual={actual!r} "
+                    "(requested={requested!r}, route={route!r}, group={group!r}, channel={channel!r})"
+                ).format(
+                    actual=actual,
+                    requested=requested_route,
+                    route=route_name,
+                    group=group,
+                    channel=channel,
+                )
+            return (
+                "model: {actual!r} "
+                "(route={route!r}, group={group!r}, channel={channel!r})"
+            ).format(actual=actual, route=route_name, group=group, channel=channel)
+        return self._format_value(requested, "model")
+
     def _inspect_all(self) -> str:
         loop = self._loop
         parts: list[str] = []
         # RESTRICTED keys
         for k in self.RESTRICTED:
-            parts.append(self._format_value(getattr(loop, k, None), k))
+            if k == "model":
+                parts.append(self._inspect_model())
+            else:
+                parts.append(self._format_value(getattr(loop, k, None), k))
         # Other useful top-level keys shown in description
         for k in ("workspace", "provider_retry_mode", "max_tool_result_chars", "_current_iteration", "web_config", "exec_config", "subagents"):
             if _has_real_attr(loop, k):

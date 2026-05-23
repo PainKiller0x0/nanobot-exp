@@ -32,6 +32,8 @@ def _make_mock_loop(**overrides):
     loop._current_iteration = 0
     loop.provider_retry_mode = "standard"
     loop.max_tool_result_chars = 16000
+    loop.provider = MagicMock()
+    loop.provider._last_obp_route = {}
     loop._concurrency_gate = None
     loop._unified_session = False
     loop._extra_hooks = []
@@ -112,6 +114,24 @@ class TestInspectSingleKey:
         tool = _make_tool()
         result = await tool.execute(action="check", key="max_iterations")
         assert "40" in result
+
+    @pytest.mark.asyncio
+    async def test_inspect_model_prefers_obp_actual_route(self):
+        loop = _make_mock_loop(model="deepseek-v4-flash")
+        loop.provider._last_obp_route = {
+            "requested_model": "deepseek-v4-flash",
+            "actual_model": "gemini-3.5-flash",
+            "route": "default",
+            "group": "gemini",
+            "channel": "Gemini FastAPI Singapore",
+        }
+        tool = _make_tool(loop)
+
+        result = await tool.execute(action="check", key="model")
+
+        assert "actual='gemini-3.5-flash'" in result
+        assert "requested='deepseek-v4-flash'" in result
+        assert "group='gemini'" in result
 
     @pytest.mark.asyncio
     async def test_inspect_blocked_returns_error(self):

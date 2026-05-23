@@ -247,7 +247,7 @@ def _read_header(headers: Any, name: str) -> str | None:
     return str(value)
 
 
-def _log_obp_route_headers(source: Any) -> None:
+def _log_obp_route_headers(source: Any) -> dict[str, str | None]:
     headers = getattr(source, "headers", None)
     if headers is None:
         response = getattr(source, "response", None) or getattr(source, "_response", None)
@@ -257,7 +257,7 @@ def _log_obp_route_headers(source: Any) -> None:
         for key, header_name in _OBP_ROUTE_HEADER_NAMES.items()
     }
     if not any(values.values()):
-        return
+        return {}
     logger.info(
         "OBP model route: requested={} actual={} channel={} route={} group={} reason={}",
         values.get("requested_model") or "-",
@@ -267,6 +267,7 @@ def _log_obp_route_headers(source: Any) -> None:
         values.get("group") or "-",
         values.get("reason") or "-",
     )
+    return values
 
 
 def _is_obp_endpoint(api_base: str | None) -> bool:
@@ -368,6 +369,7 @@ class OpenAICompatProvider(LLMProvider):
         # probe again after _RESPONSES_PROBE_INTERVAL_S seconds.
         self._responses_failures: dict[str, int] = {}
         self._responses_tripped_at: dict[str, float] = {}
+        self._last_obp_route: dict[str, str | None] = {}
 
     def _setup_env(self, api_key: str, api_base: str | None) -> None:
         """Set environment variables based on provider spec."""
@@ -1217,11 +1219,15 @@ class OpenAICompatProvider(LLMProvider):
         raw_endpoint = getattr(completions, "with_raw_response", None)
         if raw_endpoint is None:
             result = await completions.create(**kwargs)
-            _log_obp_route_headers(result)
+            route = _log_obp_route_headers(result)
+            if route:
+                self._last_obp_route = route
             return result
 
         raw_response = await raw_endpoint.create(**kwargs)
-        _log_obp_route_headers(raw_response)
+        route = _log_obp_route_headers(raw_response)
+        if route:
+            self._last_obp_route = route
         parsed = raw_response.parse()
         if hasattr(parsed, "__await__"):
             parsed = await parsed

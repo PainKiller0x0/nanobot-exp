@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.providers.openai_compat_provider import OpenAICompatProvider
+from nanobot.providers.openai_compat_provider import OpenAICompatProvider, _log_obp_route_headers
 from nanobot.providers.registry import find_by_name
 
 
@@ -112,6 +112,23 @@ class _StalledStream:
     async def __anext__(self):
         await asyncio.sleep(3600)
         raise StopAsyncIteration
+
+
+def test_obp_route_headers_return_actual_model_metadata() -> None:
+    source = SimpleNamespace(headers={
+        "x-obp-requested-model": "deepseek-v4-flash",
+        "x-obp-actual-model": "gemini-3.5-flash",
+        "x-obp-channel": "Gemini FastAPI Singapore",
+        "x-obp-route": "default",
+        "x-obp-group": "gemini",
+        "x-obp-reason": "default lightweight route",
+    })
+
+    route = _log_obp_route_headers(source)
+
+    assert route["requested_model"] == "deepseek-v4-flash"
+    assert route["actual_model"] == "gemini-3.5-flash"
+    assert route["group"] == "gemini"
 
 
 def test_openrouter_spec_is_gateway() -> None:
