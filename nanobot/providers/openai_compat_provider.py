@@ -229,7 +229,10 @@ _OBP_ROUTE_HEADER_NAMES = {
     "actual_model": "x-obp-actual-model",
     "channel": "x-obp-channel",
     "reason": "x-obp-reason",
+    "source": "x-obp-source",
+    "request_id": "x-obp-request-id",
     "first_chunk_ms": "x-obp-first-chunk-ms",
+    "first_text_ms": "x-obp-first-text-ms",
 }
 
 
@@ -260,13 +263,16 @@ def _log_obp_route_headers(source: Any) -> dict[str, str | None]:
     if not any(values.values()):
         return {}
     logger.info(
-        "OBP model route: requested={} actual={} channel={} route={} group={} first_chunk_ms={} reason={}",
+        "OBP model route: request_id={} source={} requested={} actual={} channel={} route={} group={} first_chunk_ms={} first_text_ms={} reason={}",
+        values.get("request_id") or "-",
+        values.get("source") or "-",
         values.get("requested_model") or "-",
         values.get("actual_model") or "-",
         values.get("channel") or "-",
         values.get("route") or "-",
         values.get("group") or "-",
         values.get("first_chunk_ms") or "-",
+        values.get("first_text_ms") or "-",
         values.get("reason") or "-",
     )
     return values
@@ -340,6 +346,11 @@ class OpenAICompatProvider(LLMProvider):
             default_headers.update(_DEFAULT_OPENROUTER_HEADERS)
         if extra_headers:
             default_headers.update(extra_headers)
+        if _is_obp_endpoint(effective_base):
+            default_headers.setdefault(
+                "X-OBP-Source",
+                os.environ.get("NANOBOT_OBP_SOURCE", "default-nanobot"),
+            )
 
         # Local model servers (Ollama, llama.cpp, vLLM) often close idle
         # HTTP connections before the client-side keepalive expires.  When
@@ -1212,9 +1223,19 @@ class OpenAICompatProvider(LLMProvider):
             **OpenAICompatProvider._extract_error_metadata(e),
         )
 
+    def _with_obp_request_headers(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        if not _is_obp_endpoint(self._effective_base):
+            return kwargs
+        updated = dict(kwargs)
+        extra_headers = dict(updated.get("extra_headers") or {})
+        extra_headers.setdefault("X-OBP-Request-ID", f"nb-{uuid.uuid4().hex}")
+        updated["extra_headers"] = extra_headers
+        return updated
+
     async def _create_chat_completion_with_route_log(self, kwargs: dict[str, Any]) -> Any:
         """Create a chat completion and log OBP routing headers when present."""
         completions = self._client.chat.completions
+        kwargs = self._with_obp_request_headers(kwargs)
         if not _is_obp_endpoint(self._effective_base):
             return await completions.create(**kwargs)
 
