@@ -529,6 +529,24 @@ class ChannelManager:
             meta.get("_send_queue_depth", 0),
             len(msg.content or ""),
         )
+        logger.info(
+            "Turn latency ledger turn_id={} channel={} chat_id={} path={} "
+            "prep_ms={} prompt_ms={} llm_ms={} persist_ms={} first_delta_ms={} "
+            "queue_ms={} send_ms={} total_ms={} content_chars={}",
+            turn_id,
+            msg.channel,
+            msg.chat_id,
+            meta.get("_turn_path", ""),
+            meta.get("_turn_prep_ms", 0),
+            meta.get("_turn_prompt_ms", 0),
+            meta.get("_turn_llm_ms", 0),
+            meta.get("_turn_persist_ms", 0),
+            meta.get("_turn_first_delta_ms", 0),
+            queue_ms,
+            send_ms,
+            total_ms,
+            len(msg.content or ""),
+        )
 
     def get_channel(self, name: str) -> BaseChannel | None:
         """Get a channel by name."""

@@ -6,6 +6,7 @@ use axum::{
     http::{header, HeaderMap, HeaderName, Request, Response, StatusCode},
     response::IntoResponse,
 };
+use futures_util::{stream, StreamExt};
 use reqwest::{Body as ReqBody, Client, RequestBuilder};
 use serde_json::Value;
 use std::sync::Arc;
@@ -426,7 +427,13 @@ async fn handle_proxy(
                 .await;
                 continue;
             }
-            record_result(
+            let headers = response.headers().clone();
+            let mut upstream_stream = response.bytes_stream();
+            let first_chunk = upstream_stream.next().await;
+            let first_chunk_ms = first_chunk
+                .as_ref()
+                .map(|_| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+            record_result_with_first_chunk(
                 &state,
                 &attempt.channel,
                 &decision.requested_model,
@@ -437,11 +444,12 @@ async fn handle_proxy(
                 started.elapsed(),
                 TokenUsage::default(),
                 &source,
+                first_chunk_ms,
             )
             .await;
-            let mut res_builder = response_with_headers(status, response.headers());
-            res_builder = route_headers(res_builder, attempt, &decision, &source);
-            let res_stream = response.bytes_stream();
+            let mut res_builder = response_with_headers(status, &headers);
+            res_builder = route_headers(res_builder, attempt, &decision, &source, first_chunk_ms);
+            let res_stream = stream::iter(first_chunk.into_iter()).chain(upstream_stream);
             return res_builder
                 .body(Body::from_stream(res_stream))
                 .unwrap_or_else(|_| {
@@ -493,7 +501,7 @@ async fn handle_proxy(
                 .status(status)
                 .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         };
-        res_builder = route_headers(res_builder, attempt, &decision, &source);
+        res_builder = route_headers(res_builder, attempt, &decision, &source, None);
         let response = res_builder
             .body(Body::from(response_bytes.clone()))
             .unwrap_or_else(|_| {
@@ -1345,6 +1353,7 @@ fn route_headers(
     attempt: &Attempt,
     decision: &RouteDecision,
     source: &str,
+    first_chunk_ms: Option<u64>,
 ) -> axum::http::response::Builder {
     let headers = [
         ("x-obp-route", attempt.role.as_str()),
@@ -1359,6 +1368,9 @@ fn route_headers(
         if let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) {
             builder = builder.header(header_name, value);
         }
+    }
+    if let Some(first_chunk_ms) = first_chunk_ms {
+        builder = builder.header("x-obp-first-chunk-ms", first_chunk_ms.to_string());
     }
     builder
 }
@@ -1404,6 +1416,36 @@ async fn record_result(
     usage: TokenUsage,
     source: &str,
 ) {
+    record_result_with_first_chunk(
+        state,
+        ch,
+        requested_model,
+        actual_model,
+        route,
+        route_reason,
+        status,
+        elapsed,
+        usage,
+        source,
+        None,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_result_with_first_chunk(
+    state: &Arc<ProxyState>,
+    ch: &Channel,
+    requested_model: &str,
+    actual_model: &str,
+    route: &str,
+    route_reason: &str,
+    status: u16,
+    elapsed: Duration,
+    usage: TokenUsage,
+    source: &str,
+    first_chunk_ms: Option<u64>,
+) {
     let latency_ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
     let log = RequestLog::new(
         source.to_string(),
@@ -1416,6 +1458,7 @@ async fn record_result(
         status,
         latency_ms,
         usage,
+        first_chunk_ms,
     );
     log_model_route(&log, ch);
 
@@ -1467,6 +1510,7 @@ fn log_model_route(log: &RequestLog, ch: &Channel) {
             route = %log.route,
             status = log.status,
             latency_ms = log.latency_ms,
+            first_chunk_ms = log.first_chunk_ms.unwrap_or(0),
             prompt_tokens = log.prompt_tokens,
             cached_tokens = log.cached_tokens,
             completion_tokens = log.completion_tokens,
@@ -1485,6 +1529,7 @@ fn log_model_route(log: &RequestLog, ch: &Channel) {
             route = %log.route,
             status = log.status,
             latency_ms = log.latency_ms,
+            first_chunk_ms = log.first_chunk_ms.unwrap_or(0),
             prompt_tokens = log.prompt_tokens,
             cached_tokens = log.cached_tokens,
             completion_tokens = log.completion_tokens,

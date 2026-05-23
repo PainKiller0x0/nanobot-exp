@@ -817,6 +817,7 @@ class AgentLoop:
                 try:
                     on_stream = on_stream_end = None
                     stream_had_delta = False
+                    stream_first_delta_ms: int | None = None
                     if msg.metadata.get("_wants_stream"):
                         # Split one answer into distinct stream segments.
                         stream_base_id = f"{msg.session_key}:{time.time_ns()}"
@@ -838,18 +839,21 @@ class AgentLoop:
                             ))
 
                         async def on_stream(delta: str) -> None:
-                            nonlocal first_stream_logged, stream_had_delta
+                            nonlocal first_stream_logged, stream_had_delta, stream_first_delta_ms
                             meta = msg.metadata or {}
                             if delta:
                                 stream_had_delta = True
                             if delta and not first_stream_logged:
                                 first_stream_logged = True
+                                stream_first_delta_ms = self._elapsed_ms(
+                                    float(meta.get("_turn_started_perf") or time.perf_counter())
+                                )
                                 logger.info(
                                     "Turn first stream delta turn_id={} channel={} chat_id={} first_delta_ms={} chars={}",
                                     meta.get("_turn_id", ""),
                                     msg.channel,
                                     msg.chat_id,
-                                    self._elapsed_ms(float(meta.get("_turn_started_perf") or time.perf_counter())),
+                                    stream_first_delta_ms,
                                     len(delta),
                                 )
                             await _publish_stream_event(delta, _stream_delta=True)
@@ -864,6 +868,10 @@ class AgentLoop:
                         pending_queue=pending,
                     )
                     if response is not None:
+                        if stream_first_delta_ms is not None:
+                            meta = dict(response.metadata or {})
+                            meta["_turn_first_delta_ms"] = stream_first_delta_ms
+                            response = dataclasses.replace(response, metadata=meta)
                         if response.metadata.get("_streamed") and not stream_had_delta:
                             meta = dict(response.metadata or {})
                             meta.pop("_streamed", None)
@@ -1237,6 +1245,13 @@ class AgentLoop:
                 turn_id,
                 direct.content[:80],
             )
+            direct = self._attach_turn_metadata(
+                direct,
+                turn_id,
+                turn_start,
+                path="direct",
+                process_ms=total_ms,
+            )
             self._log_turn_summary(
                 turn_id=turn_id,
                 channel=msg.channel,
@@ -1254,6 +1269,13 @@ class AgentLoop:
         ctx = CommandContext(msg=msg, session=session, key=key, raw=raw, loop=self)
         if result := await self.commands.dispatch(ctx):
             total_ms = self._elapsed_ms(turn_start)
+            result = self._attach_turn_metadata(
+                result,
+                turn_id,
+                turn_start,
+                path="command",
+                process_ms=total_ms,
+            )
             self._log_turn_summary(
                 turn_id=turn_id,
                 channel=msg.channel,

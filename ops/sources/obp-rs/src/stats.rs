@@ -86,6 +86,8 @@ pub struct RequestLog {
     pub status: u16,
     pub latency_ms: u64,
     pub latency: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_chunk_ms: Option<u64>,
     #[serde(default)]
     pub prompt_tokens: u64,
     #[serde(default)]
@@ -113,6 +115,7 @@ impl RequestLog {
         status: u16,
         latency_ms: u64,
         usage: TokenUsage,
+        first_chunk_ms: Option<u64>,
     ) -> Self {
         let ts = now_unix_secs();
         let (day, time) = shanghai_strings(ts);
@@ -133,6 +136,7 @@ impl RequestLog {
             status,
             latency_ms,
             latency: format!("{}ms", latency_ms),
+            first_chunk_ms,
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             uncached_prompt_tokens: usage.uncached_prompt_tokens(),
@@ -717,6 +721,7 @@ mod tests {
             200,
             100,
             usage(1_000, 100, 200),
+            None,
         ));
         stats.record(RequestLog::new(
             "default-nanobot".to_string(),
@@ -729,6 +734,7 @@ mod tests {
             200,
             100,
             usage(2_000, 0, 100),
+            None,
         ));
 
         assert_eq!(stats.total.requests, 2);

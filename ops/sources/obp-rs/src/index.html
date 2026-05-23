@@ -129,6 +129,7 @@
                 <div class="flex justify-between gap-2 text-xs"><span class="mono text-slate-500" x-text="log.time"></span><span :class="String(log.status).startsWith('2')?'text-emerald-600':'text-rose-600'" x-text="log.status"></span></div>
                 <div class="mt-1 font-bold" x-text="(log.requested_model||log.model) + ' → ' + log.model + ' / ' + log.route"></div>
                 <div class="text-xs text-slate-500 mt-1" x-text="(log.source||'unknown-source') + ' / ' + log.channel + ' / ' + (log.route_reason||'-')"></div>
+                <div class="text-xs text-slate-500 mt-1" x-text="log.first_chunk_ms ? ('OBP 首字 ' + fmt(log.first_chunk_ms) + 'ms') : ('OBP 耗时 ' + fmt(log.latency_ms) + 'ms')"></div>
                 <div class="text-xs text-slate-500 mt-1" x-text="'tokens ' + fmt(log.total_tokens) + ' / 缓存 ' + fmt(log.cached_tokens) + ' / 成本 ' + money(log.cost_cny)"></div>
               </div>
             </template>

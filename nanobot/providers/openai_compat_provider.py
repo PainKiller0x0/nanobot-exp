@@ -229,6 +229,7 @@ _OBP_ROUTE_HEADER_NAMES = {
     "actual_model": "x-obp-actual-model",
     "channel": "x-obp-channel",
     "reason": "x-obp-reason",
+    "first_chunk_ms": "x-obp-first-chunk-ms",
 }
 
 
@@ -259,12 +260,13 @@ def _log_obp_route_headers(source: Any) -> dict[str, str | None]:
     if not any(values.values()):
         return {}
     logger.info(
-        "OBP model route: requested={} actual={} channel={} route={} group={} reason={}",
+        "OBP model route: requested={} actual={} channel={} route={} group={} first_chunk_ms={} reason={}",
         values.get("requested_model") or "-",
         values.get("actual_model") or "-",
         values.get("channel") or "-",
         values.get("route") or "-",
         values.get("group") or "-",
+        values.get("first_chunk_ms") or "-",
         values.get("reason") or "-",
     )
     return values
