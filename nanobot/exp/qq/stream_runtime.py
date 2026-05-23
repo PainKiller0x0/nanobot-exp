@@ -14,6 +14,7 @@ from typing import Any
 
 from nanobot.exp.qq import signatures as qq_signatures
 from nanobot.exp.qq import streaming as qq_streaming
+from nanobot.utils.output_sanitizer import strip_meta_instruction_tail
 
 SendStreamFrame = Callable[..., Awaitable[str | None]]
 SendTextOnly = Callable[..., Awaitable[None]]
@@ -142,7 +143,7 @@ async def send_delta(
             )
             return
 
-        content = str(state.get("content") or "").strip()
+        content = strip_meta_instruction_tail(str(state.get("content") or "")).strip()
         if not content:
             stream_states.pop(stream_key, None)
             return
@@ -199,12 +200,13 @@ async def send_delta(
                 chat_id,
                 e,
             )
-        if is_end and str(state.get("content") or "").strip():
+        fallback_content = strip_meta_instruction_tail(str(state.get("content") or ""))
+        if is_end and fallback_content.strip():
             await send_text_only(
                 chat_id=chat_id,
                 is_group=is_group,
                 msg_id=msg_id,
-                content=str(state.get("content") or ""),
+                content=fallback_content,
             )
     finally:
         if is_end:
@@ -221,7 +223,7 @@ async def send_text_streaming(
     content: str,
     logger: Any | None = None,
 ) -> None:
-    content = qq_signatures.strip_silent_marker(content)
+    content = strip_meta_instruction_tail(qq_signatures.strip_silent_marker(content))
     if not content:
         return
 

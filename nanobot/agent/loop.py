@@ -20,7 +20,6 @@ from nanobot.agent.direct_reply import build_direct_reply
 from nanobot.agent.hook import AgentHook, AgentHookContext, CompositeHook
 from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
-from nanobot.exp.agent import warmup_runtime as exp_warmup_runtime
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.ask import (
@@ -44,12 +43,14 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.config.schema import AgentDefaults
+from nanobot.exp.agent import warmup_runtime as exp_warmup_runtime
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.session.manager import Session, SessionManager
 from nanobot.utils.document import extract_documents
 from nanobot.utils.helpers import image_placeholder_text
 from nanobot.utils.helpers import truncate_text as truncate_text_fn
+from nanobot.utils.output_sanitizer import strip_meta_instruction_tail
 from nanobot.utils.progress_events import (
     build_tool_event_finish_payloads,
     build_tool_event_start_payload,
@@ -1391,6 +1392,7 @@ class AgentLoop:
                 )
                 return None
 
+        final_content = strip_meta_instruction_tail(final_content)
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{} turn_id={}: {}", msg.channel, msg.sender_id, turn_id, preview)
 

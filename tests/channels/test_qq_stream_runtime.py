@@ -111,3 +111,43 @@ async def test_send_delta_without_message_id_drops_state_on_end() -> None:
     assert frames == []
     assert texts == []
     assert states == {}
+
+
+@pytest.mark.asyncio
+async def test_send_delta_strips_meta_instruction_tail_on_final_reset() -> None:
+    frames = []
+    texts = []
+    states: dict[str, dict] = {}
+
+    async def fake_frame(**kwargs):
+        frames.append(kwargs)
+        return "qq-stream"
+
+    async def fake_text(**kwargs):
+        texts.append(kwargs)
+
+    await stream_runtime.send_delta(
+        config=_cfg(),
+        stream_states=states,
+        chat_type_cache={},
+        send_stream_frame=fake_frame,
+        send_text_only=fake_text,
+        chat_id="user1",
+        delta="Weekend shopping is nice.",
+        metadata={"message_id": "msg1", "_stream_id": "s1"},
+    )
+    await stream_runtime.send_delta(
+        config=_cfg(),
+        stream_states=states,
+        chat_type_cache={},
+        send_stream_frame=fake_frame,
+        send_text_only=fake_text,
+        chat_id="user1",
+        delta=" Let's stick with rule 1 and no options/follow-up question elements.",
+        metadata={"message_id": "msg1", "_stream_id": "s1", "_stream_end": True},
+    )
+
+    assert texts == []
+    assert frames[-1]["state"] == 10
+    assert frames[-1]["content"] == "Weekend shopping is nice."
+    assert states == {}
