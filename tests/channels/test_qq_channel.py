@@ -281,6 +281,34 @@ async def test_qq_supports_streaming_when_stream_enabled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_delta_waits_for_first_frame_min_chars() -> None:
+    channel = QQChannel(
+        QQConfig(
+            app_id="app",
+            secret="secret",
+            allow_from=["*"],
+            msg_format="markdown",
+            stream_enabled=True,
+            stream_first_flush_chars=10,
+            stream_delta_flush_chars=20,
+            stream_delta_flush_interval_sec=0,
+        ),
+        MessageBus(),
+    )
+    channel._client = _FakeClient()
+
+    metadata = {"_stream_id": "s-first", "_stream_delta": True, "message_id": "msg1"}
+    await channel.send_delta("user123", "hi", metadata)
+    assert channel._client.api._http.calls == []
+
+    await channel.send_delta("user123", " there friend", metadata)
+    calls = channel._client.api._http.calls
+    assert len(calls) == 1
+    assert calls[0]["markdown"] == {"content": "hi there friend"}
+    assert calls[0]["stream"] == {"state": 1, "index": 0, "reset": False}
+
+
+@pytest.mark.asyncio
 async def test_send_delta_streams_and_finalizes_with_raw_http() -> None:
     channel = QQChannel(
         QQConfig(

@@ -136,7 +136,14 @@ async def send_delta(
                 first_frame_sent=bool(state.get("first_frame_sent")),
             )
             elapsed = time.monotonic() - float(state.get("last_flush_at") or time.monotonic())
-            if len(pending) < threshold and elapsed < interval:
+            if not state.get("first_frame_sent"):
+                # QQ's stream endpoint is fragile with tiny first frames.  A
+                # one-character first frame often times out and invalidates the
+                # stream id, so the first visible update must reach the
+                # configured minimum size regardless of the time interval.
+                if len(pending) < threshold:
+                    return
+            elif len(pending) < threshold and elapsed < interval:
                 return
             await _flush_delta_stream_state(
                 config=config,
