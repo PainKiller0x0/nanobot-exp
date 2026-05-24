@@ -108,7 +108,11 @@ class SkillsLoader:
         ]
         return "\n\n---\n\n".join(parts)
 
-    def build_skills_summary(self, exclude: set[str] | None = None) -> str:
+    def build_skills_summary(
+        self,
+        exclude: set[str] | None = None,
+        include: set[str] | None = None,
+    ) -> str:
         """
         Build a summary of all skills (name, description, path, availability).
 
@@ -117,6 +121,7 @@ class SkillsLoader:
 
         Args:
             exclude: Set of skill names to omit from the summary.
+            include: Optional set of skill names to keep; all others are omitted.
 
         Returns:
             Markdown-formatted skills summary.
@@ -128,6 +133,8 @@ class SkillsLoader:
         lines: list[str] = []
         for entry in all_skills:
             skill_name = entry["name"]
+            if include is not None and skill_name not in include:
+                continue
             if exclude and skill_name in exclude:
                 continue
             meta = self._get_skill_meta(skill_name)

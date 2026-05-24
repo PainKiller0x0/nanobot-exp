@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as datetime_module
 import re
 from datetime import datetime as real_datetime
 from importlib.resources import files as pkg_files
 from pathlib import Path
-import datetime as datetime_module
 
 from nanobot.agent.context import ContextBuilder
 
@@ -351,6 +351,36 @@ def test_always_skills_excluded_from_skills_index(tmp_path) -> None:
     if len(skills_section) > 1:
         index_text = skills_section[1].split("\n\n---")[0]
         assert "**memory**" not in index_text
+
+
+def test_compact_system_prompt_keeps_always_skill_reference_without_full_body(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    skill_dir = workspace / "skills" / "tiny-always"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: tiny-always
+description: Tiny always skill for compact prompt tests.
+metadata:
+  nanobot:
+    always: true
+---
+
+# Tiny Always
+
+FULL BODY SENTINEL THAT SHOULD NOT APPEAR IN COMPACT MODE.
+""",
+        encoding="utf-8",
+    )
+
+    builder = ContextBuilder(workspace)
+    full_prompt = builder.build_system_prompt()
+    compact_prompt = builder.build_system_prompt(compact_always_skills=True)
+
+    assert "FULL BODY SENTINEL" in full_prompt
+    assert "# Active Skills Quick Reference" in compact_prompt
+    assert "**tiny-always**" in compact_prompt
+    assert "FULL BODY SENTINEL" not in compact_prompt
 
 
 def test_template_memory_md_is_skipped(tmp_path) -> None:

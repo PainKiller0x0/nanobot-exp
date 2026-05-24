@@ -39,6 +39,7 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         channel: str | None = None,
         session_summary: str | None = None,
+        compact_always_skills: bool = False,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity(channel=channel)]
@@ -53,8 +54,15 @@ class ContextBuilder:
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
-            always_content = self.skills.load_skills_for_context(always_skills)
-            if always_content:
+            if compact_always_skills:
+                always_summary = self.skills.build_skills_summary(include=set(always_skills))
+                if always_summary:
+                    parts.append(
+                        "# Active Skills Quick Reference\n\n"
+                        + always_summary
+                        + "\n\nLoad the full skill file only when the current user request needs it."
+                    )
+            elif always_content := self.skills.load_skills_for_context(always_skills):
                 parts.append(f"# Active Skills\n\n{always_content}")
 
         skills_summary = self.skills.build_skills_summary(exclude=set(always_skills))
@@ -154,6 +162,7 @@ class ContextBuilder:
         sender_id: str | None = None,
         session_summary: str | None = None,
         session_metadata: Mapping[str, Any] | None = None,
+        compact_system_prompt: bool = False,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         extra = goal_state_runtime_lines(session_metadata)
@@ -175,7 +184,15 @@ class ContextBuilder:
         else:
             merged = user_content + [{"type": "text", "text": runtime_ctx}]
         messages = [
-            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel, session_summary=session_summary)},
+            {
+                "role": "system",
+                "content": self.build_system_prompt(
+                    skill_names,
+                    channel=channel,
+                    session_summary=session_summary,
+                    compact_always_skills=compact_system_prompt,
+                ),
+            },
             *history,
         ]
         if messages[-1].get("role") == current_role:
@@ -210,4 +227,3 @@ class ContextBuilder:
         if not images:
             return text
         return images + [{"type": "text", "text": text}]
-

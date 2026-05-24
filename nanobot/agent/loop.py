@@ -18,7 +18,6 @@ from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.direct_reply import build_direct_reply
-from nanobot.exp.agent.history_budget import replay_budget_for_message
 from nanobot.agent.hook import AgentHook, CompositeHook
 from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent.progress_hook import AgentProgressHook
@@ -32,6 +31,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
+from nanobot.exp.agent.history_budget import replay_budget_for_message
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.session.goal_state import (
@@ -609,6 +609,7 @@ class AgentLoop:
         session: Session,
         history: list[dict[str, Any]],
         pending_summary: str | None,
+        compact_system_prompt: bool = False,
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
         return self.context.build_messages(
@@ -620,6 +621,7 @@ class AgentLoop:
             sender_id=msg.sender_id,
             session_summary=pending_summary,
             session_metadata=session.metadata,
+            compact_system_prompt=compact_system_prompt,
         )
 
     async def _dispatch_command_inline(
@@ -1383,7 +1385,11 @@ class AgentLoop:
         ctx.history = ctx.session.get_history(**_hist_kwargs)
 
         ctx.initial_messages = self._build_initial_messages(
-            ctx.msg, ctx.session, ctx.history, ctx.pending_summary
+            ctx.msg,
+            ctx.session,
+            ctx.history,
+            ctx.pending_summary,
+            compact_system_prompt=replay_reason in {"short standalone turn", "empty short turn"},
         )
         ctx.user_persisted_early = self._persist_user_message_early(
             ctx.msg, ctx.session
