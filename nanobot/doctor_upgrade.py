@@ -1,4 +1,4 @@
-﻿"""Safe upstream upgrade workflow for nanobot doctor."""
+"""Safe upstream upgrade workflow for nanobot doctor."""
 
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def run_doctor_upgrade(
         report.add("merge", "ok", f"merged {latest_ref} into {upgrade_branch}")
 
         if run_tests:
-            _run_check(report, worktree, ["uv", "run", "ruff", "check", "nanobot", "--select", "F401,F841"], "lint")
+            _run_check(report, worktree, ["uv", "run", "ruff", "check", "nanobot", "--select", "F"], "lint")
             _run_check(
                 report,
                 worktree,

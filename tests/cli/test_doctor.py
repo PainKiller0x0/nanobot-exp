@@ -1,4 +1,4 @@
-﻿import json
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -69,6 +69,35 @@ def test_doctor_cli_json_uses_config_path(tmp_path):
     payload = json.loads(result.stdout)
     assert "checks" in payload
     assert any(check["name"] == "workspace path" for check in payload["checks"])
+
+
+def test_doctor_warns_when_qq_override_drifts(tmp_path):
+    config_path = tmp_path / "config.json"
+    workspace = tmp_path / "workspace"
+    _write_config(config_path, workspace)
+
+    channel = tmp_path / "nanobot" / "channels" / "qq.py"
+    live_override = tmp_path / "overrides" / "qq.py"
+    tracked_override = tmp_path / "ops" / "config" / "overrides" / "qq.py"
+    channel.parent.mkdir(parents=True)
+    live_override.parent.mkdir(parents=True)
+    tracked_override.parent.mkdir(parents=True)
+    channel.write_text("current qq\n", encoding="utf-8")
+    live_override.write_text("old qq\n", encoding="utf-8")
+    tracked_override.write_text("old qq\n", encoding="utf-8")
+
+    report = run_doctor(
+        config_path=config_path,
+        repair=False,
+        probe_external=False,
+        stable_dir=tmp_path / "doctor",
+        repo_path=tmp_path,
+    )
+
+    assert any(
+        c.name == "QQ override drift" and c.status == "warn" and "live" in c.detail and "tracked" in c.detail
+        for c in report.checks
+    )
 
 
 # Doctor upgrade -------------------------------------------------------------

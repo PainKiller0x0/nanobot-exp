@@ -1,4 +1,4 @@
-﻿"""Nanobot doctor checks and low-risk repairs.
+"""Nanobot doctor checks and low-risk repairs.
 
 This module intentionally stays independent from the gateway runtime. The CLI can
 import it quickly, and tests can run it without starting channels or providers.
@@ -133,6 +133,8 @@ def run_doctor(
     _check_provider(report, config)
     _check_cron_store(report, workspace_path)
     _check_gateway_pid(report, cfg_path.parent)
+    repo_for_checks = Path(repo_path).expanduser() if repo_path else _find_git_repo(Path.cwd())
+    _check_qq_override_drift(report, cfg_path.parent, repo_for_checks)
 
     if probe_external is None:
         probe_external = os.environ.get("NANOBOT_DOCTOR_SKIP_EXTERNAL") not in {"1", "true", "yes"}
@@ -318,6 +320,47 @@ def _check_gateway_pid(report: DoctorReport, data_dir: Path) -> None:
             report.add("gateway", path.name, "warn", f"Stale PID file: {path}")
         except Exception as exc:
             report.add("gateway", path.name, "warn", f"Could not inspect {path}: {exc}")
+
+
+def _same_file_bytes(left: Path, right: Path) -> bool:
+    try:
+        return left.read_bytes() == right.read_bytes()
+    except Exception:
+        return False
+
+
+def _check_qq_override_drift(report: DoctorReport, data_dir: Path, repo: Path | None) -> None:
+    """Warn when startup QQ overrides can silently replace committed code."""
+    if repo is None:
+        report.add("qq", "QQ override drift", "info", "Skipped: git repo not found")
+        return
+
+    channel = repo / "nanobot" / "channels" / "qq.py"
+    if not channel.exists():
+        report.add("qq", "QQ override drift", "info", f"Skipped: {channel} not found")
+        return
+
+    candidates = [
+        ("live", data_dir / "overrides" / "qq.py"),
+        ("tracked", repo / "ops" / "config" / "overrides" / "qq.py"),
+    ]
+    existing = [(label, path) for label, path in candidates if path.exists()]
+    if not existing:
+        report.add("qq", "QQ override drift", "ok", "No QQ override files found")
+        return
+
+    drifted = [label for label, path in existing if not _same_file_bytes(channel, path)]
+    if drifted:
+        report.add(
+            "qq",
+            "QQ override drift",
+            "warn",
+            f"{', '.join(drifted)} QQ override differs from nanobot/channels/qq.py",
+            "Sync the override after QQ channel changes, or remove the whole-file override once it is no longer needed.",
+        )
+        return
+
+    report.add("qq", "QQ override drift", "ok", f"{len(existing)} QQ override file(s) aligned")
 
 
 def _probe_json(url: str, timeout: float = 1.5) -> tuple[dict[str, Any] | None, str | None]:
