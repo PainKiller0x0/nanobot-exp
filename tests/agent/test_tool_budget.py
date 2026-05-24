@@ -62,3 +62,20 @@ def test_old_tool_context_before_latest_user_does_not_force_tools() -> None:
 
     assert tools is None
     assert reason == "short standalone turn"
+
+
+def test_current_user_hint_overrides_merged_history_text() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [
+            {
+                "role": "user",
+                "content": "这是一段很长的旧历史，里面有 GitHub、代码、日志、报错。" * 100
+                + "\n\n现在很蛋疼，我不太想开工干副业。。。",
+            }
+        ],
+        current_user_text="现在很蛋疼，我不太想开工干副业。。。",
+    )
+
+    assert tools is None
+    assert reason == "short standalone turn"

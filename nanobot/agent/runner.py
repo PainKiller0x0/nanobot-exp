@@ -14,7 +14,10 @@ from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.exp.agent.tool_budget import tool_definitions_for_turn
+from nanobot.exp.agent.tool_budget import (
+    latest_user_text_for_observability,
+    tool_definitions_for_turn,
+)
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.utils.helpers import (
     IncrementalThinkExtractor,
@@ -83,6 +86,7 @@ class AgentRunSpec:
     checkpoint_callback: Any | None = None
     injection_callback: Any | None = None
     llm_timeout_s: float | None = None
+    current_user_text: str | None = None
 
 
 @dataclass(slots=True)
@@ -610,13 +614,26 @@ class AgentRunner:
         tool_definitions, tool_reason = tool_definitions_for_turn(
             all_tool_definitions,
             messages,
+            current_user_text=spec.current_user_text,
         )
-        if tool_definitions is None and all_tool_definitions:
-            logger.info(
-                "Adaptive tool ads disabled tools for short turn reason={} total_tools={}",
-                tool_reason,
-                len(all_tool_definitions),
-            )
+        if all_tool_definitions:
+            latest_user_text = spec.current_user_text or latest_user_text_for_observability(messages)
+            if tool_definitions is None:
+                logger.info(
+                    "Adaptive tool ads disabled tools for short turn reason={} total_tools={} latest_user_chars={} latest_user_preview={}",
+                    tool_reason,
+                    len(all_tool_definitions),
+                    len(latest_user_text),
+                    latest_user_text.replace("\n", " ")[:80],
+                )
+            else:
+                logger.info(
+                    "Adaptive tool ads kept tools reason={} total_tools={} latest_user_chars={} latest_user_preview={}",
+                    tool_reason,
+                    len(all_tool_definitions),
+                    len(latest_user_text),
+                    latest_user_text.replace("\n", " ")[:80],
+                )
         kwargs = self._build_request_kwargs(
             spec,
             messages,

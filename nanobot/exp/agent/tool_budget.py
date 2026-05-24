@@ -118,6 +118,8 @@ def _has_tool_marker(text: str) -> bool:
 def tool_definitions_for_turn(
     tool_definitions: list[dict[str, Any]],
     messages: list[dict[str, Any]],
+    *,
+    current_user_text: str | None = None,
 ) -> tuple[list[dict[str, Any]] | None, str]:
     """Return tool definitions for this turn and a short observability reason."""
     if not tool_definitions:
@@ -127,7 +129,7 @@ def tool_definitions_for_turn(
     if _has_active_tool_context(messages):
         return tool_definitions, "active tool context"
 
-    text = _latest_user_text(messages)
+    text = current_user_text if current_user_text is not None else _latest_user_text(messages)
     if _has_attachment(text):
         return tool_definitions, "attachment turn"
     if _has_tool_marker(text):
@@ -137,3 +139,7 @@ def tool_definitions_for_turn(
     if reason in {"short standalone turn", "empty short turn"}:
         return None, reason
     return tool_definitions, reason
+
+
+def latest_user_text_for_observability(messages: list[dict[str, Any]]) -> str:
+    return _latest_user_text(messages)
