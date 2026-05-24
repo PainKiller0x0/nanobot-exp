@@ -110,6 +110,57 @@ class AgentRunner:
         self.provider = provider
 
     @staticmethod
+    def _content_char_len(content: Any) -> int:
+        if content is None:
+            return 0
+        if isinstance(content, str):
+            return len(content)
+        if isinstance(content, list):
+            total = 0
+            for item in content:
+                if isinstance(item, dict):
+                    value = item.get("text") or item.get("content") or ""
+                    total += len(str(value))
+                else:
+                    total += len(str(item))
+            return total
+        return len(str(content))
+
+    @classmethod
+    def _log_prompt_budget(
+        cls,
+        spec: AgentRunSpec,
+        messages: list[dict[str, Any]],
+        *,
+        tools_count: int,
+        tool_reason: str,
+    ) -> None:
+        role_chars: dict[str, int] = {"system": 0, "user": 0, "assistant": 0, "tool": 0}
+        other_chars = 0
+        for message in messages:
+            role = str(message.get("role") or "other")
+            chars = cls._content_char_len(message.get("content"))
+            if role in role_chars:
+                role_chars[role] += chars
+            else:
+                other_chars += chars
+        total_chars = sum(role_chars.values()) + other_chars
+        logger.info(
+            "LLM request budget session={} model={} messages={} chars={} system={} user={} assistant={} tool={} other={} tools={} tool_reason={}",
+            spec.session_key or "default",
+            spec.model,
+            len(messages),
+            total_chars,
+            role_chars["system"],
+            role_chars["user"],
+            role_chars["assistant"],
+            role_chars["tool"],
+            other_chars,
+            tools_count,
+            tool_reason,
+        )
+
+    @staticmethod
     def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
         if isinstance(left, str) and isinstance(right, str):
             return f"{left}\n\n{right}" if left else right
@@ -634,6 +685,12 @@ class AgentRunner:
                     len(latest_user_text),
                     latest_user_text.replace("\n", " ")[:80],
                 )
+        self._log_prompt_budget(
+            spec,
+            messages,
+            tools_count=len(tool_definitions or []),
+            tool_reason=tool_reason,
+        )
         kwargs = self._build_request_kwargs(
             spec,
             messages,
