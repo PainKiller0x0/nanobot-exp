@@ -383,6 +383,37 @@ FULL BODY SENTINEL THAT SHOULD NOT APPEAR IN COMPACT MODE.
     assert "FULL BODY SENTINEL" not in compact_prompt
 
 
+
+
+def test_compact_system_prompt_omits_skills_index_and_recent_history(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    skill_dir = workspace / "skills" / "normal-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: normal-skill
+description: Normal skill sentinel.
+---
+
+# Normal Skill
+""",
+        encoding="utf-8",
+    )
+    builder = ContextBuilder(workspace)
+    builder.memory.append_history("RECENT HISTORY SENTINEL")
+    full_prompt = builder.build_system_prompt()
+    compact_prompt = builder.build_system_prompt(
+        compact_always_skills=True,
+        include_skills_index=False,
+        include_recent_history=False,
+    )
+
+    assert "Normal skill sentinel" in full_prompt
+    assert "RECENT HISTORY SENTINEL" in full_prompt
+    assert "Normal skill sentinel" not in compact_prompt
+    assert "RECENT HISTORY SENTINEL" not in compact_prompt
+
+
 def test_template_memory_md_is_skipped(tmp_path) -> None:
     """MEMORY.md matching the bundled template should not inject the Memory section."""
     workspace = _make_workspace(tmp_path)

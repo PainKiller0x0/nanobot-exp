@@ -40,6 +40,8 @@ class ContextBuilder:
         channel: str | None = None,
         session_summary: str | None = None,
         compact_always_skills: bool = False,
+        include_skills_index: bool = True,
+        include_recent_history: bool = True,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity(channel=channel)]
@@ -65,11 +67,16 @@ class ContextBuilder:
             elif always_content := self.skills.load_skills_for_context(always_skills):
                 parts.append(f"# Active Skills\n\n{always_content}")
 
-        skills_summary = self.skills.build_skills_summary(exclude=set(always_skills))
-        if skills_summary:
-            parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
+        if include_skills_index:
+            skills_summary = self.skills.build_skills_summary(exclude=set(always_skills))
+            if skills_summary:
+                parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
 
-        entries = self.memory.read_unprocessed_history(since_cursor=self.memory.get_last_dream_cursor())
+        entries = (
+            self.memory.read_unprocessed_history(since_cursor=self.memory.get_last_dream_cursor())
+            if include_recent_history
+            else []
+        )
         if entries:
             capped = entries[-self._MAX_RECENT_HISTORY:]
             history_text = "\n".join(
@@ -191,6 +198,8 @@ class ContextBuilder:
                     channel=channel,
                     session_summary=session_summary,
                     compact_always_skills=compact_system_prompt,
+                    include_skills_index=not compact_system_prompt,
+                    include_recent_history=not compact_system_prompt,
                 ),
             },
             *history,
