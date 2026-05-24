@@ -36,6 +36,7 @@ async def _flush_delta_stream_state(
         return
     index = int(state.get("index") or 0)
     qq_stream_id = state.get("qq_stream_id")
+    flush_started_at = time.monotonic()
     new_id = await send_stream_frame(
         chat_id=chat_id,
         is_group=is_group,
@@ -46,24 +47,29 @@ async def _flush_delta_stream_state(
         reset=False,
         stream_id=str(qq_stream_id) if qq_stream_id else None,
     )
+    flushed_at = time.monotonic()
     if new_id:
         state["qq_stream_id"] = new_id
     state["pending"] = ""
     state["index"] = index + 1
-    state["last_flush_at"] = time.monotonic()
+    state["last_flush_at"] = flushed_at
     if not state.get("first_frame_sent"):
         state["first_frame_sent"] = True
         started_at = float(state.get("started_at") or state["last_flush_at"])
         if logger is not None:
             first_frame_ms = int((state["last_flush_at"] - started_at) * 1000)
+            pending_wait_ms = int((flush_started_at - started_at) * 1000)
+            send_frame_ms = int((state["last_flush_at"] - flush_started_at) * 1000)
             turn_started = float(state.get("turn_started_perf") or 0)
             turn_first_frame_ms = int((state["last_flush_at"] - turn_started) * 1000) if turn_started > 0 else 0
             logger.info(
-                "QQ delta stream first frame turn_id={} stream_key={} chat_id={} first_frame_ms={} turn_first_frame_ms={} chars={}",
+                "QQ delta stream first frame turn_id={} stream_key={} chat_id={} first_frame_ms={} pending_wait_ms={} send_frame_ms={} turn_first_frame_ms={} chars={}",
                 state.get("turn_id", ""),
                 stream_key,
                 chat_id,
                 first_frame_ms,
+                pending_wait_ms,
+                send_frame_ms,
                 turn_first_frame_ms,
                 len(pending),
             )
