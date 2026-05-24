@@ -18,6 +18,7 @@ from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.direct_reply import build_direct_reply
+from nanobot.exp.agent.history_budget import replay_budget_for_message
 from nanobot.agent.hook import AgentHook, CompositeHook
 from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent.progress_hook import AgentProgressHook
@@ -1356,9 +1357,24 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
+        default_replay_budget = self._replay_token_budget()
+        replay_budget, replay_reason = replay_budget_for_message(
+            ctx.msg.content,
+            default_budget=default_replay_budget,
+            has_media=bool(ctx.msg.media),
+        )
+        if replay_budget != default_replay_budget:
+            logger.info(
+                "Adaptive history replay budget session={} tokens={}/{} reason={} msg_chars={}",
+                ctx.session_key,
+                replay_budget,
+                default_replay_budget,
+                replay_reason,
+                len(ctx.msg.content or ""),
+            )
         _hist_kwargs: dict[str, Any] = {
             "max_messages": self._max_messages,
-            "max_tokens": self._replay_token_budget(),
+            "max_tokens": replay_budget,
             "include_timestamps": True,
         }
         ctx.history = ctx.session.get_history(**_hist_kwargs)
