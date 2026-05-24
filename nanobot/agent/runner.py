@@ -14,6 +14,7 @@ from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.exp.agent.tool_budget import tool_definitions_for_turn
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.utils.helpers import (
     IncrementalThinkExtractor,
@@ -605,10 +606,21 @@ class AgentRunner:
         if timeout_s is not None and timeout_s <= 0:
             timeout_s = None
 
+        all_tool_definitions = spec.tools.get_definitions()
+        tool_definitions, tool_reason = tool_definitions_for_turn(
+            all_tool_definitions,
+            messages,
+        )
+        if tool_definitions is None and all_tool_definitions:
+            logger.info(
+                "Adaptive tool ads disabled tools for short turn reason={} total_tools={}",
+                tool_reason,
+                len(all_tool_definitions),
+            )
         kwargs = self._build_request_kwargs(
             spec,
             messages,
-            tools=spec.tools.get_definitions(),
+            tools=tool_definitions,
         )
         wants_streaming = hook.wants_streaming()
         wants_progress_streaming = (
