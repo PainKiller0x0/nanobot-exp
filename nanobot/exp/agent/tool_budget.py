@@ -88,8 +88,19 @@ def _latest_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _has_tool_context(messages: list[dict[str, Any]]) -> bool:
-    for message in messages:
+def _has_active_tool_context(messages: list[dict[str, Any]]) -> bool:
+    """True when the current model turn is continuing an in-flight tool loop.
+
+    Old tool calls in earlier history should not force every later casual chat
+    turn to advertise all tool schemas again. Only messages after the latest
+    user turn can represent the active tool loop for this request.
+    """
+    latest_user_idx = -1
+    for idx, message in enumerate(messages):
+        if message.get("role") == "user":
+            latest_user_idx = idx
+    tail = messages[latest_user_idx + 1 :] if latest_user_idx >= 0 else messages
+    for message in tail:
         if message.get("role") == "tool" or message.get("tool_calls"):
             return True
     return False
@@ -113,8 +124,8 @@ def tool_definitions_for_turn(
         return None, "no tools registered"
     if not adaptive_tools_enabled():
         return tool_definitions, "adaptive tool ads disabled"
-    if _has_tool_context(messages):
-        return tool_definitions, "existing tool context"
+    if _has_active_tool_context(messages):
+        return tool_definitions, "active tool context"
 
     text = _latest_user_text(messages)
     if _has_attachment(text):

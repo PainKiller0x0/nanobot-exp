@@ -33,16 +33,32 @@ def test_contextual_turn_keeps_tools() -> None:
     assert reason == "tool marker"
 
 
-def test_existing_tool_context_keeps_tools() -> None:
+def test_active_tool_context_keeps_tools() -> None:
     tools, reason = tool_definitions_for_turn(
         TOOLS,
         [
             {"role": "user", "content": "查一下"},
             {"role": "assistant", "content": None, "tool_calls": [{"id": "1"}]},
             {"role": "tool", "content": "result", "tool_call_id": "1"},
-            {"role": "user", "content": "然后呢"},
         ],
     )
 
     assert tools == TOOLS
-    assert reason == "existing tool context"
+    assert reason == "active tool context"
+
+
+
+def test_old_tool_context_before_latest_user_does_not_force_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [
+            {"role": "user", "content": "查一下天气"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "content": "result", "tool_call_id": "1"},
+            {"role": "assistant", "content": "天气结果"},
+            {"role": "user", "content": "现在就把其中一个房间的先关掉了"},
+        ],
+    )
+
+    assert tools is None
+    assert reason == "short standalone turn"
