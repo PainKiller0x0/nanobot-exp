@@ -40,8 +40,11 @@ def should_stream_text(
 def delta_flush_policy(config: Any, *, first_frame_sent: bool) -> tuple[int, float]:
     """Return `(chars_threshold, seconds_threshold)` for delta streaming flushes."""
     threshold_key = "stream_delta_flush_chars" if first_frame_sent else "stream_first_flush_chars"
-    threshold_floor = 20 if first_frame_sent else 1
-    threshold_default = 120 if first_frame_sent else 24
+    # QQ stream creation is unreliable with one-character first frames, but
+    # waiting for a full sentence defeats the point of streaming. Two visible
+    # CJK chars are enough to create a real, non-placeholder first frame.
+    threshold_floor = 20 if first_frame_sent else 2
+    threshold_default = 120 if first_frame_sent else 2
     threshold = max(
         threshold_floor,
         int(getattr(config, threshold_key, threshold_default) or threshold_default),

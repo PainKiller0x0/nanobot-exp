@@ -79,3 +79,16 @@ def test_streaming_policy_and_chunking() -> None:
     assert delta_flush_policy(cfg, first_frame_sent=False) == (3, 0.2)
     assert delta_flush_policy(cfg, first_frame_sent=True) == (20, 0.2)
     assert split_stream_chunks(cfg, "a" * 45) == ["a" * 20 + "\n", "a" * 20 + "\n", "a" * 5 + "\n"]
+
+
+def test_streaming_policy_clamps_first_frame_to_two_chars() -> None:
+    cfg = SimpleNamespace(
+        stream_enabled=True,
+        msg_format="markdown",
+        stream_first_flush_chars=1,
+        stream_delta_flush_chars=1,
+        stream_delta_flush_interval_sec=0.2,
+    )
+
+    assert delta_flush_policy(cfg, first_frame_sent=False) == (2, 0.2)
+    assert delta_flush_policy(cfg, first_frame_sent=True) == (20, 0.2)

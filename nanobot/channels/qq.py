@@ -44,8 +44,8 @@ from nanobot.exp.qq import gateway_greeting as qq_gateway_greeting
 from nanobot.exp.qq import local_handlers as qq_local_handlers
 from nanobot.exp.qq import signatures as qq_signatures
 from nanobot.exp.qq import signed_delivery as qq_signed_delivery
-from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.exp.qq import stream_runtime as qq_stream_runtime
+from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.security.network import validate_url_target
 from nanobot.utils.helpers import split_message
 
@@ -197,7 +197,7 @@ class QQConfig(Base):
     stream_max_chars: int = 5000
     stream_chunk_chars: int = 180
     stream_interval_sec: float = 0.0
-    stream_first_flush_chars: int = 24
+    stream_first_flush_chars: int = 2
     stream_delta_flush_chars: int = 120
     stream_delta_flush_interval_sec: float = 0.35
 
