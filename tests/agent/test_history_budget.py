@@ -34,6 +34,28 @@ def test_task_turn_keeps_full_budget() -> None:
     assert reason.startswith("task marker:")
 
 
+def test_work_venting_with_gai_does_not_force_full_budget() -> None:
+    budget, reason = replay_budget_for_message(
+        "我答应我老大了这周末改出来，甚至算是立了军令状了",
+        default_budget=16_000,
+        light_budget=3_000,
+    )
+
+    assert budget == 3_000
+    assert reason == "short standalone turn"
+
+
+def test_explicit_modify_command_keeps_full_budget() -> None:
+    budget, reason = replay_budget_for_message(
+        "帮我改一下配色",
+        default_budget=16_000,
+        light_budget=3_000,
+    )
+
+    assert budget == 16_000
+    assert reason == "task marker: 改一下"
+
+
 def test_url_turn_keeps_full_budget() -> None:
     budget, reason = replay_budget_for_message(
         "看看这个 https://example.com/a",
