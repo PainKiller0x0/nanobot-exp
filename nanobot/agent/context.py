@@ -27,6 +27,9 @@ class ContextBuilder:
     _MAX_RECENT_HISTORY = 50
     _MAX_HISTORY_CHARS = 32_000  # hard cap on recent history section size
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
+    _LIGHT_USER_MAX_CHARS = 1_400
+    _LIGHT_MEMORY_MAX_CHARS = 1_600
+    _LIGHT_SESSION_SUMMARY_MAX_CHARS = 1_200
 
     def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
         self.workspace = workspace
@@ -42,8 +45,12 @@ class ContextBuilder:
         compact_always_skills: bool = False,
         include_skills_index: bool = True,
         include_recent_history: bool = True,
+        lightweight: bool = False,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
+        if lightweight:
+            return self._build_light_system_prompt(channel=channel, session_summary=session_summary)
+
         parts = [self._get_identity(channel=channel)]
 
         bootstrap = self._load_bootstrap_files()
@@ -87,6 +94,57 @@ class ContextBuilder:
 
         if session_summary:
             parts.append(f"[Archived Context Summary]\n\n{session_summary}")
+
+        return "\n\n---\n\n".join(parts)
+
+    def _build_light_system_prompt(
+        self,
+        *,
+        channel: str | None = None,
+        session_summary: str | None = None,
+    ) -> str:
+        """Build a compact prompt for short standalone chat turns.
+
+        This mode is deliberately narrow: the agent has no advertised tools on
+        these turns, so the prompt keeps persona, user preferences, and key
+        memory while skipping workspace/bootstrap/tool manuals.
+        """
+        channel_hint = "Reply directly with short, natural paragraphs."
+        if channel in {"telegram", "qq", "discord"}:
+            channel_hint = (
+                "This conversation is on a messaging app. Reply directly with short, "
+                "natural paragraphs. Avoid large headings and tables."
+            )
+        elif channel in {"whatsapp", "sms"}:
+            channel_hint = "This conversation is on a text messaging platform. Use plain text only."
+        elif channel in {"cli", "mochat"}:
+            channel_hint = "Output is rendered in a terminal. Keep formatting minimal."
+
+        parts = [
+            "# Lightweight Chat Mode\n\n"
+            "You are Nanobot, the user's warm, concise assistant. "
+            "This prompt is used only for short standalone chat turns where tools are not advertised.\n"
+            f"- {channel_hint}\n"
+            "- Prefer Chinese when the user writes Chinese.\n"
+            "- Be relaxed but not verbose; match the user's casual tone.\n"
+            "- Do not claim you checked live data, changed files, or used tools in this lightweight turn.\n"
+            "- If the message actually needs external data, code changes, scheduling, files, or logs, "
+            "say briefly that it needs the full task path instead of guessing."
+        ]
+
+        user = self.memory.read_user().strip()
+        if user and not self._is_template_content(user, "USER.md"):
+            parts.append("# User Snapshot\n\n" + truncate_text(user, self._LIGHT_USER_MAX_CHARS))
+
+        memory = self.memory.read_memory().strip()
+        if memory and not self._is_template_content(memory, "memory/MEMORY.md"):
+            parts.append("# Memory Snapshot\n\n" + truncate_text(memory, self._LIGHT_MEMORY_MAX_CHARS))
+
+        if session_summary:
+            parts.append(
+                "[Archived Context Summary]\n\n"
+                + truncate_text(session_summary, self._LIGHT_SESSION_SUMMARY_MAX_CHARS)
+            )
 
         return "\n\n---\n\n".join(parts)
 
@@ -170,6 +228,7 @@ class ContextBuilder:
         session_summary: str | None = None,
         session_metadata: Mapping[str, Any] | None = None,
         compact_system_prompt: bool = False,
+        lightweight_system_prompt: bool = False,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         extra = goal_state_runtime_lines(session_metadata)
@@ -200,6 +259,7 @@ class ContextBuilder:
                     compact_always_skills=compact_system_prompt,
                     include_skills_index=not compact_system_prompt,
                     include_recent_history=not compact_system_prompt,
+                    lightweight=lightweight_system_prompt,
                 ),
             },
             *history,

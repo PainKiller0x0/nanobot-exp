@@ -1,4 +1,4 @@
-﻿"""Downstream tool-advertising budget helpers.
+"""Downstream tool-advertising budget helpers.
 
 Gemini Web receives OpenAI tool schemas as plain text, so advertising every
 Nanobot tool on every casual turn adds a large fixed prompt cost. Keep tools for
@@ -49,7 +49,6 @@ _TOOL_MARKERS = (
     "cron",
     "任务",
     "提醒",
-    "日报",
     "部署",
     "回测",
 )
@@ -136,7 +135,7 @@ def tool_definitions_for_turn(
         return tool_definitions, "tool marker"
 
     budget, reason = replay_budget_for_message(text, default_budget=16000, light_budget=4500)
-    if reason in {"short standalone turn", "empty short turn"}:
+    if reason in {"short standalone turn", "empty short turn", "task marker: 日报请求"}:
         return None, reason
     return tool_definitions, reason
 

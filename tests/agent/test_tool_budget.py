@@ -1,4 +1,4 @@
-﻿from nanobot.exp.agent.tool_budget import tool_definitions_for_turn
+from nanobot.exp.agent.tool_budget import tool_definitions_for_turn
 
 TOOLS = [{"type": "function", "function": {"name": "exec", "parameters": {}}}]
 
@@ -79,3 +79,23 @@ def test_current_user_hint_overrides_merged_history_text() -> None:
 
     assert tools is None
     assert reason == "short standalone turn"
+
+def test_daily_report_life_update_omits_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": "准备下班了，写一下日报就撤了"}],
+    )
+
+    assert tools is None
+    assert reason == "short standalone turn"
+
+
+def test_daily_report_writing_request_still_omits_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": "帮我写一下今天的日报"}],
+    )
+
+    assert tools is None
+    assert reason == "task marker: 日报请求"
+

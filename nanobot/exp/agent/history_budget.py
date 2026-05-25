@@ -1,4 +1,4 @@
-﻿"""Downstream history replay budget helpers.
+"""Downstream history replay budget helpers.
 
 The goal is latency control, not memory deletion: summaries and persisted history
 stay intact, while short standalone chat turns avoid replaying a huge raw tail.
@@ -10,6 +10,7 @@ import os
 import re
 
 DEFAULT_LIGHT_REPLAY_TOKENS = 4_500
+_FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 
 _CONTEXT_MARKERS = (
     "继续",
@@ -91,11 +92,40 @@ _TASK_MARKERS = (
     "截图",
     "图片",
     "文件",
+    "查",
+    "搜",
+    "搜索",
+    "看下",
+    "看一下",
+    "帮我看",
+    "打开",
+    "链接",
+    "天气预报",
+    "预报",
+    "新闻",
+    "热搜",
+    "基金",
+    "lof",
+    "etf",
+    "文章",
+    "订阅",
+    "收件箱",
+    "补读",
+    "内存",
+    "状态",
+    "服务",
+    "提醒",
 )
 
 _URL_RE = re.compile(r"https?://|www\.", re.I)
 _CODE_OR_PATH_RE = re.compile(
     r"```|`[^`]+`|[A-Za-z]:\\|/(root|tmp|opt|home)/|\.(py|rs|ts|js|json|toml|yaml|yml)\b",
+    re.I,
+)
+
+_REPORT_REQUEST_RE = re.compile(
+    r"(帮我|给我|替我|帮忙|麻烦|请你|能不能|可以).{0,12}日报|"
+    r"日报.{0,12}(怎么写|写一下|写一份|生成|整理|模板|内容)",
     re.I,
 )
 
@@ -108,6 +138,11 @@ def _configured_light_budget() -> int:
         except ValueError:
             pass
     return DEFAULT_LIGHT_REPLAY_TOKENS
+
+
+def light_system_prompt_enabled() -> bool:
+    raw = os.getenv("NANOBOT_LIGHT_SYSTEM_PROMPT", "1").strip().lower()
+    return raw not in _FALSE_VALUES
 
 
 def replay_budget_for_message(
@@ -146,6 +181,8 @@ def replay_budget_for_message(
     for marker in _CONTEXT_MARKERS:
         if marker in text:
             return default_budget, f"context marker: {marker}"
+    if _REPORT_REQUEST_RE.search(text):
+        return default_budget, "task marker: 日报请求"
     for marker in _TASK_MARKERS:
         if marker in lowered or marker in text:
             return default_budget, f"task marker: {marker}"

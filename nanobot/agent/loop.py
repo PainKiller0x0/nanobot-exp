@@ -31,7 +31,10 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
-from nanobot.exp.agent.history_budget import replay_budget_for_message
+from nanobot.exp.agent.history_budget import (
+    light_system_prompt_enabled,
+    replay_budget_for_message,
+)
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.session.goal_state import (
@@ -610,6 +613,7 @@ class AgentLoop:
         history: list[dict[str, Any]],
         pending_summary: str | None,
         compact_system_prompt: bool = False,
+        lightweight_system_prompt: bool = False,
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
         return self.context.build_messages(
@@ -622,6 +626,7 @@ class AgentLoop:
             session_summary=pending_summary,
             session_metadata=session.metadata,
             compact_system_prompt=compact_system_prompt,
+            lightweight_system_prompt=lightweight_system_prompt,
         )
 
     async def _dispatch_command_inline(
@@ -1384,12 +1389,22 @@ class AgentLoop:
         }
         ctx.history = ctx.session.get_history(**_hist_kwargs)
 
+        short_standalone_prompt = replay_reason in {"short standalone turn", "empty short turn"}
+        lightweight_system_prompt = short_standalone_prompt and light_system_prompt_enabled()
+        if lightweight_system_prompt:
+            logger.info(
+                "Adaptive lightweight system prompt enabled session={} reason={}",
+                ctx.session_key,
+                replay_reason,
+            )
+
         ctx.initial_messages = self._build_initial_messages(
             ctx.msg,
             ctx.session,
             ctx.history,
             ctx.pending_summary,
-            compact_system_prompt=replay_reason in {"short standalone turn", "empty short turn"},
+            compact_system_prompt=short_standalone_prompt,
+            lightweight_system_prompt=lightweight_system_prompt,
         )
         ctx.user_persisted_early = self._persist_user_message_early(
             ctx.msg, ctx.session

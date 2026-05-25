@@ -414,6 +414,55 @@ description: Normal skill sentinel.
     assert "RECENT HISTORY SENTINEL" not in compact_prompt
 
 
+def test_lightweight_system_prompt_keeps_user_and_memory_but_skips_bootstrap(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    (workspace / "AGENTS.md").write_text(
+        "BOOTSTRAP SENTINEL THAT SHOULD NOT APPEAR IN LIGHT MODE",
+        encoding="utf-8",
+    )
+    (workspace / "USER.md").write_text(
+        "User prefers concise direct replies.",
+        encoding="utf-8",
+    )
+    memory_dir = workspace / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "MEMORY.md").write_text(
+        "Important remembered fact for casual chat.",
+        encoding="utf-8",
+    )
+
+    builder = ContextBuilder(workspace)
+    full_prompt = builder.build_system_prompt()
+    light_prompt = builder.build_system_prompt(channel="qq", lightweight=True)
+
+    assert "BOOTSTRAP SENTINEL" in full_prompt
+    assert "BOOTSTRAP SENTINEL" not in light_prompt
+    assert "User prefers concise direct replies" in light_prompt
+    assert "Important remembered fact" in light_prompt
+    assert "Lightweight Chat Mode" in light_prompt
+    assert "messaging app" in light_prompt
+    assert len(light_prompt) < len(full_prompt)
+
+
+def test_build_messages_can_use_lightweight_system_prompt(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    (workspace / "AGENTS.md").write_text("BOOTSTRAP SENTINEL", encoding="utf-8")
+    builder = ContextBuilder(workspace)
+
+    messages = builder.build_messages(
+        history=[],
+        current_message="hello",
+        channel="qq",
+        chat_id="chat-1",
+        lightweight_system_prompt=True,
+    )
+
+    assert messages[0]["role"] == "system"
+    assert "Lightweight Chat Mode" in messages[0]["content"]
+    assert "BOOTSTRAP SENTINEL" not in messages[0]["content"]
+    assert ContextBuilder._RUNTIME_CONTEXT_TAG in messages[-1]["content"]
+
+
 def test_template_memory_md_is_skipped(tmp_path) -> None:
     """MEMORY.md matching the bundled template should not inject the Memory section."""
     workspace = _make_workspace(tmp_path)
