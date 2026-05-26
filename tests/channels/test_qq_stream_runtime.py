@@ -151,3 +151,44 @@ async def test_send_delta_strips_meta_instruction_tail_on_final_reset() -> None:
     assert frames[-1]["state"] == 10
     assert frames[-1]["content"] == "Weekend shopping is nice."
     assert states == {}
+
+
+@pytest.mark.asyncio
+async def test_delta_fallback_after_unacked_visible_prefix_sends_only_tail() -> None:
+    frames = []
+    texts = []
+    states: dict[str, dict] = {}
+
+    async def fake_frame(**kwargs):
+        frames.append(kwargs)
+        if len(frames) == 1:
+            return None
+        raise RuntimeError("stream id invalid")
+
+    async def fake_text(**kwargs):
+        texts.append(kwargs)
+
+    await stream_runtime.send_delta(
+        config=_cfg(),
+        stream_states=states,
+        chat_type_cache={},
+        send_stream_frame=fake_frame,
+        send_text_only=fake_text,
+        chat_id="user1",
+        delta="hello",
+        metadata={"message_id": "msg1", "_stream_id": "s1"},
+    )
+    await stream_runtime.send_delta(
+        config=_cfg(),
+        stream_states=states,
+        chat_type_cache={},
+        send_stream_frame=fake_frame,
+        send_text_only=fake_text,
+        chat_id="user1",
+        delta=" world",
+        metadata={"message_id": "msg1", "_stream_id": "s1", "_stream_end": True},
+    )
+
+    assert [frame["content"] for frame in frames] == ["hello", " world"]
+    assert [text["content"] for text in texts] == [" world"]
+    assert states == {}

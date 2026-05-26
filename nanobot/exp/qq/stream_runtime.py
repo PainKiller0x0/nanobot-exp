@@ -50,6 +50,11 @@ async def _flush_delta_stream_state(
     flushed_at = time.monotonic()
     if new_id:
         state["qq_stream_id"] = new_id
+    # A QQ stream frame may be visible even when the API response does not
+    # return a stream id (for example, botpy reports a timeout after QQ has
+    # accepted the frame). Remember the visible prefix so a later fallback
+    # does not resend the same opening text as a separate normal message.
+    state["flushed_content"] = str(state.get("flushed_content") or "") + pending
     state["pending"] = ""
     state["index"] = index + 1
     state["last_flush_at"] = flushed_at
@@ -73,6 +78,15 @@ async def _flush_delta_stream_state(
                 turn_first_frame_ms,
                 len(pending),
             )
+
+
+def _fallback_content_after_stream_attempt(content: str, state: dict[str, Any]) -> str:
+    if not state.get("first_frame_sent"):
+        return content
+    flushed = str(state.get("flushed_content") or "")
+    if flushed and content.startswith(flushed):
+        return content[len(flushed):]
+    return content
 
 
 async def send_delta(
@@ -199,18 +213,22 @@ async def send_delta(
                     len(content),
                 )
         else:
-            await send_text_only(
-                chat_id=chat_id,
-                is_group=is_group,
-                msg_id=msg_id,
-                content=content,
-            )
-            if logger is not None:
-                logger.info(
-                    "QQ delta stream fallback text sent stream_key={} chat_id={}",
-                    stream_key,
-                    chat_id,
+            fallback_content = _fallback_content_after_stream_attempt(content, state)
+            if fallback_content.strip():
+                await send_text_only(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=msg_id,
+                    content=fallback_content,
                 )
+                if logger is not None:
+                    logger.info(
+                        "QQ delta stream fallback text sent stream_key={} chat_id={} chars={} skipped_prefix_chars={}",
+                        stream_key,
+                        chat_id,
+                        len(fallback_content),
+                        len(content) - len(fallback_content),
+                    )
     except Exception as e:
         state["disabled"] = True
         if logger is not None:
@@ -221,6 +239,7 @@ async def send_delta(
                 e,
             )
         fallback_content = strip_meta_instruction_tail(str(state.get("content") or ""))
+        fallback_content = _fallback_content_after_stream_attempt(fallback_content, state)
         if is_end and fallback_content.strip():
             await send_text_only(
                 chat_id=chat_id,
