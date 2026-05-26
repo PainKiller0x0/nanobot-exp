@@ -99,3 +99,13 @@ def test_daily_report_writing_request_still_omits_tools() -> None:
     assert tools is None
     assert reason == "task marker: 日报请求"
 
+
+
+def test_no_registered_tools_keeps_empty_tool_list_marker() -> None:
+    tools, reason = tool_definitions_for_turn(
+        [],
+        [{"role": "user", "content": "do task"}],
+    )
+
+    assert tools == []
+    assert reason == "no tools registered"

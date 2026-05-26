@@ -122,7 +122,7 @@ def tool_definitions_for_turn(
 ) -> tuple[list[dict[str, Any]] | None, str]:
     """Return tool definitions for this turn and a short observability reason."""
     if not tool_definitions:
-        return None, "no tools registered"
+        return [], "no tools registered"
     if not adaptive_tools_enabled():
         return tool_definitions, "adaptive tool ads disabled"
     if _has_active_tool_context(messages):
