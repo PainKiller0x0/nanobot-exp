@@ -157,11 +157,12 @@ async def send_delta(
             )
             elapsed = time.monotonic() - float(state.get("last_flush_at") or time.monotonic())
             if not state.get("first_frame_sent"):
-                # QQ's stream endpoint is fragile with tiny first frames.  A
-                # one-character first frame often times out and invalidates the
-                # stream id, so the first visible update must reach the
-                # configured minimum size regardless of the time interval.
-                if len(pending) < threshold:
+                # Treat short LLM replies as one-shot messages. QQ stream
+                # creation is the slowest and most fragile part of short chats,
+                # so only open a stream once the reply is clearly long enough.
+                min_stream_chars = max(1, int(getattr(config, "stream_min_chars", 0) or 0))
+                first_threshold = max(threshold, min_stream_chars)
+                if len(pending) < first_threshold:
                     return
             elif len(pending) < threshold and elapsed < interval:
                 return
@@ -181,6 +182,24 @@ async def send_delta(
         if not content:
             stream_states.pop(stream_key, None)
             return
+        if not state.get("first_frame_sent"):
+            min_stream_chars = max(1, int(getattr(config, "stream_min_chars", 0) or 0))
+            if len(content) < min_stream_chars:
+                await send_text_only(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=msg_id,
+                    content=content,
+                )
+                if logger is not None:
+                    logger.info(
+                        "QQ delta stream skipped for short reply stream_key={} chat_id={} chars={} min_chars={}",
+                        stream_key,
+                        chat_id,
+                        len(content),
+                        min_stream_chars,
+                    )
+                return
         if not state.get("disabled") and str(state.get("pending") or "").strip():
             await _flush_delta_stream_state(
                 config=config,

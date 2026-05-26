@@ -85,6 +85,47 @@ async def test_send_delta_flushes_first_frame_and_final_reset() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_delta_short_reply_below_stream_min_sends_one_shot_text() -> None:
+    frames = []
+    texts = []
+    states: dict[str, dict] = {}
+    cfg = _cfg()
+    cfg.stream_min_chars = 30
+
+    async def fake_frame(**kwargs):
+        frames.append(kwargs)
+        return "qq-stream"
+
+    async def fake_text(**kwargs):
+        texts.append(kwargs)
+
+    await stream_runtime.send_delta(
+        config=cfg,
+        stream_states=states,
+        chat_type_cache={},
+        send_stream_frame=fake_frame,
+        send_text_only=fake_text,
+        chat_id="user1",
+        delta="short reply",
+        metadata={"message_id": "msg1", "_stream_id": "s1"},
+    )
+    await stream_runtime.send_delta(
+        config=cfg,
+        stream_states=states,
+        chat_type_cache={},
+        send_stream_frame=fake_frame,
+        send_text_only=fake_text,
+        chat_id="user1",
+        delta=" done",
+        metadata={"message_id": "msg1", "_stream_id": "s1", "_stream_end": True},
+    )
+
+    assert frames == []
+    assert [text["content"] for text in texts] == ["short reply done"]
+    assert states == {}
+
+
+@pytest.mark.asyncio
 async def test_send_delta_without_message_id_drops_state_on_end() -> None:
     frames = []
     texts = []
