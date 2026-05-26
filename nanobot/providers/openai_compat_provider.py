@@ -30,6 +30,7 @@ else:
         )
     from openai import AsyncOpenAI
 
+from nanobot.agent.trace_context import current_trace_id
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.openai_responses import (
     consume_sdk_stream,
@@ -1224,7 +1225,10 @@ class OpenAICompatProvider(LLMProvider):
             return kwargs
         updated = dict(kwargs)
         extra_headers = dict(updated.get("extra_headers") or {})
-        extra_headers.setdefault("X-OBP-Request-ID", f"nb-{uuid.uuid4().hex}")
+        request_id = extra_headers.get("X-OBP-Request-ID") or current_trace_id() or f"nb-{uuid.uuid4().hex}"
+        extra_headers.setdefault("X-OBP-Request-ID", request_id)
+        extra_headers.setdefault("X-Request-ID", request_id)
+        extra_headers.setdefault("X-Nanobot-Trace-ID", request_id)
         updated["extra_headers"] = extra_headers
         return updated
 

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nanobot.agent.trace_context import reset_trace_id, set_trace_id
 from nanobot.providers.openai_compat_provider import OpenAICompatProvider, _log_obp_route_headers
 from nanobot.providers.registry import find_by_name
 
@@ -233,6 +234,26 @@ def test_obp_route_headers_return_actual_model_metadata() -> None:
     assert route["requested_model"] == "deepseek-v4-flash"
     assert route["actual_model"] == "gemini-3.5-flash"
     assert route["group"] == "gemini"
+
+
+def test_obp_request_headers_use_current_trace_id() -> None:
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        provider = OpenAICompatProvider(
+            api_key="sk-test",
+            api_base="http://127.0.0.1:8093/obp/v1",
+            default_model="deepseek-v4-flash",
+        )
+
+    token = set_trace_id("nb-test-trace-123")
+    try:
+        updated = provider._with_obp_request_headers({})
+    finally:
+        reset_trace_id(token)
+
+    headers = updated["extra_headers"]
+    assert headers["X-OBP-Request-ID"] == "nb-test-trace-123"
+    assert headers["X-Request-ID"] == "nb-test-trace-123"
+    assert headers["X-Nanobot-Trace-ID"] == "nb-test-trace-123"
 
 
 def test_openrouter_spec_is_gateway() -> None:

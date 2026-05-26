@@ -44,8 +44,8 @@ from nanobot.exp.qq import gateway_greeting as qq_gateway_greeting
 from nanobot.exp.qq import local_handlers as qq_local_handlers
 from nanobot.exp.qq import signatures as qq_signatures
 from nanobot.exp.qq import signed_delivery as qq_signed_delivery
-from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.exp.qq import stream_runtime as qq_stream_runtime
+from nanobot.exp.qq import streaming as qq_streaming
 from nanobot.security.network import validate_url_target
 from nanobot.utils.helpers import split_message
 
@@ -197,10 +197,20 @@ class QQConfig(Base):
     stream_max_chars: int = 5000
     stream_chunk_chars: int = 180
     stream_interval_sec: float = 0.0
-    stream_first_flush_chars: int = 24
+    stream_first_flush_chars: int = 2
     stream_delta_flush_chars: int = 120
     stream_delta_flush_interval_sec: float = 0.35
 
+
+
+def _elapsed_perf_ms(start: Any, end: float) -> int:
+    try:
+        value = float(start)
+    except (TypeError, ValueError):
+        return 0
+    if value <= 0:
+        return 0
+    return max(0, int((end - value) * 1000))
 
 class QQChannel(BaseChannel):
     """QQ channel using botpy SDK with WebSocket connection."""
@@ -390,23 +400,37 @@ class QQChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send attachments first, then text."""
-        if not self._client:
-            logger.warning("QQ client not initialized")
-            return
+        send_started = time.perf_counter()
+        trace_id = str(msg.metadata.get("_trace_id") or msg.metadata.get("_turn_id") or "")
+        queue_wait_ms = _elapsed_perf_ms(msg.metadata.get("_send_queued_perf"), send_started)
+        status = "ok"
+        mode = "media_only" if msg.media else "empty"
+        reason = ""
+        media_sent = 0
+        chunks_sent = 0
 
-        msg_id = msg.metadata.get("message_id")
-        chat_type = self._chat_type_cache.get(msg.chat_id, "c2c")
-        is_group = chat_type == "group"
+        try:
+            if not self._client:
+                status = "skipped"
+                reason = "no_client"
+                logger.warning("QQ client not initialized")
+                return
 
-        # 1) Send media
-        for media_ref in msg.media or []:
-            ok = await self._send_media(
-                chat_id=msg.chat_id,
-                media_ref=media_ref,
-                msg_id=msg_id,
-                is_group=is_group,
-            )
-            if not ok:
+            msg_id = msg.metadata.get("message_id")
+            chat_type = self._chat_type_cache.get(msg.chat_id, "c2c")
+            is_group = chat_type == "group"
+
+            # 1) Send media
+            for media_ref in msg.media or []:
+                ok = await self._send_media(
+                    chat_id=msg.chat_id,
+                    media_ref=media_ref,
+                    msg_id=msg_id,
+                    is_group=is_group,
+                )
+                if ok:
+                    media_sent += 1
+                    continue
                 filename = (
                     os.path.basename(urlparse(media_ref).path)
                     or os.path.basename(media_ref)
@@ -418,47 +442,111 @@ class QQChannel(BaseChannel):
                     msg_id=msg_id,
                     content=f"[Attachment send failed: {filename}]",
                 )
+                chunks_sent += 1
 
-        # 2) Send text (chunked to avoid QQ-side truncation on long payloads)
-        if msg.content and msg.content.strip():
-            prepared = await qq_signed_delivery.prepare_outbound_content(
-                msg.content,
-                session=self._http,
-                run_wechat_signed=self._run_wechat_signed,
-                run_yage_signed=self._run_yage_signed,
-                chat_id=msg.chat_id,
-                logger=logger,
-            )
-            if prepared.suppressed:
-                logger.info("QQ outbound suppressed reason={} chat_id={}", prepared.reason, msg.chat_id)
-                return
-            if prepared.blocked:
-                logger.warning(
-                    "QQ outbound blocked reason={} chat_id={}",
-                    prepared.reason,
-                    msg.chat_id,
+            # 2) Send text (chunked to avoid QQ-side truncation on long payloads)
+            if msg.content and msg.content.strip():
+                prepared = await qq_signed_delivery.prepare_outbound_content(
+                    msg.content,
+                    session=self._http,
+                    run_wechat_signed=self._run_wechat_signed,
+                    run_yage_signed=self._run_yage_signed,
+                    chat_id=msg.chat_id,
+                    logger=logger,
                 )
-                await self._report_signature_blocked(
-                    source_chat_id=msg.chat_id,
-                    source_is_group=is_group,
-                    source_msg_id=msg_id,
-                )
-                return
-
-            safe_content = prepared.content
-            is_signed_payload = prepared.is_signed_payload
-            wechat_ack = prepared.wechat_ack
-
-            if is_signed_payload:
-                # Prefer one-shot delivery for raw signed articles.
-                # Only fallback to splitting when QQ rejects oversize payload.
-                try:
-                    await self._send_text_only(
-                        chat_id=msg.chat_id,
-                        is_group=is_group,
-                        msg_id=msg_id,
-                        content=safe_content,
+                if prepared.suppressed:
+                    status = "suppressed"
+                    reason = str(prepared.reason or "")
+                    logger.info("QQ outbound suppressed reason={} chat_id={}", prepared.reason, msg.chat_id)
+                    return
+                if prepared.blocked:
+                    status = "blocked"
+                    reason = str(prepared.reason or "")
+                    logger.warning(
+                        "QQ outbound blocked reason={} chat_id={}",
+                        prepared.reason,
+                        msg.chat_id,
                     )
+                    await self._report_signature_blocked(
+                        source_chat_id=msg.chat_id,
+                        source_is_group=is_group,
+                        source_msg_id=msg_id,
+                    )
+                    chunks_sent += 1
+                    return
+
+                safe_content = prepared.content
+                is_signed_payload = prepared.is_signed_payload
+                wechat_ack = prepared.wechat_ack
+
+                if is_signed_payload:
+                    # Prefer one-shot delivery for raw signed articles.
+                    # Only fallback to splitting when QQ rejects oversize payload.
+                    try:
+                        mode = "signed_one_shot"
+                        await self._send_text_only(
+                            chat_id=msg.chat_id,
+                            is_group=is_group,
+                            msg_id=msg_id,
+                            content=safe_content,
+                        )
+                        chunks_sent += 1
+                        await qq_signed_delivery.ack_delivery(
+                            self._http,
+                            safe_content,
+                            wechat_ack,
+                            chat_id=msg.chat_id,
+                            logger=logger,
+                        )
+                        return
+                    except Exception as e:
+                        logger.warning(
+                            "QQ signed payload one-shot send failed, fallback to chunking chat_id={} err={}",
+                            msg.chat_id,
+                            e,
+                        )
+
+                if self._should_stream_text(
+                    msg_id=msg_id,
+                    is_signed_payload=is_signed_payload,
+                    content=safe_content,
+                ):
+                    try:
+                        mode = "streaming"
+                        await self._send_text_streaming(
+                            chat_id=msg.chat_id,
+                            is_group=is_group,
+                            msg_id=msg_id,
+                            content=safe_content,
+                        )
+                        chunks_sent += 1
+                        return
+                    except Exception as e:
+                        logger.warning(
+                            "QQ stream send failed, fallback to normal chunking chat_id={} err={}",
+                            msg.chat_id,
+                            e,
+                        )
+
+                mode = "chunked"
+                max_len = max(200, int(getattr(self.config, "text_chunk_max_len", 1200) or 1200))
+                for chunk in split_message(safe_content, max_len):
+                    if not chunk:
+                        continue
+                    try:
+                        await self._send_text_only(
+                            chat_id=msg.chat_id,
+                            is_group=is_group,
+                            msg_id=msg_id,
+                            content=chunk,
+                        )
+                        chunks_sent += 1
+                    except Exception as e:
+                        status = "failed"
+                        reason = "text_send_failed"
+                        logger.error("QQ text send failed chat_id={} err={}", msg.chat_id, e)
+                        return
+                if is_signed_payload:
                     await qq_signed_delivery.ack_delivery(
                         self._http,
                         safe_content,
@@ -466,56 +554,22 @@ class QQChannel(BaseChannel):
                         chat_id=msg.chat_id,
                         logger=logger,
                     )
-                    return
-                except Exception as e:
-                    logger.warning(
-                        "QQ signed payload one-shot send failed, fallback to chunking chat_id={} err={}",
-                        msg.chat_id,
-                        e,
-                    )
-
-            if self._should_stream_text(
-                msg_id=msg_id,
-                is_signed_payload=is_signed_payload,
-                content=safe_content,
-            ):
-                try:
-                    await self._send_text_streaming(
-                        chat_id=msg.chat_id,
-                        is_group=is_group,
-                        msg_id=msg_id,
-                        content=safe_content,
-                    )
-                    return
-                except Exception as e:
-                    logger.warning(
-                        "QQ stream send failed, fallback to normal chunking chat_id={} err={}",
-                        msg.chat_id,
-                        e,
-                    )
-
-            max_len = max(200, int(getattr(self.config, "text_chunk_max_len", 1200) or 1200))
-            for chunk in split_message(safe_content, max_len):
-                if not chunk:
-                    continue
-                try:
-                    await self._send_text_only(
-                        chat_id=msg.chat_id,
-                        is_group=is_group,
-                        msg_id=msg_id,
-                        content=chunk,
-                    )
-                except Exception as e:
-                    logger.error("QQ text send failed chat_id={} err={}", msg.chat_id, e)
-                    return
-            if is_signed_payload:
-                await qq_signed_delivery.ack_delivery(
-                    self._http,
-                    safe_content,
-                    wechat_ack,
-                    chat_id=msg.chat_id,
-                    logger=logger,
-                )
+        finally:
+            finished_at = time.perf_counter()
+            turn_done_ms = _elapsed_perf_ms(msg.metadata.get("_turn_started_perf"), finished_at)
+            logger.info(
+                "QQ outbound send finished trace_id={} chat_id={} status={} mode={} total_ms={} queue_wait_ms={} turn_to_send_done_ms={} media={} chunks={} reason={}",
+                trace_id or "-",
+                msg.chat_id,
+                status,
+                mode,
+                int((finished_at - send_started) * 1000),
+                queue_wait_ms,
+                turn_done_ms,
+                media_sent,
+                chunks_sent,
+                reason or "-",
+            )
 
     async def _report_signature_blocked(
         self,

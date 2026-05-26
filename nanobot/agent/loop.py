@@ -27,6 +27,7 @@ from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, res
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.self import MyTool
+from nanobot.agent.trace_context import normalize_trace_id, reset_trace_id, set_trace_id
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
@@ -901,8 +902,23 @@ class AgentLoop:
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""
         session_key = self._effective_session_key(msg)
+        metadata = dict(msg.metadata or {})
+        trace_id = normalize_trace_id(
+            metadata.get("_trace_id")
+            or metadata.get("trace_id")
+            or metadata.get("request_id")
+        )
+        metadata["_trace_id"] = trace_id
+        metadata.setdefault("_turn_id", trace_id)
+        metadata.setdefault("_turn_started_perf", time.perf_counter())
         if session_key != msg.session_key:
-            msg = dataclasses.replace(msg, session_key_override=session_key)
+            msg = dataclasses.replace(
+                msg,
+                session_key_override=session_key,
+                metadata=metadata,
+            )
+        else:
+            msg = dataclasses.replace(msg, metadata=metadata)
         lock = self._session_locks.setdefault(session_key, asyncio.Lock())
         gate = self._concurrency_gate or nullcontext()
 
@@ -946,10 +962,14 @@ class AgentLoop:
                             ))
                             stream_segment += 1
 
-                    response = await self._process_message(
-                        msg, on_stream=on_stream, on_stream_end=on_stream_end,
-                        pending_queue=pending,
-                    )
+                    trace_token = set_trace_id(str(msg.metadata.get("_trace_id") or ""))
+                    try:
+                        response = await self._process_message(
+                            msg, on_stream=on_stream, on_stream_end=on_stream_end,
+                            pending_queue=pending,
+                        )
+                    finally:
+                        reset_trace_id(trace_token)
                     if response is not None:
                         await self.bus.publish_outbound(response)
                     elif msg.channel == "cli":
@@ -1021,6 +1041,7 @@ class AgentLoop:
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
                         content="Sorry, I encountered an error.",
+                        metadata=msg.metadata or {},
                     ))
         finally:
             # Drain any messages still in the pending queue and re-publish
@@ -1186,7 +1207,7 @@ class AgentLoop:
             session=None,
             session_key=key,
             state=TurnState.RESTORE,
-            turn_id=f"{key}:{time.time_ns()}",
+            turn_id=str(msg.metadata.get("_turn_id") or f"{key}:{time.time_ns()}"),
             on_progress=on_progress,
             on_stream=on_stream,
             on_stream_end=on_stream_end,

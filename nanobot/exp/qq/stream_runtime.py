@@ -68,7 +68,8 @@ async def _flush_delta_stream_state(
             turn_started = float(state.get("turn_started_perf") or 0)
             turn_first_frame_ms = int((state["last_flush_at"] - turn_started) * 1000) if turn_started > 0 else 0
             logger.info(
-                "QQ delta stream first frame turn_id={} stream_key={} chat_id={} first_frame_ms={} pending_wait_ms={} send_frame_ms={} turn_first_frame_ms={} chars={}",
+                "QQ delta stream first frame trace_id={} turn_id={} stream_key={} chat_id={} first_frame_ms={} pending_wait_ms={} send_frame_ms={} turn_first_frame_ms={} chars={}",
+                state.get("trace_id", "") or "-",
                 state.get("turn_id", ""),
                 stream_key,
                 chat_id,
@@ -123,11 +124,17 @@ async def send_delta(
             "disabled": False,
             "first_frame_sent": False,
             "turn_id": metadata.get("_turn_id", ""),
+            "trace_id": metadata.get("_trace_id", ""),
             "turn_started_perf": metadata.get("_turn_started_perf", 0),
         }
         stream_states[stream_key] = state
         if logger is not None:
-            logger.info("QQ delta stream start stream_key={} chat_id={}", stream_key, chat_id)
+            logger.info(
+                "QQ delta stream start trace_id={} stream_key={} chat_id={}",
+                state.get("trace_id", "") or "-",
+                stream_key,
+                chat_id,
+            )
 
     if delta:
         state["content"] = str(state.get("content") or "") + delta
@@ -225,7 +232,8 @@ async def send_delta(
             )
             if logger is not None:
                 logger.info(
-                    "QQ delta stream done stream_key={} chat_id={} frames={} chars={}",
+                    "QQ delta stream done trace_id={} stream_key={} chat_id={} frames={} chars={}",
+                    state.get("trace_id", "") or "-",
                     stream_key,
                     chat_id,
                     int(state.get("index") or 0),
