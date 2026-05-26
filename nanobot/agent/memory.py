@@ -51,12 +51,14 @@ def _replay_overflow_max_wait_seconds() -> int:
     return _int_env("NANOBOT_REPLAY_OVERFLOW_MAX_WAIT_SECONDS", 12 * 60 * 60, minimum=0)
 
 
-def _message_age_seconds(message: dict[str, Any]) -> float | None:
-    timestamp = message.get("timestamp")
-    if not isinstance(timestamp, str) or not timestamp.strip():
+_REPLAY_OVERFLOW_DEFERRED_SINCE = "_replay_overflow_deferred_since"
+
+
+def _timestamp_age_seconds(value: Any) -> float | None:
+    if not isinstance(value, str) or not value.strip():
         return None
     try:
-        ts = datetime.fromisoformat(timestamp)
+        ts = datetime.fromisoformat(value)
     except ValueError:
         return None
     now = datetime.now(ts.tzinfo) if ts.tzinfo is not None else datetime.now()
@@ -602,14 +604,18 @@ class Consolidator:
             return None
         min_messages = _replay_overflow_min_messages()
         max_wait_seconds = _replay_overflow_max_wait_seconds()
-        oldest_age = _message_age_seconds(chunk[0])
-        force_by_age = (
+        deferred_since = session.metadata.get(_REPLAY_OVERFLOW_DEFERRED_SINCE)
+        deferred_age = _timestamp_age_seconds(deferred_since)
+        force_by_wait = (
             max_wait_seconds > 0
-            and oldest_age is not None
-            and oldest_age >= max_wait_seconds
+            and deferred_age is not None
+            and deferred_age >= max_wait_seconds
         )
         force_by_boundary = _chunk_has_tool_boundary(chunk)
-        if len(chunk) < min_messages and not force_by_age and not force_by_boundary:
+        if len(chunk) < min_messages and not force_by_wait and not force_by_boundary:
+            if not deferred_since:
+                session.metadata[_REPLAY_OVERFLOW_DEFERRED_SINCE] = datetime.now().isoformat()
+                self.sessions.save(session)
             logger.debug(
                 "Replay-window consolidation deferred for {}: chunk={} msgs, min={}, replay_max={}",
                 session.key,
@@ -626,6 +632,7 @@ class Consolidator:
         )
         summary = await self.archive(chunk)
         session.last_consolidated = end_idx
+        session.metadata.pop(_REPLAY_OVERFLOW_DEFERRED_SINCE, None)
         self.sessions.save(session)
         return summary
 
