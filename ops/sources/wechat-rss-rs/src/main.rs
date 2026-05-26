@@ -202,6 +202,36 @@ fn ad_score(title: &str, summary: &str, content: &str) -> i32 {
         "加微信",
     ];
 
+    let supplement_products = [
+        "\u{866B}\u{8349}",
+        "\u{51AC}\u{866B}\u{590F}\u{8349}",
+        "\u{9C9C}\u{866B}\u{8349}",
+        "\u{9C9C}\u{8349}",
+        "\u{6ECB}\u{8865}\u{54C1}",
+        "\u{6ECB}\u{8865}",
+    ];
+    let supplement_commerce_context = [
+        "\u{60F3}\u{4E70}",
+        "\u{4E70}\u{9C9C}\u{866B}\u{8349}",
+        "\u{4E70}\u{8D35}",
+        "\u{4E70}\u{9519}",
+        "\u{4E70}\u{5047}",
+        "\u{4EF7}\u{683C}",
+        "\u{4FBF}\u{5B9C}",
+        "\u{826F}\u{5FC3}\u{4EF7}",
+        "\u{6E90}\u{5934}",
+        "\u{5546}\u{5BB6}",
+        "\u{4EE5}\u{6B21}\u{5145}\u{597D}",
+        "\u{865A}\u{6807}\u{4EA7}\u{5730}",
+        "\u{6C34}\u{6DF1}",
+        "\u{6709}\u{6548}\u{6210}\u{5206}",
+        "\u{91C7}\u{6536}",
+        "\u{8054}\u{7CFB}\u{5230}",
+        "\u{5356}\u{4E00}\u{5929}",
+        "\u{5356}\u{51FA}",
+        "\u{666E}\u{901A}\u{767E}\u{59D3}\u{4E5F}\u{80FD}\u{5403}\u{5F97}\u{8D77}",
+    ];
+
     let mut s = 0_i32;
     for k in hard_title {
         if title.contains(k) {
@@ -235,6 +265,21 @@ fn ad_score(title: &str, summary: &str, content: &str) -> i32 {
         s += 2;
     } else if context_hits >= 2 {
         s += 1;
+    }
+    let supplement_product_hits = supplement_products
+        .iter()
+        .filter(|k| all.contains(**k))
+        .count() as i32;
+    let supplement_commerce_hits = supplement_commerce_context
+        .iter()
+        .filter(|k| all.contains(**k))
+        .count() as i32;
+    if supplement_product_hits >= 2 && supplement_commerce_hits >= 4 {
+        s += 4;
+    } else if supplement_product_hits >= 1 && supplement_commerce_hits >= 5 {
+        s += 3;
+    } else if supplement_product_hits >= 1 && supplement_commerce_hits >= 3 {
+        s += 2;
     }
     s
 }
@@ -1438,6 +1483,25 @@ mod tests {
     #[test]
     fn ad_score_keeps_known_hard_title_blocklist() {
         assert!(ad_score("八段锦的猛料，刺痛了多少中国女人", "", "") >= 2);
+    }
+
+    #[test]
+    fn ad_score_blocks_supplement_purchase_soft_ad() {
+        let title = "soft supplement ad";
+        let summary =
+            "\u{8EAB}\u{4F53}\u{624D}\u{662F}\u{966A}\u{4F34}\u{7684}\u{672C}\u{94B1}\u{3002}";
+        let content = "\u{6ECB}\u{8865}\u{54C1}\u{6C34}\u{6DF1}\u{FF0C}\u{4EE5}\u{6B21}\u{5145}\u{597D}\u{3001}\u{865A}\u{6807}\u{4EA7}\u{5730}\u{3002}\u{866B}\u{8349}\u{3001}\u{9C9C}\u{866B}\u{8349}\u{4EF7}\u{683C}\u{4FBF}\u{5B9C}\u{FF0C}\u{4ECA}\u{65E5}\u{80FD}\u{8054}\u{7CFB}\u{5230}\u{6E90}\u{5934}\u{3002}\u{5982}\u{679C}\u{60F3}\u{4E70}\u{9C9C}\u{866B}\u{8349}\u{FF0C}\u{53C8}\u{62C5}\u{5FC3}\u{4E70}\u{8D35}\u{3001}\u{4E70}\u{9519}\u{3001}\u{4E70}\u{5047}\u{FF0C}\u{8BF7}\u{770B}\u{8FD9}\u{4E2A}\u{826F}\u{5FC3}\u{4EF7}\u{3002}";
+
+        assert!(ad_score(title, summary, content) >= 3);
+    }
+
+    #[test]
+    fn ad_score_does_not_block_general_health_reflection() {
+        let title = "\u{4EBA}\u{5230}\u{4E2D}\u{5E74}\u{FF0C}\u{8EAB}\u{4F53}\u{624D}\u{662F}\u{966A}\u{4F34}\u{7684}\u{672C}\u{94B1}";
+        let summary = "\u{4E00}\u{6B21}\u{5173}\u{4E8E}\u{5BB6}\u{5EAD}\u{3001}\u{4F5C}\u{606F}\u{548C}\u{957F}\u{671F}\u{4E3B}\u{4E49}\u{7684}\u{666E}\u{901A}\u{53CD}\u{601D}";
+        let content = "\u{6700}\u{8FD1}\u{71AC}\u{591C}\u{8D76}\u{5DE5}\u{FF0C}\u{9519}\u{8FC7}\u{4E86}\u{548C}\u{5BB6}\u{4EBA}\u{51FA}\u{95E8}\u{3002}\u{5199}\u{8FD9}\u{7BC7}\u{6587}\u{7AE0}\u{53EA}\u{662F}\u{63D0}\u{9192}\u{81EA}\u{5DF1}\u{FF0C}\u{522B}\u{628A}\u{8EAB}\u{4F53}\u{5F53}\u{6210}\u{65E0}\u{9650}\u{900F}\u{652F}\u{7684}\u{8D26}\u{6237}\u{3002}";
+
+        assert!(ad_score(title, summary, content) < 2);
     }
 
     #[test]
