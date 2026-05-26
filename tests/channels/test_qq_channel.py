@@ -291,6 +291,7 @@ async def test_send_delta_waits_for_first_frame_min_chars() -> None:
             stream_enabled=True,
             stream_min_chars=1,
             stream_first_flush_chars=10,
+            stream_defer_first_frame_until_end=False,
             stream_delta_flush_chars=20,
             stream_delta_flush_interval_sec=0,
         ),
@@ -302,10 +303,10 @@ async def test_send_delta_waits_for_first_frame_min_chars() -> None:
     await channel.send_delta("user123", "hi", metadata)
     assert channel._client.api._http.calls == []
 
-    await channel.send_delta("user123", " there friend", metadata)
+    await channel.send_delta("user123", " there friend.", metadata)
     calls = channel._client.api._http.calls
     assert len(calls) == 1
-    assert calls[0]["markdown"] == {"content": "hi there friend"}
+    assert calls[0]["markdown"] == {"content": "hi there friend."}
     assert calls[0]["stream"] == {"state": 1, "index": 0, "reset": False}
 
 
@@ -320,6 +321,7 @@ async def test_send_delta_streams_and_finalizes_with_raw_http() -> None:
             stream_enabled=True,
             stream_min_chars=1,
             stream_first_flush_chars=1,
+            stream_defer_first_frame_until_end=False,
             stream_delta_flush_chars=20,
             stream_delta_flush_interval_sec=999,
         ),
@@ -328,8 +330,8 @@ async def test_send_delta_streams_and_finalizes_with_raw_http() -> None:
     channel._client = _FakeClient()
 
     metadata = {"_stream_id": "s1", "_stream_delta": True, "message_id": "msg1"}
-    await channel.send_delta("user123", "he", metadata)
-    await channel.send_delta("user123", "llo", metadata)
+    await channel.send_delta("user123", "hi.", metadata)
+    await channel.send_delta("user123", " there", metadata)
     await channel.send_delta(
         "user123",
         "",
@@ -338,11 +340,11 @@ async def test_send_delta_streams_and_finalizes_with_raw_http() -> None:
 
     calls = channel._client.api._http.calls
     assert len(calls) == 3
-    assert calls[0]["markdown"] == {"content": "he"}
+    assert calls[0]["markdown"] == {"content": "hi."}
     assert calls[0]["stream"] == {"state": 1, "index": 0, "reset": False}
-    assert calls[1]["markdown"] == {"content": "llo"}
+    assert calls[1]["markdown"] == {"content": " there"}
     assert calls[1]["stream"]["id"] == "raw-1"
-    assert calls[2]["markdown"] == {"content": "hello"}
+    assert calls[2]["markdown"] == {"content": "hi. there"}
     assert calls[2]["stream"] == {"state": 10, "id": "raw-2", "index": 1, "reset": True}
     assert "s1" not in channel._stream_states
     assert not channel._client.api.c2c_calls

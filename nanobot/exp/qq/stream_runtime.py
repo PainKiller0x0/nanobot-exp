@@ -20,6 +20,10 @@ SendStreamFrame = Callable[..., Awaitable[str | None]]
 SendTextOnly = Callable[..., Awaitable[None]]
 
 
+_FIRST_FRAME_BOUNDARIES = frozenset("\n\u3002\uff01\uff1f!?\uff1b;\uff1a:.\u2026")
+_FIRST_FRAME_OVERRUN_CHARS = 240
+
+
 async def _flush_delta_stream_state(
     *,
     config: Any,
@@ -37,6 +41,7 @@ async def _flush_delta_stream_state(
     index = int(state.get("index") or 0)
     qq_stream_id = state.get("qq_stream_id")
     flush_started_at = time.monotonic()
+    is_first_frame = not state.get("first_frame_sent")
     new_id = await send_stream_frame(
         chat_id=chat_id,
         is_group=is_group,
@@ -50,6 +55,8 @@ async def _flush_delta_stream_state(
     flushed_at = time.monotonic()
     if new_id:
         state["qq_stream_id"] = new_id
+    elif is_first_frame:
+        state["disabled"] = True
     # A QQ stream frame may be visible even when the API response does not
     # return a stream id (for example, botpy reports a timeout after QQ has
     # accepted the frame). Remember the visible prefix so a later fallback
@@ -58,7 +65,7 @@ async def _flush_delta_stream_state(
     state["pending"] = ""
     state["index"] = index + 1
     state["last_flush_at"] = flushed_at
-    if not state.get("first_frame_sent"):
+    if is_first_frame:
         state["first_frame_sent"] = True
         started_at = float(state.get("started_at") or state["last_flush_at"])
         if logger is not None:
@@ -79,6 +86,24 @@ async def _flush_delta_stream_state(
                 turn_first_frame_ms,
                 len(pending),
             )
+            if not new_id:
+                logger.warning(
+                    "QQ delta stream first frame missing stream id; disabling append stream_key={} chat_id={} chars={}",
+                    stream_key,
+                    chat_id,
+                    len(pending),
+                )
+
+
+def _can_flush_first_frame(pending: str, threshold: int) -> bool:
+    if len(pending) < threshold:
+        return False
+    stripped = pending.rstrip()
+    if not stripped:
+        return False
+    if stripped[-1] in _FIRST_FRAME_BOUNDARIES:
+        return True
+    return len(pending) >= threshold + _FIRST_FRAME_OVERRUN_CHARS
 
 
 def _fallback_content_after_stream_attempt(content: str, state: dict[str, Any]) -> str:
@@ -164,12 +189,18 @@ async def send_delta(
             )
             elapsed = time.monotonic() - float(state.get("last_flush_at") or time.monotonic())
             if not state.get("first_frame_sent"):
+                # Avoid the worst QQ UX: a visible half-sentence followed by a
+                # second fallback bubble when QQ accepts the first frame but does
+                # not return a usable stream id. By default, wait until the final
+                # delta before creating the visible first frame.
+                if bool(getattr(config, "stream_defer_first_frame_until_end", True)):
+                    return
                 # Treat short LLM replies as one-shot messages. QQ stream
                 # creation is the slowest and most fragile part of short chats,
                 # so only open a stream once the reply is clearly long enough.
                 min_stream_chars = max(1, int(getattr(config, "stream_min_chars", 0) or 0))
                 first_threshold = max(threshold, min_stream_chars)
-                if len(pending) < first_threshold:
+                if not _can_flush_first_frame(pending, first_threshold):
                     return
             elif len(pending) < threshold and elapsed < interval:
                 return
