@@ -193,12 +193,12 @@ class QQConfig(Base):
     # cron/RSS pushes keep the older one-shot path.
     stream_enabled: bool = False
     stream_requires_msg_id: bool = True
-    stream_min_chars: int = 1200
+    stream_min_chars: int = 1
     stream_max_chars: int = 5000
     stream_chunk_chars: int = 180
     stream_interval_sec: float = 0.0
-    stream_first_flush_chars: int = 1200
-    stream_defer_first_frame_until_end: bool = True
+    stream_first_flush_chars: int = 2
+    stream_defer_first_frame_until_end: bool = False
     stream_delta_flush_chars: int = 120
     stream_delta_flush_interval_sec: float = 0.35
 
