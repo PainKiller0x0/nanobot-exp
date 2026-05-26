@@ -34,6 +34,38 @@ if TYPE_CHECKING:
     from nanobot.session.manager import SessionManager
 
 
+
+def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        value = int(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, value)
+
+
+def _replay_overflow_min_messages() -> int:
+    return _int_env("NANOBOT_REPLAY_OVERFLOW_MIN_MESSAGES", 10, minimum=1)
+
+
+def _replay_overflow_max_wait_seconds() -> int:
+    return _int_env("NANOBOT_REPLAY_OVERFLOW_MAX_WAIT_SECONDS", 12 * 60 * 60, minimum=0)
+
+
+def _message_age_seconds(message: dict[str, Any]) -> float | None:
+    timestamp = message.get("timestamp")
+    if not isinstance(timestamp, str) or not timestamp.strip():
+        return None
+    try:
+        ts = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+    now = datetime.now(ts.tzinfo) if ts.tzinfo is not None else datetime.now()
+    return max(0.0, (now - ts).total_seconds())
+
+
+def _chunk_has_tool_boundary(messages: list[dict[str, Any]]) -> bool:
+    return any(message.get("role") == "tool" or message.get("tool_calls") for message in messages)
+
 # ---------------------------------------------------------------------------
 # MemoryStore — pure file I/O layer
 # ---------------------------------------------------------------------------
@@ -567,6 +599,24 @@ class Consolidator:
             return None
         chunk = session.messages[session.last_consolidated:end_idx]
         if not chunk:
+            return None
+        min_messages = _replay_overflow_min_messages()
+        max_wait_seconds = _replay_overflow_max_wait_seconds()
+        oldest_age = _message_age_seconds(chunk[0])
+        force_by_age = (
+            max_wait_seconds > 0
+            and oldest_age is not None
+            and oldest_age >= max_wait_seconds
+        )
+        force_by_boundary = _chunk_has_tool_boundary(chunk)
+        if len(chunk) < min_messages and not force_by_age and not force_by_boundary:
+            logger.debug(
+                "Replay-window consolidation deferred for {}: chunk={} msgs, min={}, replay_max={}",
+                session.key,
+                len(chunk),
+                min_messages,
+                replay_max_messages,
+            )
             return None
         logger.info(
             "Replay-window consolidation for {}: chunk={} msgs, replay_max={}",

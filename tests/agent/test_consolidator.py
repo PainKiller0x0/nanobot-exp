@@ -197,6 +197,56 @@ class TestConsolidatorTokenBudget:
         assert session.last_consolidated == 3
         assert session.get_history(max_messages=2) == [{"role": "assistant", "content": "final answer"}]
 
+
+    async def test_replay_window_overflow_defers_tiny_chat_batches(
+        self,
+        consolidator,
+    ):
+        # Tiny replay overflows should batch up instead of calling the LLM every turn.
+        consolidator._SAFETY_BUFFER = 0
+        session = Session(key="test:tiny-replay-overflow")
+        for i in range(62):
+            session.add_message("user", f"u{i}")
+            session.add_message("assistant", f"a{i}")
+
+        consolidator.estimate_session_prompt_tokens = MagicMock(return_value=(100, "tiktoken"))
+        consolidator.archive = AsyncMock(return_value="tiny summary")
+
+        await consolidator.maybe_consolidate_by_tokens(
+            session,
+            replay_max_messages=120,
+        )
+
+        consolidator.archive.assert_not_awaited()
+        assert session.last_consolidated == 0
+
+    async def test_replay_window_overflow_forces_old_tiny_batches(
+        self,
+        consolidator,
+        monkeypatch,
+    ):
+        # Small hidden batches are eventually materialized if they wait too long.
+        monkeypatch.setenv("NANOBOT_REPLAY_OVERFLOW_MAX_WAIT_SECONDS", "1")
+        consolidator._SAFETY_BUFFER = 0
+        session = Session(key="test:old-tiny-replay-overflow")
+        for i in range(124):
+            session.messages.append({
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"m{i}",
+                "timestamp": "2000-01-01T00:00:00",
+            })
+
+        consolidator.estimate_session_prompt_tokens = MagicMock(return_value=(100, "tiktoken"))
+        consolidator.archive = AsyncMock(return_value="old tiny summary")
+
+        await consolidator.maybe_consolidate_by_tokens(
+            session,
+            replay_max_messages=120,
+        )
+
+        consolidator.archive.assert_awaited_once()
+        assert session.last_consolidated == 4
+
     async def test_large_chunk_archived_without_cap(self, consolidator):
         """Without chunk cap, the full range from pick_consolidation_boundary is archived."""
         consolidator._SAFETY_BUFFER = 0
