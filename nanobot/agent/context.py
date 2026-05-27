@@ -1,8 +1,13 @@
 """Context builder for assembling agent prompts."""
 
 import base64
+import io
 import mimetypes
+import os
 import platform
+import subprocess
+import tempfile
+import time
 from contextlib import suppress
 from importlib.resources import files as pkg_files
 from pathlib import Path
@@ -30,6 +35,14 @@ class ContextBuilder:
     _LIGHT_USER_MAX_CHARS = 1_400
     _LIGHT_MEMORY_MAX_CHARS = 1_600
     _LIGHT_SESSION_SUMMARY_MAX_CHARS = 1_200
+    _CONTEXT_IMAGE_MAX_WIDTH = 960
+    _CONTEXT_IMAGE_MAX_BYTES = 900_000
+    _CONTEXT_IMAGE_JPEG_QUALITY = 76
+    _CONTEXT_IMAGE_MIN_JPEG_QUALITY = 52
+    _CONTEXT_IMAGE_OCR_MAX_WIDTH = 1_400
+    _CONTEXT_IMAGE_OCR_TILE_HEIGHT = 1_800
+    _CONTEXT_IMAGE_OCR_TIMEOUT_SEC = 28
+    _CONTEXT_IMAGE_OCR_MAX_CHARS = 6_000
 
     def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
         self.workspace = workspace
@@ -273,9 +286,13 @@ class ContextBuilder:
         return messages
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
+        """Build user message content with prompt-safe base64-encoded images."""
         if not media:
             return text
+
+        image_mode = os.environ.get("NANOBOT_CONTEXT_IMAGE_MODE", "embed").strip().lower()
+        if image_mode in {"ocr", "text"}:
+            return self._build_user_content_from_image_text(text, media)
 
         images = []
         for path in media:
@@ -286,13 +303,187 @@ class ContextBuilder:
             mime = detect_image_mime(raw) or mimetypes.guess_type(path)[0]
             if not mime or not mime.startswith("image/"):
                 continue
+            raw, mime = self._prepare_prompt_image(raw, mime)
             b64 = base64.b64encode(raw).decode()
             images.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:{mime};base64,{b64}"},
-                "_meta": {"path": str(p)},
+                "_meta": {"path": str(p), "prompt_bytes": len(raw), "prompt_mime": mime},
             })
 
         if not images:
             return text
         return images + [{"type": "text", "text": text}]
+
+    def _build_user_content_from_image_text(self, text: str, media: list[str]) -> str:
+        image_texts = []
+        for index, path in enumerate(media, start=1):
+            p = Path(path)
+            if not p.is_file():
+                continue
+            raw = p.read_bytes()
+            mime = detect_image_mime(raw) or mimetypes.guess_type(path)[0]
+            if not mime or not mime.startswith("image/"):
+                continue
+            extracted = self._extract_image_text(p)
+            if extracted:
+                image_texts.append(f"[图片 {index}: {p.name} 的本地 OCR 转写]\n{extracted}")
+            else:
+                image_texts.append(f"[图片 {index}: {p.name}] 本地 OCR 未提取到文字，原图已保存：{p}")
+
+        if not image_texts:
+            return text
+
+        note = "[以下是随消息附带图片的本地 OCR 文字；当前模型通道不支持直接看图，请把它当作图片内容的近似转写，可能有少量错别字。]"
+        return f"{text}\n\n{note}\n\n" + "\n\n".join(image_texts)
+
+    @classmethod
+    def _extract_image_text(cls, path: Path) -> str:
+        cache_path = path.with_suffix(path.suffix + ".ocr.txt")
+        with suppress(OSError):
+            if cache_path.exists() and cache_path.stat().st_mtime >= path.stat().st_mtime:
+                return cache_path.read_text(encoding="utf-8").strip()
+
+        try:
+            from PIL import Image, ImageEnhance, ImageOps
+        except Exception:
+            return ""
+
+        timeout_sec = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_OCR_TIMEOUT_SEC", cls._CONTEXT_IMAGE_OCR_TIMEOUT_SEC)
+        max_width = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_OCR_MAX_WIDTH", cls._CONTEXT_IMAGE_OCR_MAX_WIDTH)
+        tile_height = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_OCR_TILE_HEIGHT", cls._CONTEXT_IMAGE_OCR_TILE_HEIGHT)
+        max_chars = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_OCR_MAX_CHARS", cls._CONTEXT_IMAGE_OCR_MAX_CHARS)
+        lang = os.environ.get("NANOBOT_CONTEXT_IMAGE_OCR_LANG", "chi_sim+eng")
+        started = time.monotonic()
+
+        try:
+            with Image.open(path) as opened:
+                img = ImageOps.exif_transpose(opened).convert("L")
+        except Exception:
+            return ""
+
+        mean_pixel = img.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+        if isinstance(mean_pixel, tuple):
+            mean_pixel = sum(mean_pixel) / len(mean_pixel)
+        if mean_pixel < 128:
+            img = ImageOps.invert(img)
+
+        if img.width != max_width and (img.width < max_width or img.width > round(max_width * 1.25)):
+            ratio = max_width / img.width
+            img = img.resize((max_width, max(1, round(img.height * ratio))), Image.Resampling.LANCZOS)
+        img = ImageEnhance.Contrast(img).enhance(1.6)
+
+        chunks = []
+        try:
+            with tempfile.TemporaryDirectory(prefix="nanobot-ocr-") as tmpdir:
+                tmp = Path(tmpdir)
+                for tile_index, top in enumerate(range(0, img.height, tile_height)):
+                    remaining = timeout_sec - (time.monotonic() - started)
+                    if remaining <= 1:
+                        chunks.append("[OCR 超时：后续图片内容已省略]")
+                        break
+                    tile = img.crop((0, top, img.width, min(img.height, top + tile_height)))
+                    tile_path = tmp / f"tile-{tile_index}.png"
+                    tile.save(tile_path)
+                    tile_text = cls._run_tesseract(tile_path, lang=lang, timeout=max(2, min(8, int(remaining))))
+                    if tile_text:
+                        chunks.append(tile_text)
+                    if sum(len(chunk) for chunk in chunks) >= max_chars:
+                        break
+        except Exception:
+            return ""
+
+        result = cls._clean_ocr_text("\n".join(chunks))[:max_chars].strip()
+        if result:
+            with suppress(OSError):
+                cache_path.write_text(result, encoding="utf-8")
+        return result
+
+    @staticmethod
+    def _run_tesseract(image_path: Path, *, lang: str, timeout: int) -> str:
+        try:
+            completed = subprocess.run(
+                ["tesseract", str(image_path), "stdout", "-l", lang, "--psm", "6"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=timeout,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return ""
+        return completed.stdout
+
+    @staticmethod
+    def _clean_ocr_text(raw: str) -> str:
+        return "\n".join(line.strip() for line in raw.splitlines() if line.strip())
+
+    @classmethod
+    def _prepare_prompt_image(cls, raw: bytes, mime: str) -> tuple[bytes, str]:
+        """Downscale large images before embedding them in an LLM request."""
+        max_width = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_MAX_WIDTH", cls._CONTEXT_IMAGE_MAX_WIDTH)
+        max_bytes = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_MAX_BYTES", cls._CONTEXT_IMAGE_MAX_BYTES)
+        quality = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_JPEG_QUALITY", cls._CONTEXT_IMAGE_JPEG_QUALITY)
+        min_quality = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_MIN_JPEG_QUALITY", cls._CONTEXT_IMAGE_MIN_JPEG_QUALITY)
+
+        try:
+            from PIL import Image, ImageOps
+        except Exception:
+            return raw, mime
+
+        try:
+            with Image.open(io.BytesIO(raw)) as opened:
+                img = ImageOps.exif_transpose(opened)
+                if len(raw) <= max_bytes and img.width <= max_width:
+                    return raw, mime
+                img = img.copy()
+        except Exception:
+            return raw, mime
+
+        if img.width > max_width:
+            ratio = max_width / img.width
+            img = img.resize((max_width, max(1, round(img.height * ratio))), Image.Resampling.LANCZOS)
+
+        img = cls._to_jpeg_safe_rgb(img)
+        best = raw
+        best_mime = mime
+        for candidate_quality in range(quality, min_quality - 1, -6):
+            candidate = cls._encode_jpeg(img, candidate_quality)
+            best, best_mime = candidate, "image/jpeg"
+            if len(candidate) <= max_bytes:
+                return candidate, "image/jpeg"
+
+        # Very tall screenshots can still exceed the byte cap after quality tuning.
+        # Keep shrinking width gently rather than making the text unreadably tiny up front.
+        while len(best) > max_bytes and img.width > 480:
+            next_width = max(480, round(img.width * 0.85))
+            ratio = next_width / img.width
+            img = img.resize((next_width, max(1, round(img.height * ratio))), Image.Resampling.LANCZOS)
+            best = cls._encode_jpeg(img, min_quality)
+            best_mime = "image/jpeg"
+
+        return best, best_mime
+
+    @staticmethod
+    def _to_jpeg_safe_rgb(img: Any) -> Any:
+        if img.mode == "RGB":
+            return img
+        if "A" in img.getbands():
+            background = img.__class__.new("RGB", img.size, "white")
+            background.paste(img, mask=img.getchannel("A"))
+            return background
+        return img.convert("RGB")
+
+    @staticmethod
+    def _encode_jpeg(img: Any, quality: int) -> bytes:
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=quality, optimize=True, progressive=True)
+        return out.getvalue()
+
+    @staticmethod
+    def _image_env_int(name: str, default: int) -> int:
+        with suppress(TypeError, ValueError):
+            value = int(os.environ.get(name, ""))
+            if value > 0:
+                return value
+        return default

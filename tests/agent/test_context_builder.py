@@ -1,5 +1,6 @@
 """Tests for ContextBuilder — system prompt and message assembly."""
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -211,6 +212,24 @@ class TestBuildUserContent:
         assert result[1]["type"] == "text"
         assert result[1]["text"] == "hello"
 
+    def test_large_image_is_compressed_before_prompt_embedding(self, tmp_path):
+        image_module = pytest.importorskip("PIL.Image")
+
+        png = tmp_path / "large.png"
+        image_module.effect_noise((1400, 1400), 100).convert("RGB").save(png)
+        builder = _builder(tmp_path)
+
+        result = builder._build_user_content("hello", [str(png)])
+
+        assert isinstance(result, list)
+        url = result[0]["image_url"]["url"]
+        assert url.startswith("data:image/jpeg;base64,")
+        encoded = url.split(",", 1)[1]
+        compressed = base64.b64decode(encoded)
+        assert len(compressed) <= ContextBuilder._CONTEXT_IMAGE_MAX_BYTES
+        assert result[0]["_meta"]["prompt_bytes"] == len(compressed)
+        assert result[0]["_meta"]["prompt_mime"] == "image/jpeg"
+
     def test_image_meta_includes_path(self, tmp_path):
         png = tmp_path / "test.png"
         png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
@@ -218,6 +237,20 @@ class TestBuildUserContent:
         result = builder._build_user_content("hello", [str(png)])
         assert "_meta" in result[0]
         assert "path" in result[0]["_meta"]
+
+    def test_ocr_image_mode_returns_text_instead_of_image_blocks(self, tmp_path, monkeypatch):
+        png = tmp_path / "test.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        monkeypatch.setenv("NANOBOT_CONTEXT_IMAGE_MODE", "ocr")
+        monkeypatch.setattr(ContextBuilder, "_extract_image_text", classmethod(lambda cls, path: "OCR text"))
+        builder = _builder(tmp_path)
+
+        result = builder._build_user_content("hello", [str(png)])
+
+        assert isinstance(result, str)
+        assert "hello" in result
+        assert "OCR text" in result
+        assert "image_url" not in result
 
 
 # ---------------------------------------------------------------------------
