@@ -75,19 +75,29 @@ pub struct RequestLog {
     pub day: String,
     pub month: String,
     pub time: String,
+    #[serde(default = "default_request_id")]
+    pub request_id: String,
     #[serde(default = "default_source")]
     pub source: String,
     pub channel: String,
     pub channel_id: Option<u64>,
     pub requested_model: String,
     pub model: String,
+    #[serde(default = "default_route_profile")]
+    pub route_profile: String,
     pub route: String,
+    #[serde(default = "default_route_stage")]
+    pub route_stage: String,
     pub route_reason: String,
+    #[serde(default)]
+    pub route_trace: String,
     pub status: u16,
     pub latency_ms: u64,
     pub latency: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_chunk_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_text_ms: Option<u64>,
     #[serde(default)]
     pub prompt_tokens: u64,
     #[serde(default)]
@@ -105,6 +115,7 @@ pub struct RequestLog {
 impl RequestLog {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        request_id: String,
         source: String,
         channel_id: Option<u64>,
         channel: String,
@@ -112,31 +123,47 @@ impl RequestLog {
         actual_model: String,
         route: String,
         route_reason: String,
+        route_profile: String,
+        route_stage: String,
         status: u16,
         latency_ms: u64,
         usage: TokenUsage,
         first_chunk_ms: Option<u64>,
+        first_text_ms: Option<u64>,
     ) -> Self {
         let ts = now_unix_secs();
         let (day, time) = shanghai_strings(ts);
         let month = day.get(0..7).unwrap_or("").to_string();
         let cost_cny = estimate_cost_cny(&actual_model, usage);
+        let source = normalize_key(source, "unknown-source");
+        let route_profile = normalize_key(route_profile, "default");
+        let route_stage = normalize_key(route_stage, "primary");
+        let route = normalize_key(route, "default");
+        let route_trace = format!(
+            "source={} profile={} stage={} route={} reason={}",
+            source, route_profile, route_stage, route, route_reason
+        );
         Self {
             ts,
             day,
             month,
             time,
-            source: normalize_key(source, "unknown-source"),
+            request_id: normalize_key(request_id, "unknown-request"),
+            source,
             channel,
             channel_id,
             requested_model: normalize_key(requested_model, "unknown"),
             model: normalize_key(actual_model, "unknown"),
-            route: normalize_key(route, "default"),
+            route_profile,
+            route,
+            route_stage,
             route_reason,
+            route_trace,
             status,
             latency_ms,
             latency: format!("{}ms", latency_ms),
             first_chunk_ms,
+            first_text_ms,
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             uncached_prompt_tokens: usage.uncached_prompt_tokens(),
@@ -227,6 +254,8 @@ pub struct UsageBreakdown {
     #[serde(default)]
     pub by_model: BTreeMap<String, UsageBucket>,
     #[serde(default)]
+    pub by_model_month: BTreeMap<String, BTreeMap<String, UsageBucket>>,
+    #[serde(default)]
     pub by_route: BTreeMap<String, UsageBucket>,
 }
 
@@ -256,8 +285,12 @@ impl UsageBreakdown {
             .entry(log.month.clone())
             .or_default()
             .add(log);
-        self.by_model
-            .entry(normalize_key(log.model.clone(), "unknown-model"))
+        let model_key = normalize_key(log.model.clone(), "unknown-model");
+        self.by_model.entry(model_key.clone()).or_default().add(log);
+        self.by_model_month
+            .entry(model_key)
+            .or_default()
+            .entry(log.month.clone())
             .or_default()
             .add(log);
         self.by_route
@@ -317,6 +350,8 @@ pub struct UsageStats {
     #[serde(default)]
     pub by_model: BTreeMap<String, UsageBucket>,
     #[serde(default)]
+    pub by_model_month: BTreeMap<String, BTreeMap<String, UsageBucket>>,
+    #[serde(default)]
     pub by_route: BTreeMap<String, UsageBucket>,
     #[serde(default)]
     pub recent: Vec<RequestLog>,
@@ -371,8 +406,15 @@ impl UsageStats {
             .entry(log.month.clone())
             .or_default()
             .add(&log);
+        let model_key = normalize_key(log.model.clone(), "unknown-model");
         self.by_model
-            .entry(normalize_key(log.model.clone(), "unknown-model"))
+            .entry(model_key.clone())
+            .or_default()
+            .add(&log);
+        self.by_model_month
+            .entry(model_key)
+            .or_default()
+            .entry(log.month.clone())
             .or_default()
             .add(&log);
         self.by_route
@@ -440,6 +482,60 @@ impl UsageStats {
         }
     }
 
+    pub fn rebuild_model_month_from_recent_if_empty(&mut self) {
+        if self.by_month.len() == 1 && !self.by_model.is_empty() {
+            let month = self.by_month.keys().next().cloned().unwrap_or_default();
+            let mut filled = false;
+            for (model, bucket) in &self.by_model {
+                let months = self.by_model_month.entry(model.clone()).or_default();
+                if !months.contains_key(&month) {
+                    months.insert(month.clone(), bucket.clone());
+                    filled = true;
+                }
+            }
+            if filled {
+                return;
+            }
+        }
+        if !self.by_model_month.is_empty() {
+            return;
+        }
+        for log in &self.recent {
+            let model_key = normalize_key(log.model.clone(), "unknown-model");
+            self.by_model_month
+                .entry(model_key)
+                .or_default()
+                .entry(log.month.clone())
+                .or_default()
+                .add(log);
+        }
+    }
+
+    pub fn deepseek_total_usage(&self) -> UsageBucket {
+        let mut bucket = UsageBucket::default();
+        for (model, item) in &self.by_model {
+            if is_deepseek_usage_model(model) {
+                bucket.add_bucket(item);
+            }
+        }
+        bucket
+    }
+
+    pub fn deepseek_current_month_usage(&self) -> UsageBucket {
+        let (day, _) = shanghai_strings(now_unix_secs());
+        let month = day.get(0..7).unwrap_or("");
+        let mut bucket = UsageBucket::default();
+        for (model, months) in &self.by_model_month {
+            if !is_deepseek_usage_model(model) {
+                continue;
+            }
+            if let Some(item) = months.get(month) {
+                bucket.add_bucket(item);
+            }
+        }
+        bucket
+    }
+
     pub fn current_month_cost(&self) -> f64 {
         let (day, _) = shanghai_strings(now_unix_secs());
         let month = day.get(0..7).unwrap_or("");
@@ -448,6 +544,11 @@ impl UsageStats {
             .map(|bucket| bucket.cost_cny)
             .unwrap_or(0.0)
     }
+}
+
+fn is_deepseek_usage_model(model: &str) -> bool {
+    let key = model.to_lowercase();
+    key.contains("deepseek") || key.contains("v4-flash") || key.contains("v4-pro")
 }
 
 fn is_paid_usage(model: &str, cost_cny: f64) -> bool {
@@ -534,6 +635,7 @@ pub fn load_stats<P: AsRef<Path>>(path: P) -> UsageStats {
     let mut stats: UsageStats = serde_json::from_str(&data).unwrap_or_default();
     stats.backfill_default_source("default-nanobot");
     stats.rebuild_billing_if_empty();
+    stats.rebuild_model_month_from_recent_if_empty();
     stats
 }
 
@@ -645,8 +747,20 @@ fn first_u64(root: Option<&Value>, paths: &[&[&str]]) -> u64 {
     0
 }
 
+fn default_request_id() -> String {
+    "unknown-request".to_string()
+}
+
 fn default_source() -> String {
     "unknown-source".to_string()
+}
+
+fn default_route_profile() -> String {
+    "default".to_string()
+}
+
+fn default_route_stage() -> String {
+    "primary".to_string()
 }
 
 fn normalize_key(value: String, fallback: &str) -> String {
@@ -711,6 +825,7 @@ mod tests {
     fn record_splits_paid_and_free_usage() {
         let mut stats = UsageStats::default();
         stats.record(RequestLog::new(
+            "test-request-1".to_string(),
             "default-nanobot".to_string(),
             None,
             "DeepSeek".to_string(),
@@ -718,12 +833,16 @@ mod tests {
             "deepseek-v4-flash".to_string(),
             "default".to_string(),
             "test".to_string(),
+            "default".to_string(),
+            "primary".to_string(),
             200,
             100,
             usage(1_000, 100, 200),
             None,
+            None,
         ));
         stats.record(RequestLog::new(
+            "test-request-2".to_string(),
             "default-nanobot".to_string(),
             None,
             "LongCat".to_string(),
@@ -731,9 +850,12 @@ mod tests {
             "LongCat-Flash-Chat".to_string(),
             "emergency".to_string(),
             "test".to_string(),
+            "default".to_string(),
+            "primary".to_string(),
             200,
             100,
             usage(2_000, 0, 100),
+            None,
             None,
         ));
 

@@ -133,6 +133,75 @@ def _guess_send_file_type(filename: str) -> int:
 
 def _strip_silent_marker(text: str) -> str:
     return qq_signatures.strip_silent_marker(text)
+
+
+_GENERATED_IMAGE_READY_TEXT = "\u56fe\u7247\u751f\u6210\u597d\u4e86\u3002"
+_GEMINI_IMAGE_URL_HOSTS = {"150.158.121.88", "127.0.0.1", "localhost", "172.17.0.1"}
+_GEMINI_IMAGE_MARKDOWN_RE = re.compile(
+    r"!\[[^\]]*\]\((?P<url>https?://[^\s)]+/gemini-images/[^\s)]+)\)",
+    re.IGNORECASE,
+)
+_GEMINI_IMAGE_LINK_RE = re.compile(
+    r"\[(?:Open image)\]\((?P<url>https?://[^\s)]+/gemini-images/[^\s)]+)\)",
+    re.IGNORECASE,
+)
+
+
+def _is_gemini_image_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url.strip().strip("<>"))
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return (
+        parsed.scheme in {"http", "https"}
+        and host in _GEMINI_IMAGE_URL_HOSTS
+        and parsed.path.startswith("/gemini-images/")
+        and _is_image_name(parsed.path)
+    )
+
+
+def _gemini_image_fetch_url(url: str) -> tuple[str, bool]:
+    """Rewrite our public Gemini image URLs to the host-only gateway from containers."""
+    if not _is_gemini_image_url(url):
+        return url, False
+    parsed = urlparse(url.strip().strip("<>"))
+    return parsed._replace(scheme="http", netloc="172.17.0.1:8093").geturl(), True
+
+
+def _extract_generated_image_media(content: str) -> tuple[str, list[str]]:
+    """Turn Gemini image Markdown into QQ media refs and remove brittle public links."""
+    urls: list[str] = []
+
+    def add_url(url: str) -> None:
+        clean = url.strip().strip("<>")
+        if _is_gemini_image_url(clean) and clean not in urls:
+            urls.append(clean)
+
+    def remove_markdown(match: re.Match[str]) -> str:
+        add_url(match.group("url"))
+        return "\n"
+
+    text = _GEMINI_IMAGE_MARKDOWN_RE.sub(remove_markdown, content or "")
+    text = _GEMINI_IMAGE_LINK_RE.sub(remove_markdown, text)
+
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if _is_gemini_image_url(line):
+            add_url(line)
+            continue
+        lines.append(raw_line)
+
+    cleaned = "\n".join(lines).strip()
+    if urls:
+        cleaned = re.sub(r"(?i)^image generated\.\s*", lambda _: _GENERATED_IMAGE_READY_TEXT, cleaned).strip()
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        if not cleaned:
+            cleaned = _GENERATED_IMAGE_READY_TEXT
+    return cleaned, urls
+
+
 def _make_bot_class(channel: QQChannel) -> type[botpy.Client]:
     """Create a botpy Client subclass bound to the given channel."""
     intents = botpy.Intents(public_messages=True, direct_message=True)
@@ -239,6 +308,7 @@ class QQChannel(BaseChannel):
         self._msg_seq: int = 1  # used to avoid QQ API dedup
         self._chat_type_cache: dict[str, str] = {}
         self._stream_states: dict[str, dict[str, Any]] = {}
+        self._sent_generated_image_urls: deque[str] = deque(maxlen=100)
 
         self._media_root: Path = self._init_media_root()
 
@@ -405,7 +475,14 @@ class QQChannel(BaseChannel):
         trace_id = str(msg.metadata.get("_trace_id") or msg.metadata.get("_turn_id") or "")
         queue_wait_ms = _elapsed_perf_ms(msg.metadata.get("_send_queued_perf"), send_started)
         status = "ok"
-        mode = "media_only" if msg.media else "empty"
+        content = msg.content or ""
+        auto_media: list[str] = []
+        if content.strip():
+            content, auto_media = _extract_generated_image_media(content)
+        auto_media = [url for url in auto_media if url not in self._sent_generated_image_urls]
+        media_refs = [*(msg.media or []), *auto_media]
+
+        mode = "media_only" if media_refs else "empty"
         reason = ""
         media_sent = 0
         chunks_sent = 0
@@ -422,7 +499,7 @@ class QQChannel(BaseChannel):
             is_group = chat_type == "group"
 
             # 1) Send media
-            for media_ref in msg.media or []:
+            for media_ref in media_refs:
                 ok = await self._send_media(
                     chat_id=msg.chat_id,
                     media_ref=media_ref,
@@ -431,6 +508,8 @@ class QQChannel(BaseChannel):
                 )
                 if ok:
                     media_sent += 1
+                    if media_ref in auto_media:
+                        self._sent_generated_image_urls.append(media_ref)
                     continue
                 filename = (
                     os.path.basename(urlparse(media_ref).path)
@@ -446,9 +525,9 @@ class QQChannel(BaseChannel):
                 chunks_sent += 1
 
             # 2) Send text (chunked to avoid QQ-side truncation on long payloads)
-            if msg.content and msg.content.strip():
+            if content and content.strip():
                 prepared = await qq_signed_delivery.prepare_outbound_content(
-                    msg.content,
+                    content,
                     session=self._http,
                     run_wechat_signed=self._run_wechat_signed,
                     run_yage_signed=self._run_yage_signed,
@@ -698,6 +777,43 @@ class QQChannel(BaseChannel):
         delta: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
+        content, auto_media = _extract_generated_image_media(delta or "")
+        if auto_media:
+            auto_media = [url for url in auto_media if url not in self._sent_generated_image_urls]
+            if not auto_media:
+                return
+            msg_id = (metadata or {}).get("message_id")
+            is_group = self._chat_type_cache.get(chat_id, "c2c") == "group"
+            for media_ref in auto_media:
+                ok = await self._send_media(
+                    chat_id=chat_id,
+                    media_ref=media_ref,
+                    msg_id=msg_id,
+                    is_group=is_group,
+                )
+                if ok:
+                    self._sent_generated_image_urls.append(media_ref)
+                    continue
+                filename = (
+                    os.path.basename(urlparse(media_ref).path)
+                    or os.path.basename(media_ref)
+                    or "file"
+                )
+                await self._send_text_only(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=msg_id,
+                    content=f"[Attachment send failed: {filename}]",
+                )
+            if content.strip():
+                await self._send_text_only(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=msg_id,
+                    content=content,
+                )
+            return
+
         await qq_stream_runtime.send_delta(
             config=self.config,
             stream_states=self._stream_states,
@@ -893,16 +1009,19 @@ class QQChannel(BaseChannel):
                 logger.warning("QQ outbound media read error ref={} err={}", media_ref, e)
                 return None, None
 
-        # Remote URL
-        ok, err = validate_url_target(media_ref)
-        if not ok:
-            logger.warning("QQ outbound media URL validation failed url={} err={}", media_ref, err)
-            return None, None
+        # Remote URL. Trusted generated-image links are served by our local 8093 gateway;
+        # rewrite them inside the container so QQ receives an uploaded image, not a dead link.
+        fetch_ref, trusted_local = _gemini_image_fetch_url(media_ref)
+        if not trusted_local:
+            ok, err = validate_url_target(fetch_ref)
+            if not ok:
+                logger.warning("QQ outbound media URL validation failed url={} err={}", media_ref, err)
+                return None, None
 
         if not self._http:
             self._http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120))
         try:
-            async with self._http.get(media_ref, allow_redirects=True) as resp:
+            async with self._http.get(fetch_ref, allow_redirects=True) as resp:
                 if resp.status >= 400:
                     logger.warning(
                         "QQ outbound media download failed status={} url={}",

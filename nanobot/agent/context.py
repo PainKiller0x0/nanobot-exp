@@ -140,6 +140,8 @@ class ContextBuilder:
             f"- {channel_hint}\n"
             "- Prefer Chinese when the user writes Chinese.\n"
             "- Be relaxed but not verbose; match the user's casual tone.\n"
+            "- Treat the latest user message as authoritative. Do not drag in older topics "
+            "unless the user explicitly asks about them.\n"
             "- Do not claim you checked live data, changed files, or used tools in this lightweight turn.\n"
             "- If the message actually needs external data, code changes, scheduling, files, or logs, "
             "say briefly that it needs the full task path instead of guessing."
@@ -353,7 +355,7 @@ class ContextBuilder:
         max_width = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_OCR_MAX_WIDTH", cls._CONTEXT_IMAGE_OCR_MAX_WIDTH)
         tile_height = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_OCR_TILE_HEIGHT", cls._CONTEXT_IMAGE_OCR_TILE_HEIGHT)
         max_chars = cls._image_env_int("NANOBOT_CONTEXT_IMAGE_OCR_MAX_CHARS", cls._CONTEXT_IMAGE_OCR_MAX_CHARS)
-        lang = os.environ.get("NANOBOT_CONTEXT_IMAGE_OCR_LANG", "chi_sim+eng")
+        lang = cls._image_ocr_lang()
         started = time.monotonic()
 
         try:
@@ -398,6 +400,10 @@ class ContextBuilder:
             with suppress(OSError):
                 cache_path.write_text(result, encoding="utf-8")
         return result
+
+    @staticmethod
+    def _image_ocr_lang() -> str:
+        return os.environ.get("NANOBOT_CONTEXT_IMAGE_OCR_LANG", "").strip() or "chi_sim+eng"
 
     @staticmethod
     def _run_tesseract(image_path: Path, *, lang: str, timeout: int) -> str:

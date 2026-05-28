@@ -1,7 +1,7 @@
-use crate::config::{save_config, Channel, RouterConfig};
+use crate::config::{save_config, Channel, RouteRule, RouterConfig};
 use crate::stats::{save_stats, RequestLog, TokenUsage, UsageStats};
 use axum::{
-    body::{to_bytes, Body},
+    body::{to_bytes, Body, Bytes},
     extract::State,
     http::{header, HeaderMap, HeaderName, Request, Response, StatusCode},
     response::IntoResponse,
@@ -9,9 +9,11 @@ use axum::{
 use futures_util::{stream, StreamExt};
 use reqwest::{Body as ReqBody, Client, RequestBuilder};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::env;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
@@ -24,6 +26,23 @@ pub struct ProxyState {
     pub config_path: String,
     pub router_path: String,
     pub stats_path: String,
+    pub deepseek_balance_path: String,
+    pub serial_channel_locks: Mutex<HashMap<String, Arc<Semaphore>>>,
+}
+
+#[derive(Debug)]
+struct SerialPermit {
+    permit: Option<OwnedSemaphorePermit>,
+    waited_ms: Option<u64>,
+}
+
+impl SerialPermit {
+    fn none() -> Self {
+        Self {
+            permit: None,
+            waited_ms: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +61,7 @@ struct Attempt {
     role: String,
     group: String,
     reason: String,
+    stage: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +163,104 @@ fn request_source(headers: &HeaderMap, request_json: Option<&Value>) -> String {
     sanitize_source(&source)
 }
 
+fn request_id(headers: &HeaderMap, request_json: Option<&Value>) -> String {
+    let raw = first_non_empty_preserve(&[
+        header_value(headers, "x-obp-request-id"),
+        header_value(headers, "x-request-id"),
+        json_hint_preserve(
+            request_json,
+            &["obp_request_id", "x_obp_request_id", "request_id"],
+        ),
+    ]);
+    sanitize_trace_id(&raw).unwrap_or_else(generated_request_id)
+}
+
+fn generated_request_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_nanos();
+    format!("obp-{nanos:x}")
+}
+
+async fn acquire_serial_permit(
+    state: &Arc<ProxyState>,
+    channel: &Channel,
+) -> Result<SerialPermit, String> {
+    if !requires_serial_channel(channel) {
+        return Ok(SerialPermit::none());
+    }
+    let key = serial_channel_key(channel);
+    let semaphore = {
+        let mut locks = state.serial_channel_locks.lock().await;
+        locks
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(Semaphore::new(1)))
+            .clone()
+    };
+    let wait = serial_wait_timeout();
+    let started = Instant::now();
+    match tokio::time::timeout(wait, semaphore.acquire_owned()).await {
+        Ok(Ok(permit)) => Ok(SerialPermit {
+            permit: Some(permit),
+            waited_ms: Some(elapsed_ms(started)),
+        }),
+        Ok(Err(_)) => Err(format!("serial lock closed for {}", key)),
+        Err(_) => Err(format!(
+            "serial channel busy after {}ms: {}",
+            wait.as_millis(),
+            key
+        )),
+    }
+}
+
+fn requires_serial_channel(channel: &Channel) -> bool {
+    let configured = env::var("OBP_SERIAL_CHANNELS").unwrap_or_default();
+    let haystack = format!(
+        "{} {} {} {}",
+        channel.name, channel.group, channel.base, channel.models
+    )
+    .to_lowercase();
+    configured
+        .split(',')
+        .map(|item| item.trim().to_lowercase())
+        .filter(|item| !item.is_empty())
+        .any(|needle| needle == "*" || haystack.contains(&needle))
+}
+
+fn serial_channel_key(channel: &Channel) -> String {
+    if let Some(id) = channel.id {
+        return format!("channel:{}", id);
+    }
+    format!("{}|{}", channel.name.trim(), channel.base.trim())
+}
+
+fn serial_wait_timeout() -> Duration {
+    let ms = env::var("OBP_SERIAL_CHANNEL_WAIT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(45_000);
+    Duration::from_millis(ms.max(1))
+}
+
+fn append_serial_wait(reason: &str, waited_ms: Option<u64>) -> String {
+    match waited_ms {
+        Some(ms) if ms > 0 => format!("{}; waited {}ms for serial channel", reason, ms),
+        Some(_) => format!("{}; serial channel", reason),
+        None => reason.to_string(),
+    }
+}
+
+fn sanitize_trace_id(value: &str) -> Option<String> {
+    let cleaned: String = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
+        .take(96)
+        .collect();
+    let trimmed = cleaned.trim_matches('-').trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 fn sanitize_source(source: &str) -> String {
     let cleaned: String = source
         .chars()
@@ -197,7 +315,7 @@ const LIGHTWEIGHT_HINTS: &[&str] = &[
     "fast_chat",
 ];
 
-const FREE_LONGCAT_TEXT_PATTERNS: &[&str] = &[
+const FREE_LONGCAT_LATEST_TEXT_PATTERNS: &[&str] = &[
     "heartbeat.md",
     "heartbeat agent",
     "heartbeat tool",
@@ -205,9 +323,19 @@ const FREE_LONGCAT_TEXT_PATTERNS: &[&str] = &[
     "\"name\": \"heartbeat\"",
 ];
 
+const FREE_LONGCAT_TASK_TEXT_PATTERNS: &[&str] = &[
+    "extract key facts from this conversation",
+    "only output items matching these categories",
+    "output as concise bullet points",
+];
+
 const CHANNEL_COOLDOWN_SECS: u64 = 120;
 
-fn free_longcat_trigger(hints: &RouteHints, routing_text: &str) -> Option<String> {
+fn free_longcat_trigger(
+    hints: &RouteHints,
+    latest_routing_text: &str,
+    task_routing_text: &str,
+) -> Option<String> {
     for (label, value) in [
         ("purpose", hints.purpose.as_str()),
         ("intent", hints.intent.as_str()),
@@ -219,9 +347,15 @@ fn free_longcat_trigger(hints: &RouteHints, routing_text: &str) -> Option<String
             return Some(format!("{} hint matched: {}", label, value));
         }
     }
-    FREE_LONGCAT_TEXT_PATTERNS
+    if let Some(pattern) = FREE_LONGCAT_LATEST_TEXT_PATTERNS
         .iter()
-        .find(|pattern| routing_text.contains(**pattern))
+        .find(|pattern| latest_routing_text.contains(**pattern))
+    {
+        return Some((*pattern).to_string());
+    }
+    FREE_LONGCAT_TASK_TEXT_PATTERNS
+        .iter()
+        .find(|pattern| task_routing_text.contains(**pattern))
         .map(|pattern| (*pattern).to_string())
 }
 
@@ -263,6 +397,130 @@ const PRO_TEXT_PATTERNS: &[&str] = &[
     "根因",
     "排障",
 ];
+fn request_wants_image_generation(request_json: Option<&Value>) -> bool {
+    let Some(value) = request_json else {
+        return false;
+    };
+    let latest = latest_user_text(value);
+    explicit_image_generation_prompt(&latest)
+}
+
+fn header_truthy(headers: &HeaderMap, name: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn latest_user_text(value: &Value) -> String {
+    value
+        .get("messages")
+        .and_then(Value::as_array)
+        .and_then(|messages| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| {
+                    message
+                        .get("role")
+                        .and_then(Value::as_str)
+                        .map(|role| role.eq_ignore_ascii_case("user"))
+                        .unwrap_or(false)
+                })
+                .map(message_text)
+        })
+        .unwrap_or_default()
+}
+
+fn message_text(message: &Value) -> String {
+    content_text(message.get("content").unwrap_or(&Value::Null))
+}
+
+fn content_text(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.get("input_text").and_then(Value::as_str))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn explicit_image_generation_prompt(prompt: &str) -> bool {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    let negative = [
+        "don't generate",
+        "do not generate",
+        "no image",
+        "not image",
+        "\u{4e0d}\u{8981}\u{753b}",
+        "\u{4e0d}\u{7528}\u{753b}",
+        "\u{522b}\u{753b}",
+        "\u{4e0d}\u{8981}\u{751f}\u{6210}",
+        "\u{4e0d}\u{7528}\u{751f}\u{6210}",
+        "\u{522b}\u{751f}\u{6210}",
+    ];
+    if negative.iter().any(|needle| lower.contains(needle)) {
+        return false;
+    }
+    let english = [
+        "generate an image",
+        "generate image",
+        "create an image",
+        "create image",
+        "draw an image",
+        "draw image",
+        "draw me a",
+        "make an image",
+        "make image",
+    ];
+    if english.iter().any(|needle| lower.contains(needle)) {
+        return true;
+    }
+    let chinese = [
+        "\u{7ed9}\u{6211}\u{753b}\u{4e00}\u{5f20}",
+        "\u{5e2e}\u{6211}\u{753b}\u{4e00}\u{5f20}",
+        "\u{8bf7}\u{753b}\u{4e00}\u{5f20}",
+        "\u{753b}\u{4e00}\u{5f20}",
+        "\u{7ed9}\u{6211}\u{751f}\u{6210}\u{4e00}\u{5f20}",
+        "\u{5e2e}\u{6211}\u{751f}\u{6210}\u{4e00}\u{5f20}",
+        "\u{751f}\u{6210}\u{4e00}\u{5f20}\u{56fe}",
+        "\u{751f}\u{6210}\u{4e00}\u{5f20}\u{56fe}\u{7247}",
+        "\u{751f}\u{6210}\u{56fe}\u{7247}",
+        "\u{751f}\u{6210}\u{56fe}\u{50cf}",
+        "\u{5e2e}\u{6211}\u{751f}\u{56fe}",
+        "\u{7ed9}\u{6211}\u{751f}\u{56fe}",
+        "\u{8bf7}\u{751f}\u{56fe}",
+        "\u{751f}\u{4e00}\u{5f20}\u{56fe}",
+        "\u{505a}\u{4e00}\u{5f20}\u{56fe}",
+        "\u{5236}\u{4f5c}\u{4e00}\u{5f20}\u{56fe}",
+    ];
+    chinese.iter().any(|needle| trimmed.contains(needle))
+}
+
+fn image_generation_upstream_timeout() -> Duration {
+    let ms = env::var("OBP_IMAGE_GENERATION_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(180_000);
+    Duration::from_millis(ms.max(30_000))
+}
 
 pub async fn handle_openai_proxy(
     State(state): State<Arc<ProxyState>>,
@@ -310,8 +568,12 @@ async fn handle_proxy(
         .unwrap_or(false);
     let route_hints = RouteHints::from_request(&parts.headers, request_json.as_ref());
     let source = request_source(&parts.headers, request_json.as_ref());
+    let request_id = request_id(&parts.headers, request_json.as_ref());
+    let image_generation_request = request_wants_image_generation(request_json.as_ref())
+        || header_truthy(&parts.headers, "x-obp-image-generation");
 
     let router = state.router.lock().await.clone().normalized();
+    let route_profile = router.profile_name_for_source(&source);
     let effective_router = router.effective_for_source(&source);
     if !router.external_enabled {
         return error_response(StatusCode::FORBIDDEN, "external_access_disabled");
@@ -334,8 +596,23 @@ async fn handle_proxy(
         request_json.as_ref(),
         &requested_model,
         &route_hints,
+        &source,
     );
-    let attempts = build_attempts(&state, &channels, &effective_router, &decision, protocol).await;
+    let decision = if image_generation_request {
+        decision
+    } else {
+        apply_gemini_health_route(&effective_router, &stats, decision)
+    };
+    let free_task_timeout = free_task_timeout(&decision);
+    let attempts = build_attempts(
+        &state,
+        &channels,
+        &effective_router,
+        &decision,
+        protocol,
+        image_generation_request,
+    )
+    .await;
     if attempts.is_empty() {
         record_failure(
             &state,
@@ -347,6 +624,7 @@ async fn handle_proxy(
             StatusCode::NOT_FOUND.as_u16(),
             started.elapsed(),
             &source,
+            &request_id,
         )
         .await;
         return (StatusCode::NOT_FOUND, "No active channels available").into_response();
@@ -361,6 +639,28 @@ async fn handle_proxy(
         if stream && protocol != upstream_protocol {
             continue;
         }
+        let serial_permit = match acquire_serial_permit(&state, &attempt.channel).await {
+            Ok(permit) => permit,
+            Err(reason) => {
+                record_result(
+                    &state,
+                    &attempt.channel,
+                    &decision.requested_model,
+                    &attempt.actual_model,
+                    &attempt.role,
+                    &format!("{}; {}", attempt.reason, reason),
+                    StatusCode::GATEWAY_TIMEOUT.as_u16(),
+                    started.elapsed(),
+                    TokenUsage::default(),
+                    &source,
+                    &request_id,
+                    &attempt.stage,
+                )
+                .await;
+                continue;
+            }
+        };
+        let attempt_reason = append_serial_wait(&attempt.reason, serial_permit.waited_ms);
         let target_url = upstream_protocol.target_url(&attempt.channel.base);
         let attempt_body = rewrite_body_for_upstream(
             &body_bytes,
@@ -378,14 +678,48 @@ async fn handle_proxy(
                 && name != "authorization"
                 && name != "content-length"
                 && !name.as_str().eq_ignore_ascii_case("x-api-key")
-                && !name.as_str().to_ascii_lowercase().starts_with("x-obp-")
+                && (!name.as_str().to_ascii_lowercase().starts_with("x-obp-")
+                    || name.as_str().eq_ignore_ascii_case("x-obp-request-id"))
             {
                 target_req = target_req.header(name, value);
             }
         }
         target_req = upstream_protocol.apply_channel_auth(target_req, &attempt.channel);
+        if image_generation_request {
+            target_req = target_req.timeout(image_generation_upstream_timeout());
+        }
 
-        let response = match target_req.send().await {
+        let send_result = if let Some(timeout) = free_task_timeout {
+            match tokio::time::timeout(timeout, target_req.send()).await {
+                Ok(result) => result,
+                Err(_) => {
+                    record_result(
+                        &state,
+                        &attempt.channel,
+                        &decision.requested_model,
+                        &attempt.actual_model,
+                        &attempt.role,
+                        &format!(
+                            "{}; free task upstream timeout after {}ms",
+                            attempt.reason,
+                            timeout.as_millis()
+                        ),
+                        StatusCode::GATEWAY_TIMEOUT.as_u16(),
+                        started.elapsed(),
+                        TokenUsage::default(),
+                        &source,
+                        &request_id,
+                        &attempt.stage,
+                    )
+                    .await;
+                    continue;
+                }
+            }
+        } else {
+            target_req.send().await
+        };
+
+        let response = match send_result {
             Ok(res) => res,
             Err(e) => {
                 record_result(
@@ -399,6 +733,8 @@ async fn handle_proxy(
                     started.elapsed(),
                     TokenUsage::default(),
                     &source,
+                    &request_id,
+                    &attempt.stage,
                 )
                 .await;
                 continue;
@@ -411,7 +747,7 @@ async fn handle_proxy(
         let retryable = retry_statuses.contains(&status_u16);
 
         if stream {
-            if retryable && attempt_idx + 1 < attempts.len() {
+            if retryable && !image_generation_request && attempt_idx + 1 < attempts.len() {
                 record_result(
                     &state,
                     &attempt.channel,
@@ -423,33 +759,126 @@ async fn handle_proxy(
                     started.elapsed(),
                     TokenUsage::default(),
                     &source,
+                    &request_id,
+                    &attempt.stage,
                 )
                 .await;
                 continue;
             }
             let headers = response.headers().clone();
             let mut upstream_stream = response.bytes_stream();
-            let first_chunk = upstream_stream.next().await;
-            let first_chunk_ms = first_chunk
-                .as_ref()
-                .map(|_| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+            let probe = probe_stream_until_output(
+                &mut upstream_stream,
+                started,
+                first_text_timeout_for_attempt(&attempt),
+            )
+            .await;
+            if let Some(error) = probe.error {
+                record_result_with_first_chunk(
+                    &state,
+                    &attempt.channel,
+                    &decision.requested_model,
+                    &attempt.actual_model,
+                    &attempt.role,
+                    &format!("{}; stream probe error: {}", attempt.reason, error),
+                    StatusCode::BAD_GATEWAY.as_u16(),
+                    started.elapsed(),
+                    TokenUsage::default(),
+                    &source,
+                    &request_id,
+                    &attempt.stage,
+                    probe.first_chunk_ms,
+                    probe.first_text_ms,
+                )
+                .await;
+                continue;
+            }
+            if probe.timed_out && !image_generation_request && attempt_idx + 1 < attempts.len() {
+                record_result_with_first_chunk(
+                    &state,
+                    &attempt.channel,
+                    &decision.requested_model,
+                    &attempt.actual_model,
+                    &attempt.role,
+                    &format!(
+                        "{}; first output timed out before client flush",
+                        attempt.reason
+                    ),
+                    StatusCode::GATEWAY_TIMEOUT.as_u16(),
+                    started.elapsed(),
+                    TokenUsage::default(),
+                    &source,
+                    &request_id,
+                    &attempt.stage,
+                    probe.first_chunk_ms,
+                    probe.first_text_ms,
+                )
+                .await;
+                continue;
+            }
+            if !image_generation_request
+                && is_gemini_attempt(&attempt)
+                && gemini_stale_failure_text(&probe.text_sample)
+                && attempt_idx + 1 < attempts.len()
+            {
+                record_result_with_first_chunk(
+                    &state,
+                    &attempt.channel,
+                    &decision.requested_model,
+                    &attempt.actual_model,
+                    &attempt.role,
+                    &format!(
+                        "{}; stale Gemini failure leaked into normal chat",
+                        attempt.reason
+                    ),
+                    StatusCode::BAD_GATEWAY.as_u16(),
+                    started.elapsed(),
+                    TokenUsage::default(),
+                    &source,
+                    &request_id,
+                    &attempt.stage,
+                    probe.first_chunk_ms,
+                    probe.first_text_ms,
+                )
+                .await;
+                continue;
+            }
             record_result_with_first_chunk(
                 &state,
                 &attempt.channel,
                 &decision.requested_model,
                 &attempt.actual_model,
                 &attempt.role,
-                &attempt.reason,
+                &attempt_reason,
                 status_u16,
                 started.elapsed(),
                 TokenUsage::default(),
                 &source,
-                first_chunk_ms,
+                &request_id,
+                &attempt.stage,
+                probe.first_chunk_ms,
+                probe.first_text_ms,
             )
             .await;
             let mut res_builder = response_with_headers(status, &headers);
-            res_builder = route_headers(res_builder, attempt, &decision, &source, first_chunk_ms);
-            let res_stream = stream::iter(first_chunk.into_iter()).chain(upstream_stream);
+            res_builder = route_headers(
+                res_builder,
+                attempt,
+                &decision,
+                &source,
+                &request_id,
+                &route_profile,
+                probe.first_chunk_ms,
+                probe.first_text_ms,
+            );
+            let serial_guard = serial_permit.permit;
+            let buffered = probe.buffered.into_iter().map(Ok::<Bytes, reqwest::Error>);
+            let res_stream = stream::iter(buffered)
+                .chain(upstream_stream)
+                .map(move |item| {
+                    let _keep_serial_guard = &serial_guard;
+                    item
+                });
             return res_builder
                 .body(Body::from_stream(res_stream))
                 .unwrap_or_else(|_| {
@@ -472,6 +901,8 @@ async fn handle_proxy(
                     started.elapsed(),
                     TokenUsage::default(),
                     &source,
+                    &request_id,
+                    &attempt.stage,
                 )
                 .await;
                 continue;
@@ -479,6 +910,32 @@ async fn handle_proxy(
         };
         let response_bytes =
             rewrite_response_for_client(&response_bytes, status, protocol, upstream_protocol);
+        if status.is_success()
+            && !image_generation_request
+            && is_gemini_attempt(&attempt)
+            && gemini_stale_failure_text(&String::from_utf8_lossy(&response_bytes))
+            && attempt_idx + 1 < attempts.len()
+        {
+            record_result(
+                &state,
+                &attempt.channel,
+                &decision.requested_model,
+                &attempt.actual_model,
+                &attempt.role,
+                &format!(
+                    "{}; stale Gemini failure leaked into normal chat",
+                    attempt.reason
+                ),
+                StatusCode::BAD_GATEWAY.as_u16(),
+                started.elapsed(),
+                TokenUsage::default(),
+                &source,
+                &request_id,
+                &attempt.stage,
+            )
+            .await;
+            continue;
+        }
         let usage = TokenUsage::from_response_bytes(&response_bytes);
         record_result(
             &state,
@@ -486,11 +943,13 @@ async fn handle_proxy(
             &decision.requested_model,
             &attempt.actual_model,
             &attempt.role,
-            &attempt.reason,
+            &attempt_reason,
             status_u16,
             started.elapsed(),
             usage,
             &source,
+            &request_id,
+            &attempt.stage,
         )
         .await;
 
@@ -501,14 +960,23 @@ async fn handle_proxy(
                 .status(status)
                 .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         };
-        res_builder = route_headers(res_builder, attempt, &decision, &source, None);
+        res_builder = route_headers(
+            res_builder,
+            attempt,
+            &decision,
+            &source,
+            &request_id,
+            &route_profile,
+            None,
+            None,
+        );
         let response = res_builder
             .body(Body::from(response_bytes.clone()))
             .unwrap_or_else(|_| {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal Error").into_response()
             });
 
-        if retryable && attempt_idx + 1 < attempts.len() {
+        if retryable && !image_generation_request && attempt_idx + 1 < attempts.len() {
             last_error = Some(response);
             continue;
         }
@@ -574,12 +1042,267 @@ fn model_pattern_matches(pattern: &str, model: &str) -> bool {
     true
 }
 
+#[derive(Debug, Default)]
+struct StreamProbe {
+    buffered: Vec<Bytes>,
+    first_chunk_ms: Option<u64>,
+    first_text_ms: Option<u64>,
+    text_sample: String,
+    timed_out: bool,
+    error: Option<String>,
+}
+
+async fn probe_stream_until_output<S>(
+    upstream: &mut S,
+    started: Instant,
+    timeout: Duration,
+) -> StreamProbe
+where
+    S: futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
+{
+    let mut probe = StreamProbe::default();
+    let probe_started = Instant::now();
+    let mut sse_buffer = String::new();
+
+    loop {
+        if probe.first_text_ms.is_some() {
+            break;
+        }
+        let Some(remaining) = timeout.checked_sub(probe_started.elapsed()) else {
+            probe.timed_out = true;
+            break;
+        };
+        if remaining.is_zero() {
+            probe.timed_out = true;
+            break;
+        }
+        match tokio::time::timeout(remaining, upstream.next()).await {
+            Ok(Some(Ok(chunk))) => {
+                if probe.first_chunk_ms.is_none() {
+                    probe.first_chunk_ms = Some(elapsed_ms(started));
+                }
+                let output_text = sse_chunk_output_text(&mut sse_buffer, &chunk);
+                if !output_text.is_empty() {
+                    if probe.first_text_ms.is_none() {
+                        probe.first_text_ms = Some(elapsed_ms(started));
+                    }
+                    probe.text_sample.push_str(&output_text);
+                }
+                probe.buffered.push(chunk);
+            }
+            Ok(Some(Err(err))) => {
+                probe.error = Some(err.to_string());
+                break;
+            }
+            Ok(None) => break,
+            Err(_) => {
+                probe.timed_out = true;
+                break;
+            }
+        }
+    }
+    probe
+}
+
+fn first_text_timeout_for_attempt(attempt: &Attempt) -> Duration {
+    if is_gemini_attempt(attempt) {
+        let ms = env::var("OBP_GEMINI_FIRST_TEXT_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(4_500);
+        return Duration::from_millis(ms.max(1));
+    }
+    first_text_timeout()
+}
+
+fn first_text_timeout() -> Duration {
+    let ms = env::var("OBP_FIRST_TEXT_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(9_000);
+    Duration::from_millis(ms.max(1))
+}
+
+fn is_gemini_attempt(attempt: &Attempt) -> bool {
+    attempt.group.eq_ignore_ascii_case("gemini")
+        || attempt.channel.group_key() == "gemini"
+        || attempt.channel.cost_model.to_lowercase().contains("gemini")
+        || attempt.actual_model.to_lowercase().contains("gemini")
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn sse_chunk_output_text(buffer: &mut String, chunk: &[u8]) -> String {
+    buffer.push_str(&String::from_utf8_lossy(chunk));
+    let mut output = String::new();
+    while let Some(pos) = buffer.find('\n') {
+        let line = buffer[..pos].trim().to_string();
+        buffer.drain(..=pos);
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        output.push_str(&sse_data_output_text(data.trim()));
+    }
+    output
+}
+
+fn sse_data_output_text(data: &str) -> String {
+    if data.is_empty() || data == "[DONE]" {
+        return String::new();
+    }
+    let Ok(value) = serde_json::from_str::<Value>(data) else {
+        if data.contains("\"content\"") || data.contains("\"tool_calls\"") {
+            return data.to_string();
+        }
+        return String::new();
+    };
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .map(|choices| choices.iter().map(choice_output_text).collect::<String>())
+        .unwrap_or_default()
+}
+
+fn choice_output_text(choice: &Value) -> String {
+    let delta = choice.get("delta").unwrap_or(&Value::Null);
+    let mut output = String::new();
+    if let Some(text) = delta.get("content").and_then(Value::as_str) {
+        output.push_str(text);
+    }
+    if delta
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+    {
+        output.push_str("[tool_calls]");
+    }
+    if let Some(text) = choice
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+    {
+        output.push_str(text);
+    }
+    output
+}
+
+fn gemini_stale_failure_text(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let api_error =
+        lower.contains("gemini request failed:") || lower.contains("gemini api error code:");
+    let chinese_hit = text.contains("\u{53ef}\u{4ee5}\u{641c}\u{7d22}\u{56fe}\u{7247}")
+        && (text.contains("\u{65e0}\u{6cd5}\u{4e3a}\u{60a8}\u{521b}\u{5efa}")
+            || text.contains("\u{5f00}\u{901a}\u{56fe}\u{7247}\u{521b}\u{5efa}"));
+    let english_hit = lower.contains("can search for images")
+        && (lower.contains("can't create") || lower.contains("cannot create"));
+    api_error || chinese_hit || english_hit
+}
+
+fn apply_gemini_health_route(
+    router: &RouterConfig,
+    stats: &UsageStats,
+    decision: RouteDecision,
+) -> RouteDecision {
+    if !gemini_health_routing_enabled()
+        || !decision.group.eq_ignore_ascii_case("gemini")
+        || decision.role != "default"
+        || !decision.desired_model.to_lowercase().contains("gemini")
+    {
+        return decision;
+    }
+
+    let fallback_model = router.backup_model.trim();
+    let fallback_group = group_for_role(router, "backup");
+    if fallback_model.is_empty()
+        || fallback_group != "gemini"
+        || model_eq(fallback_model, &decision.desired_model)
+    {
+        return decision;
+    }
+
+    let Some(summary) = gemini_health_slow_reason(stats, &decision.desired_model) else {
+        return decision;
+    };
+
+    RouteDecision {
+        requested_model: decision.requested_model,
+        desired_model: fallback_model.to_string(),
+        role: "backup".to_string(),
+        group: fallback_group,
+        reason: format!(
+            "{}; gemini rolling health switched to {} ({})",
+            decision.reason, fallback_model, summary
+        ),
+    }
+}
+
+fn gemini_health_routing_enabled() -> bool {
+    env::var("OBP_GEMINI_HEALTH_ROUTING")
+        .map(|value| !matches!(value.trim().to_lowercase().as_str(), "0" | "false" | "off"))
+        .unwrap_or(true)
+}
+
+fn gemini_health_slow_reason(stats: &UsageStats, model: &str) -> Option<String> {
+    let window = env_u64("OBP_GEMINI_HEALTH_WINDOW", 30) as usize;
+    let min_samples = env_u64("OBP_GEMINI_HEALTH_MIN_SAMPLES", 12) as usize;
+    let p95_threshold = env_u64("OBP_GEMINI_HEALTH_P95_MS", 8_000);
+    let max_threshold = env_u64("OBP_GEMINI_HEALTH_MAX_MS", 15_000);
+    let mut samples: Vec<u64> = stats
+        .recent
+        .iter()
+        .rev()
+        .filter(|log| (200..400).contains(&log.status))
+        .filter(|log| log.route_profile.eq_ignore_ascii_case("gemini"))
+        .filter(|log| model_eq(&log.model, model))
+        .filter_map(|log| log.first_text_ms)
+        .take(window.max(1))
+        .collect();
+
+    if samples.len() < min_samples.max(1) {
+        return None;
+    }
+    samples.sort_unstable();
+    let p95 = percentile_nearest_rank(&samples, 95);
+    let max = *samples.last().unwrap_or(&0);
+    if p95 >= p95_threshold || max >= max_threshold {
+        Some(format!(
+            "model={} samples={} p95={}ms max={}ms",
+            model,
+            samples.len(),
+            p95,
+            max
+        ))
+    } else {
+        None
+    }
+}
+
+fn percentile_nearest_rank(sorted: &[u64], percentile: u64) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank =
+        ((sorted.len() as u64 * percentile).saturating_add(99) / 100).saturating_sub(1) as usize;
+    sorted[rank.min(sorted.len() - 1)]
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
 fn route_decision(
     router: &RouterConfig,
     stats: &UsageStats,
     request_json: Option<&Value>,
     requested_model: &str,
     hints: &RouteHints,
+    source: &str,
 ) -> RouteDecision {
     if !router.enabled {
         return RouteDecision {
@@ -595,7 +1318,23 @@ fn route_decision(
         .map(extract_routing_text)
         .unwrap_or_default()
         .to_lowercase();
-    if let Some(pattern) = free_longcat_trigger(hints, &free_routing_text) {
+    let free_task_routing_text = request_json
+        .map(extract_free_task_routing_text)
+        .unwrap_or_default()
+        .to_lowercase();
+    if let Some(decision) = route_rule_decision(
+        router,
+        stats,
+        requested_model,
+        hints,
+        source,
+        &free_routing_text,
+        &free_task_routing_text,
+    ) {
+        return decision;
+    }
+    if let Some(pattern) = free_longcat_trigger(hints, &free_routing_text, &free_task_routing_text)
+    {
         let mut decision = RouteDecision {
             requested_model: requested_model.to_string(),
             desired_model: router.emergency_model.clone(),
@@ -738,6 +1477,159 @@ fn route_decision(
     decision
 }
 
+fn route_rule_decision(
+    router: &RouterConfig,
+    stats: &UsageStats,
+    requested_model: &str,
+    hints: &RouteHints,
+    source: &str,
+    latest_routing_text: &str,
+    task_routing_text: &str,
+) -> Option<RouteDecision> {
+    let monthly_cost = stats.current_month_cost();
+    let mut rules = router.route_rules.clone();
+    rules.sort_by_key(|rule| rule.priority);
+    for rule in rules.iter().filter(|rule| rule.enabled) {
+        let Some(hit) = route_rule_hit(
+            rule,
+            requested_model,
+            source,
+            hints,
+            latest_routing_text,
+            task_routing_text,
+            monthly_cost,
+        ) else {
+            continue;
+        };
+        let role = normalize_role(&rule.role);
+        let desired_model = if rule.model.trim().is_empty() {
+            model_for_role(router, &role).to_string()
+        } else {
+            rule.model.trim().to_string()
+        };
+        let group = if rule.group.trim().is_empty() {
+            group_for_role(router, &role)
+        } else {
+            rule.group.trim().to_lowercase()
+        };
+        let base_reason = if rule.reason.trim().is_empty() {
+            "route rule matched".to_string()
+        } else {
+            rule.reason.trim().to_string()
+        };
+        let mut decision = RouteDecision {
+            requested_model: requested_model.to_string(),
+            desired_model,
+            role,
+            group,
+            reason: format!("rule {}: {}; {}", rule.name, base_reason, hit),
+        };
+        if router.dry_run {
+            decision.reason = format!(
+                "dry-run: would use {}/{} because {}",
+                decision.role, decision.desired_model, decision.reason
+            );
+            decision.desired_model = requested_model.to_string();
+            decision.role = "any".to_string();
+            decision.group.clear();
+        }
+        return Some(decision);
+    }
+    None
+}
+
+fn route_rule_hit(
+    rule: &RouteRule,
+    requested_model: &str,
+    source: &str,
+    hints: &RouteHints,
+    latest_routing_text: &str,
+    task_routing_text: &str,
+    monthly_cost: f64,
+) -> Option<String> {
+    let mut hits = Vec::new();
+    if !rule.requested_models.is_empty() {
+        let requested = requested_model.trim().to_lowercase();
+        let matched = rule
+            .requested_models
+            .iter()
+            .any(|pattern| model_pattern_matches(pattern, &requested));
+        if !matched {
+            return None;
+        }
+        hits.push(format!("requested_model={}", requested_model));
+    }
+    if !rule.source_patterns.is_empty() {
+        let source_lc = source.trim().to_lowercase();
+        let matched = rule
+            .source_patterns
+            .iter()
+            .any(|pattern| wildcard_or_contains(pattern, &source_lc));
+        if !matched {
+            return None;
+        }
+        hits.push(format!("source={}", source));
+    }
+    if rule.min_monthly_cost_rmb > 0.0 {
+        if monthly_cost < rule.min_monthly_cost_rmb {
+            return None;
+        }
+        hits.push(format!("monthly_cost={:.2}", monthly_cost));
+    }
+    let hint_text = format!("{} {}", hints.purpose, hints.intent).to_lowercase();
+    if let Some(pattern) = first_matching_pattern(&rule.hint_patterns, &hint_text) {
+        hits.push(format!("hint={}", pattern));
+    }
+    if let Some(pattern) = first_matching_pattern(&rule.latest_text_patterns, latest_routing_text) {
+        hits.push(format!("latest_text={}", pattern));
+    }
+    if let Some(pattern) = first_matching_pattern(&rule.task_text_patterns, task_routing_text) {
+        hits.push(format!("task_text={}", pattern));
+    }
+    if let Some(pattern) = first_matching_pattern(&rule.any_text_patterns, latest_routing_text) {
+        hits.push(format!("text={}", pattern));
+    }
+    if hits.is_empty() {
+        None
+    } else {
+        Some(hits.join("; "))
+    }
+}
+
+fn normalize_role(role: &str) -> String {
+    let role = role.trim().to_lowercase();
+    if role.is_empty() {
+        "default".to_string()
+    } else {
+        role
+    }
+}
+
+fn first_matching_pattern<'a>(patterns: &'a [String], text: &str) -> Option<&'a str> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    patterns
+        .iter()
+        .map(|pattern| pattern.trim())
+        .filter(|pattern| !pattern.is_empty())
+        .find(|pattern| wildcard_or_contains(pattern, text))
+}
+
+fn wildcard_or_contains(pattern: &str, text: &str) -> bool {
+    let pattern = pattern.trim().to_lowercase();
+    if pattern.is_empty() {
+        return false;
+    }
+    if pattern == "*" {
+        return true;
+    }
+    if pattern.contains('*') {
+        return model_pattern_matches(&pattern, text);
+    }
+    text.contains(&pattern)
+}
+
 fn explicit_model_route(router: &RouterConfig, requested_model: &str) -> Option<RouteDecision> {
     let requested = requested_model.trim();
     if requested.is_empty() || requested.eq_ignore_ascii_case("unknown") {
@@ -819,17 +1711,27 @@ async fn build_attempts(
     router: &RouterConfig,
     decision: &RouteDecision,
     protocol: ApiProtocol,
+    image_generation_request: bool,
 ) -> Vec<Attempt> {
     let mut specs = Vec::new();
-    add_role_attempts(
-        &mut specs,
-        router,
-        decision.role.clone(),
-        decision.desired_model.clone(),
-        false,
-    );
+    let allow_fallbacks = !free_task_decision(decision) && !image_generation_request;
+    add_decision_attempts(&mut specs, decision, allow_fallbacks);
 
-    for &role in fallback_roles(&decision.role) {
+    if !allow_fallbacks {
+        return attempts_from_specs(state, channels, decision, protocol, specs).await;
+    }
+
+    if decision.group.eq_ignore_ascii_case("gemini") {
+        add_attempt_spec(
+            &mut specs,
+            "emergency".to_string(),
+            "longcat".to_string(),
+            "LongCat-Flash-Chat".to_string(),
+            true,
+        );
+    }
+
+    for &role in fallback_roles(decision) {
         if role == "any" {
             add_attempt_spec(
                 &mut specs,
@@ -848,6 +1750,16 @@ async fn build_attempts(
             );
         }
     }
+    attempts_from_specs(state, channels, decision, protocol, specs).await
+}
+
+async fn attempts_from_specs(
+    state: &Arc<ProxyState>,
+    channels: &[Channel],
+    decision: &RouteDecision,
+    protocol: ApiProtocol,
+    specs: Vec<AttemptSpec>,
+) -> Vec<Attempt> {
     let mut attempts = Vec::new();
     for spec in specs {
         let mut candidates: Vec<Channel> = channels
@@ -892,6 +1804,7 @@ async fn build_attempts(
                 actual_model: actual,
                 role: spec.role.clone(),
                 group: spec.group.clone(),
+                stage: attempt_stage(&spec),
                 reason: if !spec.fallback
                     && spec.role == decision.role
                     && spec.group == decision.group
@@ -914,11 +1827,47 @@ async fn build_attempts(
     attempts
 }
 
-fn fallback_roles(role: &str) -> &'static [&'static str] {
-    match role {
+fn attempt_stage(spec: &AttemptSpec) -> String {
+    if !spec.fallback {
+        return "primary".to_string();
+    }
+    if spec.group.is_empty() {
+        format!("fallback:{}", spec.role)
+    } else {
+        format!("fallback:{}/{}", spec.role, spec.group)
+    }
+}
+
+fn free_task_decision(decision: &RouteDecision) -> bool {
+    decision.reason.contains("free task pattern matched")
+        || decision.reason.contains("free-health-and-memory")
+}
+
+fn free_task_timeout(decision: &RouteDecision) -> Option<Duration> {
+    if !free_task_decision(decision) {
+        return None;
+    }
+    let ms = env::var("OBP_FREE_TASK_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(8_000);
+    Some(Duration::from_millis(ms.max(500)))
+}
+
+fn fallback_roles(decision: &RouteDecision) -> &'static [&'static str] {
+    if decision.group.eq_ignore_ascii_case("gemini") {
+        return match decision.role.as_str() {
+            // Gemini profile must stay inside the free Gemini pool; do not leak to paid DeepSeek.
+            "default" | "pro" => &["emergency", "backup"],
+            "emergency" => &["backup"],
+            "backup" => &["emergency"],
+            _ => &[],
+        };
+    }
+    match decision.role.as_str() {
         // When the monthly hard limit is reached, save the emergency pool for true incidents.
         "backup" => &["emergency", "any"],
-        // Normal traffic should fail over to emergency first because this means the main pool timed out or errored.
+        // Normal non-Gemini traffic keeps the historical fallback order.
         "default" | "pro" => &["emergency", "backup", "any"],
         "emergency" => &["backup", "any"],
         _ => &["any"],
@@ -932,6 +1881,32 @@ fn model_for_role<'a>(router: &'a RouterConfig, role: &str) -> &'a str {
         "backup" => router.backup_model.as_str(),
         "default" => router.default_model.as_str(),
         _ => router.default_model.as_str(),
+    }
+}
+
+fn add_decision_attempts(
+    specs: &mut Vec<AttemptSpec>,
+    decision: &RouteDecision,
+    allow_fallbacks: bool,
+) {
+    add_attempt_spec(
+        specs,
+        decision.role.clone(),
+        decision.group.clone(),
+        decision.desired_model.clone(),
+        false,
+    );
+    if allow_fallbacks
+        && !decision.group.is_empty()
+        && !decision.group.eq_ignore_ascii_case("gemini")
+    {
+        add_attempt_spec(
+            specs,
+            decision.role.clone(),
+            String::new(),
+            decision.desired_model.clone(),
+            true,
+        );
     }
 }
 
@@ -1353,7 +2328,10 @@ fn route_headers(
     attempt: &Attempt,
     decision: &RouteDecision,
     source: &str,
+    request_id: &str,
+    route_profile: &str,
     first_chunk_ms: Option<u64>,
+    first_text_ms: Option<u64>,
 ) -> axum::http::response::Builder {
     let headers = [
         ("x-obp-route", attempt.role.as_str()),
@@ -1362,7 +2340,10 @@ fn route_headers(
         ("x-obp-actual-model", attempt.actual_model.as_str()),
         ("x-obp-channel", attempt.channel.name.as_str()),
         ("x-obp-reason", attempt.reason.as_str()),
+        ("x-obp-fallback-stage", attempt.stage.as_str()),
+        ("x-obp-route-profile", route_profile),
         ("x-obp-source", source),
+        ("x-obp-request-id", request_id),
     ];
     for (name, value) in headers {
         if let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) {
@@ -1371,6 +2352,9 @@ fn route_headers(
     }
     if let Some(first_chunk_ms) = first_chunk_ms {
         builder = builder.header("x-obp-first-chunk-ms", first_chunk_ms.to_string());
+    }
+    if let Some(first_text_ms) = first_text_ms {
+        builder = builder.header("x-obp-first-text-ms", first_text_ms.to_string());
     }
     builder
 }
@@ -1385,6 +2369,7 @@ async fn record_failure(
     status: u16,
     elapsed: Duration,
     source: &str,
+    request_id: &str,
 ) {
     if let Some(ch) = channel {
         record_result(
@@ -1398,9 +2383,21 @@ async fn record_failure(
             elapsed,
             TokenUsage::default(),
             source,
+            request_id,
+            "failure",
         )
         .await;
     }
+}
+
+async fn route_profile_for_source(state: &Arc<ProxyState>, source: &str) -> String {
+    state
+        .router
+        .lock()
+        .await
+        .clone()
+        .normalized()
+        .profile_name_for_source(source)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1415,6 +2412,8 @@ async fn record_result(
     elapsed: Duration,
     usage: TokenUsage,
     source: &str,
+    request_id: &str,
+    route_stage: &str,
 ) {
     record_result_with_first_chunk(
         state,
@@ -1427,6 +2426,9 @@ async fn record_result(
         elapsed,
         usage,
         source,
+        request_id,
+        route_stage,
+        None,
         None,
     )
     .await;
@@ -1444,10 +2446,14 @@ async fn record_result_with_first_chunk(
     elapsed: Duration,
     usage: TokenUsage,
     source: &str,
+    request_id: &str,
+    route_stage: &str,
     first_chunk_ms: Option<u64>,
+    first_text_ms: Option<u64>,
 ) {
     let latency_ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
     let log = RequestLog::new(
+        request_id.to_string(),
         source.to_string(),
         ch.id,
         ch.name.clone(),
@@ -1455,10 +2461,13 @@ async fn record_result_with_first_chunk(
         actual_model.to_string(),
         route.to_string(),
         route_reason.to_string(),
+        route_profile_for_source(state, source).await,
+        route_stage.to_string(),
         status,
         latency_ms,
         usage,
         first_chunk_ms,
+        first_text_ms,
     );
     log_model_route(&log, ch);
 
@@ -1502,39 +2511,50 @@ fn log_model_route(log: &RequestLog, ch: &Channel) {
         tracing::info!(
             target: "obp.model",
             time = %log.time,
+            request_id = %log.request_id,
             source = %log.source,
             channel = %log.channel,
             group = %group,
+            route_profile = %log.route_profile,
+            route_stage = %log.route_stage,
             requested_model = %log.requested_model,
             actual_model = %log.model,
             route = %log.route,
             status = log.status,
             latency_ms = log.latency_ms,
             first_chunk_ms = log.first_chunk_ms.unwrap_or(0),
+            first_text_ms = log.first_text_ms.unwrap_or(0),
             prompt_tokens = log.prompt_tokens,
             cached_tokens = log.cached_tokens,
             completion_tokens = log.completion_tokens,
             cost_cny = log.cost_cny,
             reason = %log.route_reason,
+            trace = %log.route_trace,
             "obp_model_route"
         );
     } else {
         tracing::warn!(
             target: "obp.model",
             time = %log.time,
+            request_id = %log.request_id,
+            source = %log.source,
             channel = %log.channel,
             group = %group,
+            route_profile = %log.route_profile,
+            route_stage = %log.route_stage,
             requested_model = %log.requested_model,
             actual_model = %log.model,
             route = %log.route,
             status = log.status,
             latency_ms = log.latency_ms,
             first_chunk_ms = log.first_chunk_ms.unwrap_or(0),
+            first_text_ms = log.first_text_ms.unwrap_or(0),
             prompt_tokens = log.prompt_tokens,
             cached_tokens = log.cached_tokens,
             completion_tokens = log.completion_tokens,
             cost_cny = log.cost_cny,
             reason = %log.route_reason,
+            trace = %log.route_trace,
             "obp_model_route"
         );
     }
@@ -1558,6 +2578,52 @@ fn first_non_empty(values: &[String]) -> String {
         .find(|value| !value.trim().is_empty())
         .map(|value| value.trim().to_lowercase())
         .unwrap_or_default()
+}
+
+fn first_non_empty_preserve(values: &[String]) -> String {
+    values
+        .iter()
+        .find(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn header_value(headers: &HeaderMap, name: &str) -> String {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn json_hint_preserve(value: Option<&Value>, keys: &[&str]) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+    if let Some(found) = json_direct_hint_preserve(value, keys) {
+        return found;
+    }
+    for container in ["metadata", "extra_body", "obp"] {
+        if let Some(found) = value
+            .get(container)
+            .and_then(|inner| json_direct_hint_preserve(inner, keys))
+        {
+            return found;
+        }
+    }
+    String::new()
+}
+
+fn json_direct_hint_preserve(value: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(text) = value.get(*key).and_then(Value::as_str) {
+            let normalized = text.trim();
+            if !normalized.is_empty() {
+                return Some(normalized.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn header_hint(headers: &HeaderMap, name: &str) -> String {
@@ -1617,6 +2683,28 @@ fn extract_routing_text(value: &Value) -> String {
     extract_text(value)
 }
 
+fn extract_free_task_routing_text(value: &Value) -> String {
+    if let Some(messages) = value.get("messages").and_then(Value::as_array) {
+        let mut parts = Vec::new();
+        if let Some(message) = messages
+            .iter()
+            .rev()
+            .find(|message| message_role_is(message, "system"))
+        {
+            parts.push(message_content_text(message));
+        }
+        if let Some(message) = messages
+            .iter()
+            .rev()
+            .find(|message| message_role_is(message, "user"))
+        {
+            parts.push(message_content_text(message));
+        }
+        return parts.join("\n");
+    }
+    extract_routing_text(value)
+}
+
 fn message_role_is(message: &Value, expected: &str) -> bool {
     message
         .get("role")
@@ -1672,6 +2760,7 @@ mod tests {
             Some(&body),
             "deepseek-v4-flash",
             &RouteHints::default(),
+            "default-nanobot",
         );
 
         assert_eq!(decision.role, "emergency");
@@ -1697,6 +2786,7 @@ mod tests {
             Some(&body),
             "deepseek-v4-flash",
             &RouteHints::default(),
+            "default-nanobot",
         );
 
         assert_eq!(decision.role, "default");
@@ -1721,11 +2811,63 @@ mod tests {
             Some(&body),
             "deepseek-v4-flash",
             &RouteHints::default(),
+            "default-nanobot",
         );
 
         assert_eq!(decision.role, "default");
         assert_eq!(decision.group, "gemini");
         assert_eq!(decision.desired_model, "gemini-flash");
+    }
+
+    #[test]
+    fn gemini_profile_keeps_free_heartbeat_on_longcat() {
+        let mut router = RouterConfig::default();
+        RouteProfile::gemini_stack().apply_to(&mut router);
+        let body = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [{"role": "user", "content": "heartbeat.md"}]
+        });
+        let decision = route_decision(
+            &router,
+            &UsageStats::default(),
+            Some(&body),
+            "deepseek-v4-flash",
+            &RouteHints::default(),
+            "default-nanobot",
+        );
+
+        assert_eq!(decision.role, "emergency");
+        assert_eq!(decision.group, "longcat");
+        assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
+    }
+
+    #[test]
+    fn replay_window_consolidation_routes_to_longcat() {
+        let mut router = RouterConfig::default();
+        RouteProfile::gemini_stack().apply_to(&mut router);
+        let body = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Extract key facts from this conversation. Only output items matching these categories, skip everything else. Output as concise bullet points."
+                },
+                {"role": "user", "content": "[user] Work stress and producer role."}
+            ]
+        });
+        let decision = route_decision(
+            &router,
+            &UsageStats::default(),
+            Some(&body),
+            "deepseek-v4-flash",
+            &RouteHints::default(),
+            "default-nanobot",
+        );
+
+        assert_eq!(decision.role, "emergency");
+        assert_eq!(decision.group, "longcat");
+        assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
+        assert!(decision.reason.contains("extract key facts"));
     }
 
     #[test]
@@ -1749,9 +2891,10 @@ mod tests {
             Some(&body),
             "deepseek-v4-flash",
             &RouteHints::default(),
+            "default-nanobot",
         );
 
-        assert_eq!(decision.desired_model, "gemini-flash");
+        assert_eq!(decision.desired_model, "gemini-3.5-flash");
         assert_eq!(decision.group, "gemini");
     }
 
@@ -1769,6 +2912,7 @@ mod tests {
             Some(&body),
             "deepseek-v4-flash",
             &RouteHints::default(),
+            "default-nanobot",
         );
 
         assert_eq!(decision.desired_model, "deepseek-v4-flash");
@@ -1815,12 +2959,139 @@ mod tests {
             config_path: String::new(),
             router_path: String::new(),
             stats_path: String::new(),
+            deepseek_balance_path: String::new(),
+            serial_channel_locks: Mutex::new(Default::default()),
         });
-        let attempts =
-            build_attempts(&state, &channels, &router, &decision, ApiProtocol::OpenAI).await;
+        let attempts = build_attempts(
+            &state,
+            &channels,
+            &router,
+            &decision,
+            ApiProtocol::OpenAI,
+            false,
+        )
+        .await;
 
         assert_eq!(attempts.first().unwrap().channel.name, "Gemini");
         assert_eq!(attempts.first().unwrap().actual_model, "gemini-3.5-flash");
+    }
+
+    #[tokio::test]
+    async fn route_rule_group_is_preserved_before_profile_fallback_group() {
+        let mut router = RouterConfig::default();
+        RouteProfile::gemini_stack().apply_to(&mut router);
+        let decision = RouteDecision {
+            requested_model: "deepseek-v4-flash".to_string(),
+            desired_model: "LongCat-Flash-Chat".to_string(),
+            role: "emergency".to_string(),
+            group: "longcat".to_string(),
+            reason: "rule free-health-and-memory".to_string(),
+        };
+        let channels = vec![
+            Channel {
+                name: "LongCat".to_string(),
+                models: "LongCat-Flash-Chat".to_string(),
+                model_mapping: r#"{"deepseek-v4-flash":"LongCat-Flash-Chat"}"#.to_string(),
+                role: "emergency".to_string(),
+                group: "longcat".to_string(),
+                priority: 10,
+                ..Channel::default()
+            },
+            Channel {
+                name: "Gemini".to_string(),
+                models: "deepseek-v4-flash,gemini-3.1-flash-lite".to_string(),
+                model_mapping: r#"{"deepseek-v4-flash":"gemini-3.1-flash-lite"}"#.to_string(),
+                role: "emergency".to_string(),
+                group: "gemini".to_string(),
+                priority: 20,
+                ..Channel::default()
+            },
+        ];
+        let state = Arc::new(ProxyState {
+            client: reqwest::Client::new(),
+            channels: Mutex::new(vec![]),
+            router: Mutex::new(router.clone()),
+            stats: Mutex::new(UsageStats::default()),
+            index: Mutex::new(0),
+            config_path: String::new(),
+            router_path: String::new(),
+            stats_path: String::new(),
+            deepseek_balance_path: String::new(),
+            serial_channel_locks: Mutex::new(Default::default()),
+        });
+
+        let attempts = build_attempts(
+            &state,
+            &channels,
+            &router,
+            &decision,
+            ApiProtocol::OpenAI,
+            false,
+        )
+        .await;
+
+        assert_eq!(attempts.first().unwrap().channel.name, "LongCat");
+        assert_eq!(attempts.first().unwrap().group, "longcat");
+        assert_eq!(attempts.first().unwrap().actual_model, "LongCat-Flash-Chat");
+    }
+
+    #[tokio::test]
+    async fn free_task_route_does_not_fallback_to_profile_emergency_group() {
+        let mut router = RouterConfig::default();
+        RouteProfile::gemini_stack().apply_to(&mut router);
+        let decision = RouteDecision {
+            requested_model: "deepseek-v4-flash".to_string(),
+            desired_model: "LongCat-Flash-Chat".to_string(),
+            role: "emergency".to_string(),
+            group: "longcat".to_string(),
+            reason: "rule free-health-and-memory: free task pattern matched".to_string(),
+        };
+        let channels = vec![
+            Channel {
+                name: "LongCat".to_string(),
+                models: "LongCat-Flash-Chat".to_string(),
+                model_mapping: r#"{"deepseek-v4-flash":"LongCat-Flash-Chat"}"#.to_string(),
+                role: "emergency".to_string(),
+                group: "longcat".to_string(),
+                priority: 10,
+                ..Channel::default()
+            },
+            Channel {
+                name: "Gemini".to_string(),
+                models: "deepseek-v4-flash,gemini-3.1-flash-lite".to_string(),
+                model_mapping: r#"{"deepseek-v4-flash":"gemini-3.1-flash-lite"}"#.to_string(),
+                role: "emergency".to_string(),
+                group: "gemini".to_string(),
+                priority: 20,
+                ..Channel::default()
+            },
+        ];
+        let state = Arc::new(ProxyState {
+            client: reqwest::Client::new(),
+            channels: Mutex::new(vec![]),
+            router: Mutex::new(router.clone()),
+            stats: Mutex::new(UsageStats::default()),
+            index: Mutex::new(0),
+            config_path: String::new(),
+            router_path: String::new(),
+            stats_path: String::new(),
+            deepseek_balance_path: String::new(),
+            serial_channel_locks: Mutex::new(Default::default()),
+        });
+
+        let attempts = build_attempts(
+            &state,
+            &channels,
+            &router,
+            &decision,
+            ApiProtocol::OpenAI,
+            false,
+        )
+        .await;
+
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].channel.name, "LongCat");
+        assert_eq!(attempts[0].stage, "primary");
     }
 
     #[test]
@@ -1840,6 +3111,7 @@ mod tests {
             Some(&body),
             "deepseek-v4-pro",
             &RouteHints::default(),
+            "default-nanobot",
         );
 
         assert_eq!(decision.role, "pro");
@@ -1863,10 +3135,225 @@ mod tests {
             Some(&body),
             "deepseek-v4-flash",
             &RouteHints::default(),
+            "default-nanobot",
         );
 
         assert_eq!(decision.role, "emergency");
         assert_eq!(decision.group, "longcat");
         assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
+    }
+
+    #[test]
+    fn gemini_health_routes_slow_default_to_lite() {
+        let mut router = RouterConfig::default();
+        RouteProfile::gemini_stack().apply_to(&mut router);
+        let mut stats = UsageStats::default();
+        for idx in 0..12 {
+            stats.record(RequestLog::new(
+                format!("req-{idx}"),
+                "default-nanobot".to_string(),
+                Some(1),
+                "Gemini".to_string(),
+                "deepseek-v4-flash".to_string(),
+                "gemini-3.5-flash".to_string(),
+                "default".to_string(),
+                "default lightweight route".to_string(),
+                "gemini".to_string(),
+                "primary".to_string(),
+                200,
+                9_500,
+                TokenUsage::default(),
+                Some(700),
+                Some(9_000),
+            ));
+        }
+        let decision = RouteDecision {
+            requested_model: "deepseek-v4-flash".to_string(),
+            desired_model: "gemini-3.5-flash".to_string(),
+            role: "default".to_string(),
+            group: "gemini".to_string(),
+            reason: "default lightweight route".to_string(),
+        };
+
+        let routed = apply_gemini_health_route(&router, &stats, decision);
+
+        assert_eq!(routed.role, "backup");
+        assert_eq!(routed.group, "gemini");
+        assert_eq!(routed.desired_model, "gemini-3.1-flash-lite");
+        assert!(routed.reason.contains("rolling health"));
+    }
+
+    #[test]
+    fn detects_stale_gemini_failure_text() {
+        assert!(gemini_stale_failure_text(
+            "Gemini request failed: Gemini API error code: 1099"
+        ));
+        assert!(gemini_stale_failure_text(
+            "\u{60a8}\u{767b}\u{5f55}\u{4e86}\u{5417}\u{ff1f}\u{6211}\u{53ef}\u{4ee5}\u{641c}\u{7d22}\u{56fe}\u{7247}\u{ff0c}\u{4f46}\u{76ee}\u{524d}\u{4f3c}\u{4e4e}\u{65e0}\u{6cd5}\u{4e3a}\u{60a8}\u{521b}\u{5efa}\u{4efb}\u{4f55}\u{56fe}\u{7247}"
+        ));
+        assert!(!gemini_stale_failure_text(
+            "\u{6211}\u{53ef}\u{4ee5}\u{5e2e}\u{4f60}\u{5206}\u{6790}\u{4eca}\u{5929}\u{8fd9}\u{4e2a}\u{9009}\u{62e9}"
+        ));
+        assert!(!gemini_stale_failure_text(
+            "Gemini can analyze this image correctly"
+        ));
+    }
+
+    #[test]
+    fn extracts_stream_probe_text_from_openai_sse() {
+        let mut buf = String::new();
+        let text = sse_chunk_output_text(
+            &mut buf,
+            br#"data: {"choices":[{"delta":{"content":"hello"}}]}
+
+"#,
+        );
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn detects_obp_image_generation_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-obp-image-generation", "1".parse().unwrap());
+        assert!(header_truthy(&headers, "x-obp-image-generation"));
+
+        headers.insert("x-obp-image-generation", "false".parse().unwrap());
+        assert!(!header_truthy(&headers, "x-obp-image-generation"));
+    }
+
+    #[test]
+    fn detects_image_generation_from_latest_user_only() {
+        let request = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {"role":"user", "content":"\u{7ed9}\u{6211}\u{753b}\u{4e00}\u{5f20}\u{7ea2}\u{8272}\u{5706}\u{5f62}\u{56fe}\u{6807}"},
+                {"role":"assistant", "content":"ok"},
+                {"role":"user", "content":"\u{751f}\u{56fe}\u{8fd8}\u{6709}\u{62a5}\u{9519}\u{ff0c}\u{770b}\u{770b}\u{600e}\u{4e48}\u{529e}"}
+            ]
+        });
+        assert!(!request_wants_image_generation(Some(&request)));
+
+        let request = serde_json::json!({
+            "model": "deepseek-v4-flash",
+            "messages": [
+                {"role":"user", "content":"\u{7ed9}\u{6211}\u{753b}\u{4e00}\u{5f20}\u{7ea2}\u{8272}\u{5706}\u{5f62}\u{56fe}\u{6807}"}
+            ]
+        });
+        assert!(request_wants_image_generation(Some(&request)));
+    }
+
+    #[tokio::test]
+    async fn image_generation_requests_use_single_attempt() {
+        let mut router = RouterConfig::default();
+        RouteProfile::gemini_stack().apply_to(&mut router);
+        let decision = RouteDecision {
+            requested_model: "deepseek-v4-flash".to_string(),
+            desired_model: router.default_model.clone(),
+            role: "default".to_string(),
+            group: "gemini".to_string(),
+            reason: "default lightweight route".to_string(),
+        };
+        let channels = vec![
+            Channel {
+                id: Some(1),
+                name: "Gemini Default".to_string(),
+                models: "gemini-3.5-flash".to_string(),
+                role: "default".to_string(),
+                group: "gemini".to_string(),
+                priority: 10,
+                ..Channel::default()
+            },
+            Channel {
+                id: Some(2),
+                name: "Gemini Backup".to_string(),
+                models: "gemini-3-flash".to_string(),
+                role: "backup".to_string(),
+                group: "gemini".to_string(),
+                priority: 20,
+                ..Channel::default()
+            },
+        ];
+        let state = Arc::new(ProxyState {
+            client: Client::new(),
+            channels: Mutex::new(vec![]),
+            router: Mutex::new(router.clone()),
+            stats: Mutex::new(UsageStats::default()),
+            index: Mutex::new(0),
+            config_path: String::new(),
+            router_path: String::new(),
+            stats_path: String::new(),
+            deepseek_balance_path: String::new(),
+            serial_channel_locks: Mutex::new(Default::default()),
+        });
+        let attempts = build_attempts(
+            &state,
+            &channels,
+            &router,
+            &decision,
+            ApiProtocol::OpenAI,
+            true,
+        )
+        .await;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].stage, "primary");
+    }
+
+    #[tokio::test]
+    async fn gemini_fallbacks_do_not_leak_to_deepseek() {
+        let mut router = RouterConfig::default();
+        RouteProfile::gemini_stack().apply_to(&mut router);
+        let decision = RouteDecision {
+            requested_model: "deepseek-v4-flash".to_string(),
+            desired_model: "gemini-3.5-flash".to_string(),
+            role: "default".to_string(),
+            group: "gemini".to_string(),
+            reason: "default lightweight route".to_string(),
+        };
+        let channels = vec![
+            Channel {
+                name: "Gemini".to_string(),
+                models: "gemini-3.5-flash,gemini-3.1-flash-lite".to_string(),
+                role: "default".to_string(),
+                group: "gemini".to_string(),
+                priority: 10,
+                ..Channel::default()
+            },
+            Channel {
+                name: "DeepSeek".to_string(),
+                models: "deepseek-v4-flash".to_string(),
+                role: "default".to_string(),
+                group: "deepseek".to_string(),
+                priority: 1,
+                ..Channel::default()
+            },
+        ];
+        let state = Arc::new(ProxyState {
+            client: reqwest::Client::new(),
+            channels: Mutex::new(vec![]),
+            router: Mutex::new(router.clone()),
+            stats: Mutex::new(UsageStats::default()),
+            index: Mutex::new(0),
+            config_path: String::new(),
+            router_path: String::new(),
+            stats_path: String::new(),
+            deepseek_balance_path: String::new(),
+            serial_channel_locks: Mutex::new(Default::default()),
+        });
+
+        let attempts = build_attempts(
+            &state,
+            &channels,
+            &router,
+            &decision,
+            ApiProtocol::OpenAI,
+            false,
+        )
+        .await;
+
+        assert!(!attempts.is_empty());
+        assert!(attempts.iter().all(|attempt| attempt.group == "gemini"));
+        assert!(attempts
+            .iter()
+            .all(|attempt| attempt.channel.group_key() == "gemini"));
     }
 }

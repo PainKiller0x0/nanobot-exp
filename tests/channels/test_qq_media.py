@@ -22,6 +22,8 @@ from nanobot.channels.qq import (
     QQ_FILE_TYPE_IMAGE,
     QQChannel,
     QQConfig,
+    _extract_generated_image_media,
+    _gemini_image_fetch_url,
     _guess_send_file_type,
     _is_image_name,
     _sanitize_filename,
@@ -109,6 +111,25 @@ def test_guess_send_file_type_by_mime() -> None:
     assert _guess_send_file_type("photo.xyz_image_test") == QQ_FILE_TYPE_FILE
 
 
+def test_extract_generated_image_media_removes_brittle_links() -> None:
+    url = "http://150.158.121.88:8093/gemini-images/images/generated_x.png?token=abc"
+    content = f"Image generated.\n\n![generated_x.png]({url})\n\n[Open image]({url})"
+
+    cleaned, media = _extract_generated_image_media(content)
+
+    assert cleaned == "\u56fe\u7247\u751f\u6210\u597d\u4e86\u3002"
+    assert media == [url]
+
+
+def test_gemini_image_fetch_url_uses_container_gateway() -> None:
+    url = "http://150.158.121.88:8093/gemini-images/images/generated_x.png?token=abc"
+
+    fetch_url, trusted = _gemini_image_fetch_url(url)
+
+    assert trusted is True
+    assert fetch_url == "http://172.17.0.1:8093/gemini-images/images/generated_x.png?token=abc"
+
+
 # ── send() exception handling ───────────────────────────────────────
 
 
@@ -157,6 +178,67 @@ async def test_send_media_then_text() -> None:
     finally:
         import os
         os.unlink(tmp)
+
+
+@pytest.mark.asyncio
+async def test_send_delta_generated_image_markdown_as_media_not_link() -> None:
+    channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["*"]), MessageBus())
+    channel._client = _FakeClient()
+    url = "http://150.158.121.88:8093/gemini-images/images/generated_x.png?token=abc"
+
+    with (
+        patch.object(channel, "_send_media", new_callable=AsyncMock, return_value=True) as media,
+        patch.object(channel, "_send_text_only", new_callable=AsyncMock) as text_send,
+    ):
+        await channel.send_delta(
+            "user1",
+            f"Image generated.\n\n![generated_x.png]({url})\n\n[Open image]({url})",
+            metadata={"message_id": "m1"},
+        )
+
+    media.assert_awaited_once()
+    assert media.await_args.kwargs["media_ref"] == url
+    text_send.assert_awaited_once()
+    assert text_send.await_args.kwargs["content"] == "\u56fe\u7247\u751f\u6210\u597d\u4e86\u3002"
+
+
+@pytest.mark.asyncio
+async def test_generated_image_media_is_deduped_between_delta_and_final_send() -> None:
+    channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["*"]), MessageBus())
+    channel._client = _FakeClient()
+    url = "http://150.158.121.88:8093/gemini-images/images/generated_x.png?token=abc"
+    content = f"Image generated.\n\n![generated_x.png]({url})\n\n[Open image]({url})"
+
+    with patch.object(channel, "_send_media", new_callable=AsyncMock, return_value=True) as media:
+        await channel.send_delta("user1", content, metadata={"message_id": "m1"})
+        await channel.send(OutboundMessage(channel="qq", chat_id="user1", content=content, metadata={"message_id": "m1"}))
+
+    assert media.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_send_generated_image_markdown_as_media_not_link() -> None:
+    channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["*"]), MessageBus())
+    channel._client = _FakeClient()
+    url = "http://150.158.121.88:8093/gemini-images/images/generated_x.png?token=abc"
+
+    with (
+        patch.object(channel, "_send_media", new_callable=AsyncMock, return_value=True) as media,
+        patch.object(channel, "_send_text_only", new_callable=AsyncMock) as text_send,
+    ):
+        await channel.send(
+            OutboundMessage(
+                channel="qq",
+                chat_id="user1",
+                content=f"Image generated.\n\n![generated_x.png]({url})\n\n[Open image]({url})",
+                metadata={"message_id": "m1"},
+            )
+        )
+
+    media.assert_awaited_once()
+    assert media.await_args.kwargs["media_ref"] == url
+    text_send.assert_awaited_once()
+    assert text_send.await_args.kwargs["content"] == "\u56fe\u7247\u751f\u6210\u597d\u4e86\u3002"
 
 
 @pytest.mark.asyncio

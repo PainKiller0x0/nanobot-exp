@@ -76,3 +76,33 @@ def split_stream_chunks(config: Any, text: str) -> list[str]:
     if current:
         chunks.append(current if current.endswith("\n") else f"{current}\n")
     return chunks or [text if text.endswith("\n") else f"{text}\n"]
+
+
+def split_stream_frame_chunks(config: Any, text: str) -> list[str]:
+    """Split a QQ stream frame without changing the text.
+
+    ``split_stream_chunks`` intentionally adds newlines for standalone stream
+    sends. Delta streaming needs exact-prefix accounting so fallback messages
+    do not duplicate already-visible text.
+    """
+    max_chars = max(20, int(getattr(config, "stream_chunk_chars", 180) or 180))
+    if not text:
+        return [""]
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines(keepends=True):
+        while len(line) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:max_chars])
+            line = line[max_chars:]
+        if len(current) + len(line) <= max_chars:
+            current += line
+        else:
+            if current:
+                chunks.append(current)
+            current = line
+    if current:
+        chunks.append(current)
+    return chunks or [text]

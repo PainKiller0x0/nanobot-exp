@@ -10,7 +10,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from nanobot.exp.agent.history_budget import replay_budget_for_message
+from nanobot.exp.agent.history_budget import (
+    replay_budget_for_message,
+    should_omit_tool_ads,
+)
 
 _TOOL_MARKERS = (
     "查",
@@ -134,8 +137,8 @@ def tool_definitions_for_turn(
     if _has_tool_marker(text):
         return tool_definitions, "tool marker"
 
-    budget, reason = replay_budget_for_message(text, default_budget=16000, light_budget=4500)
-    if reason in {"short standalone turn", "empty short turn", "task marker: 日报请求"}:
+    _, reason = replay_budget_for_message(text, default_budget=16000, light_budget=4500)
+    if should_omit_tool_ads(reason):
         return None, reason
     return tool_definitions, reason
 

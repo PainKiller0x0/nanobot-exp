@@ -10,10 +10,12 @@ import os
 import re
 
 DEFAULT_LIGHT_REPLAY_TOKENS = 4_500
+SHORT_STANDALONE_REASONS = frozenset({"short standalone turn", "empty short turn"})
+DAILY_REPORT_TASK_REASON = "task marker: \u65e5\u62a5\u8bf7\u6c42"
+TOOL_OMIT_REASONS = SHORT_STANDALONE_REASONS | frozenset({DAILY_REPORT_TASK_REASON})
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 
 _CONTEXT_MARKERS = (
-    "继续",
     "接着",
     "刚才",
     "刚刚",
@@ -22,7 +24,6 @@ _CONTEXT_MARKERS = (
     "之前",
     "上次",
     "前面的",
-    "后面",
     "这个",
     "那个",
     "这些",
@@ -33,9 +34,6 @@ _CONTEXT_MARKERS = (
     "他们",
     "你说",
     "你刚",
-    "不是",
-    "不对",
-    "还是",
     "记得",
     "记忆",
     "回忆",
@@ -143,6 +141,29 @@ def _configured_light_budget() -> int:
 def light_system_prompt_enabled() -> bool:
     raw = os.getenv("NANOBOT_LIGHT_SYSTEM_PROMPT", "1").strip().lower()
     return raw not in _FALSE_VALUES
+
+
+def is_short_standalone_reason(reason: str) -> bool:
+    return reason in SHORT_STANDALONE_REASONS
+
+
+def should_use_compact_system_prompt(reason: str) -> bool:
+    """Return True when a lightweight chat turn should avoid large manuals."""
+    return is_short_standalone_reason(reason)
+
+
+def should_skip_history_replay(reason: str) -> bool:
+    """Return True when the model should see only the current user turn.
+
+    Short chat still needs a small tail of conversation for pronouns and demonstratives.
+    Dropping all history made follow-ups sound detached from the previous turn.
+    """
+    return reason == "empty short turn"
+
+
+def should_omit_tool_ads(reason: str) -> bool:
+    """Return True when tool schemas should stay out of the LLM prompt."""
+    return reason in TOOL_OMIT_REASONS
 
 
 def replay_budget_for_message(

@@ -70,6 +70,42 @@ _MIMO_THINKING_MODELS: frozenset[str] = frozenset({
     "mimo-v2-omni",
 })
 _OPENAI_COMPAT_REQUEST_TIMEOUT_S = 120.0
+_STREAM_IDLE_TIMEOUT_S = 90
+_IMAGE_STREAM_IDLE_TIMEOUT_S = 180
+_IMAGE_REQUEST_TIMEOUT_S = 180.0
+_IMAGE_STREAM_IDLE_ENV = "NANOBOT_STREAM_IDLE_TIMEOUT_S"
+_IMAGE_STREAM_IDLE_IMAGE_ENV = "NANOBOT_IMAGE_STREAM_IDLE_TIMEOUT_S"
+_IMAGE_REQUEST_TIMEOUT_ENV = "NANOBOT_IMAGE_REQUEST_TIMEOUT_S"
+_IMAGE_PROMPT_MARKERS = (
+    "\u7ed9\u6211\u753b",
+    "\u5e2e\u6211\u753b",
+    "\u753b\u4e00\u5f20",
+    "\u753b\u4e2a",
+    "\u753b\u4e00\u4e2a",
+    "\u751f\u6210\u4e00\u5f20\u56fe",
+    "\u751f\u6210\u56fe\u7247",
+    "\u751f\u56fe",
+    "\u505a\u4e00\u5f20\u56fe",
+    "create an image",
+    "generate an image",
+    "draw an image",
+    "make an image",
+    "create image",
+    "generate image",
+    "draw image",
+    "make image",
+)
+_IMAGE_PROMPT_NEGATIONS = (
+    "\u4e0d\u8981\u753b",
+    "\u4e0d\u7528\u753b",
+    "\u522b\u753b",
+    "\u4e0d\u8981\u751f\u6210\u56fe\u7247",
+    "\u4e0d\u7528\u751f\u6210\u56fe\u7247",
+    "no image",
+    "not image",
+    "do not generate image",
+    "don't generate image",
+)
 
 # Maps ProviderSpec.thinking_style → extra_body builder.
 # Each builder takes a bool (thinking_enabled) and returns the dict to
@@ -134,6 +170,36 @@ def _float_env(name: str, default: float) -> float:
         logger.warning("Ignoring non-positive {}={!r}; using {}", name, raw, default)
         return default
     return value
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _stream_idle_timeout_s(messages: list[dict[str, Any]]) -> int:
+    default = int(_float_env(_IMAGE_STREAM_IDLE_ENV, float(_STREAM_IDLE_TIMEOUT_S)))
+    if _latest_user_requests_image_generation(messages):
+        return int(_float_env(_IMAGE_STREAM_IDLE_IMAGE_ENV, float(_IMAGE_STREAM_IDLE_TIMEOUT_S)))
+    return default
+
+
+def _image_request_timeout_s() -> float:
+    return _float_env(_IMAGE_REQUEST_TIMEOUT_ENV, _IMAGE_REQUEST_TIMEOUT_S)
+
+
+def _latest_user_requests_image_generation(messages: list[dict[str, Any]]) -> bool:
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        text = OpenAICompatProvider._extract_text_content(message.get("content")) or ""
+        normalized = text.lower()
+        if any(marker in normalized for marker in _IMAGE_PROMPT_NEGATIONS):
+            return False
+        return any(marker in normalized for marker in _IMAGE_PROMPT_MARKERS)
+    return False
 
 
 def _short_tool_id() -> str:
@@ -502,7 +568,11 @@ class OpenAICompatProvider(LLMProvider):
         """Strip non-standard keys, normalize tool_call IDs."""
         sanitized = LLMProvider._sanitize_request_messages(messages, _ALLOWED_MSG_KEYS)
         id_map: dict[str, str] = {}
-        force_string_content = bool(self._spec and self._spec.name == "deepseek")
+        force_string_content = bool(
+            self._spec
+            and self._spec.name == "deepseek"
+            and not _is_obp_endpoint(self._effective_base)
+        )
 
         def map_id(value: Any) -> Any:
             if not isinstance(value, str):
@@ -1229,6 +1299,10 @@ class OpenAICompatProvider(LLMProvider):
         extra_headers.setdefault("X-OBP-Request-ID", request_id)
         extra_headers.setdefault("X-Request-ID", request_id)
         extra_headers.setdefault("X-Nanobot-Trace-ID", request_id)
+        messages = updated.get("messages")
+        if isinstance(messages, list) and _latest_user_requests_image_generation(messages):
+            # Keep image generation side effects out of normal OBP fallback retries.
+            extra_headers.setdefault("X-OBP-Image-Generation", "1")
         updated["extra_headers"] = extra_headers
         return updated
 
@@ -1311,8 +1385,44 @@ class OpenAICompatProvider(LLMProvider):
         on_content_delta: Callable[[str], Awaitable[None]] | None = None,
         on_thinking_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
-        idle_timeout_s = int(os.environ.get("NANOBOT_STREAM_IDLE_TIMEOUT_S", "90"))
+        idle_timeout_s = _stream_idle_timeout_s(messages)
         try:
+            # Gemini Web FastAPI's streaming image path can finish with no image,
+            # while the same prompt succeeds via non-streaming chat completions.
+            # Image generation is not meaningfully progressive anyway, so keep
+            # normal chats streaming but complete explicit image requests in one go.
+            if _latest_user_requests_image_generation(messages):
+                kwargs = self._build_kwargs(
+                    messages, tools, model, max_tokens, temperature,
+                    reasoning_effort, tool_choice,
+                )
+                kwargs["timeout"] = _image_request_timeout_s()
+
+                if on_content_delta and _bool_env("NANOBOT_IMAGE_BACKGROUND", True):
+                    ack = "?????????????????????????"
+                    await on_content_delta(ack)
+
+                    async def _deliver_image_result() -> None:
+                        try:
+                            result = await self._create_chat_completion_with_route_log(kwargs)
+                            response = self._parse(result)
+                            content = response.content or "?????????????????"
+                        except Exception as e:  # pragma: no cover - defensive background guard
+                            content = self._handle_error(e, spec=self._spec, api_base=self.api_base).content
+                        try:
+                            await on_content_delta(content)
+                        except Exception as e:  # pragma: no cover - channel may be gone
+                            logger.warning("Background image delivery failed: {}", e)
+
+                    asyncio.create_task(_deliver_image_result())
+                    return LLMResponse(content=ack, finish_reason="queued")
+
+                result = await self._create_chat_completion_with_route_log(kwargs)
+                response = self._parse(result)
+                if response.content and on_content_delta:
+                    await on_content_delta(response.content)
+                return response
+
             if self._should_use_responses_api(model, reasoning_effort):
                 try:
                     body = self._build_responses_body(

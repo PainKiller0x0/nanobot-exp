@@ -323,6 +323,9 @@ async fn main() {
         .route("/trends", any(proxy_trends_root))
         .route("/trends/", any(proxy_trends_root))
         .route("/trends/*path", any(proxy_trends_path))
+        .route("/gemini-images", any(proxy_gemini_images_root))
+        .route("/gemini-images/", any(proxy_gemini_images_root))
+        .route("/gemini-images/*path", any(proxy_gemini_images_path))
         .route("/api/run", post(api_run))
         .route("/api/trigger", post(api_trigger))
         .with_state(app_state.clone())
@@ -915,6 +918,12 @@ proxy_pair!(
     proxy_trends_path,
     "http://127.0.0.1:8095",
     "/trends"
+);
+proxy_pair!(
+    proxy_gemini_images_root,
+    proxy_gemini_images_path,
+    "http://10.77.93.2:8000",
+    "/gemini-images"
 );
 
 async fn proxy_obp_root(

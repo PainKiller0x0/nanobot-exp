@@ -260,6 +260,40 @@ async def test_image_fallback_without_meta_uses_default_placeholder() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transient_retry_exhaustion_with_images_retries_without_images(monkeypatch) -> None:
+    """Image requests that fail transient retries should get one no-image fallback."""
+    provider = ScriptedProvider([
+        LLMResponse(content="503 gateway timeout a", finish_reason="error"),
+        LLMResponse(content="503 gateway timeout b", finish_reason="error"),
+        LLMResponse(content="503 gateway timeout c", finish_reason="error"),
+        LLMResponse(content="503 final gateway timeout", finish_reason="error"),
+        LLMResponse(content="ok after image fallback"),
+    ])
+    delays: list[int] = []
+    messages = copy.deepcopy(_IMAGE_MSG)
+
+    async def _fake_sleep(delay: int) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("nanobot.providers.base.asyncio.sleep", _fake_sleep)
+
+    response = await provider.chat_with_retry(messages=messages)
+
+    assert response.content == "ok after image fallback"
+    assert provider.calls == 5
+    assert delays == [1, 2, 4]
+    msgs_on_retry = provider.last_kwargs["messages"]
+    for msg in msgs_on_retry:
+        content = msg.get("content")
+        if isinstance(content, list):
+            assert all(block.get("type") != "image_url" for block in content)
+            assert any("[image: /media/test.png]" in (block.get("text") or "") for block in content)
+    content = messages[0]["content"]
+    assert isinstance(content, list)
+    assert all(block.get("type") != "image_url" for block in content)
+
+
+@pytest.mark.asyncio
 async def test_chat_with_retry_uses_retry_after_and_emits_wait_progress(monkeypatch) -> None:
     provider = ScriptedProvider([
         LLMResponse(content="429 rate limit, retry after 7s", finish_reason="error"),

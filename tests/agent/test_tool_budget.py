@@ -100,6 +100,19 @@ def test_daily_report_writing_request_still_omits_tools() -> None:
     assert reason == "task marker: 日报请求"
 
 
+def test_common_life_words_omit_tools() -> None:
+    content = (
+        "\u4eca\u665a\u5403\u5b8c\u5bb5\u591c\uff0c"
+        "\u526f\u4e1a\u4e0d\u662f\u5f88\u60f3\u7ee7\u7eed"
+        "\u5199\u6587\u6863\u4e86\u548b\u529e\uff1f\u70e6\u6b7b\u4e86"
+    )
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": content}],
+    )
+
+    assert tools is None
+    assert reason == "short standalone turn"
 
 def test_no_registered_tools_keeps_empty_tool_list_marker() -> None:
     tools, reason = tool_definitions_for_turn(

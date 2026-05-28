@@ -39,8 +39,8 @@ async def test_send_text_streaming_sends_append_frames_and_final_reset() -> None
     )
 
     assert [c["state"] for c in calls] == [1, 1, 1, 10]
-    assert calls[-1]["reset"] is True
-    assert calls[-1]["content"] == "a" * 45
+    assert calls[-1]["reset"] is False
+    assert calls[-1]["content"] == ""
     assert calls[-1]["stream_id"] == "stream-1"
 
 
@@ -83,6 +83,51 @@ async def test_send_delta_flushes_first_frame_and_final_reset() -> None:
     assert frames[0]["content"] == "hello."
     assert frames[-1]["content"] == "hello. world"
     assert frames[-1]["reset"] is True
+    assert states == {}
+
+
+@pytest.mark.asyncio
+async def test_send_delta_splits_oversized_coalesced_frames() -> None:
+    frames = []
+    texts = []
+    states: dict[str, dict] = {}
+    cfg = _cfg()
+    cfg.stream_chunk_chars = 20
+
+    async def fake_frame(**kwargs):
+        frames.append(kwargs)
+        assert len(kwargs["content"]) <= 20
+        return "qq-stream"
+
+    async def fake_text(**kwargs):
+        texts.append(kwargs)
+
+    await stream_runtime.send_delta(
+        config=cfg,
+        stream_states=states,
+        chat_type_cache={},
+        send_stream_frame=fake_frame,
+        send_text_only=fake_text,
+        chat_id="user1",
+        delta="hello.",
+        metadata={"message_id": "msg1", "_stream_id": "s1"},
+    )
+    await stream_runtime.send_delta(
+        config=cfg,
+        stream_states=states,
+        chat_type_cache={},
+        send_stream_frame=fake_frame,
+        send_text_only=fake_text,
+        chat_id="user1",
+        delta="b" * 45,
+        metadata={"message_id": "msg1", "_stream_id": "s1", "_stream_end": True},
+    )
+
+    assert texts == []
+    assert [frame["state"] for frame in frames] == [1, 1, 1, 1, 10]
+    assert "".join(frame["content"] for frame in frames[:-1]) == "hello." + "b" * 45
+    assert frames[-1]["content"] == ""
+    assert frames[-1]["reset"] is False
     assert states == {}
 
 
@@ -313,7 +358,11 @@ async def test_send_delta_strips_meta_instruction_tail_on_final_reset() -> None:
 
     assert texts == []
     assert frames[-1]["state"] == 10
-    assert frames[-1]["content"] == "Weekend shopping is nice."
+    visible = "".join(frame["content"] for frame in frames if frame["state"] == 1)
+    assert visible == "Weekend shopping is nice."
+    assert "rule 1" not in visible
+    assert frames[-1]["content"] == ""
+    assert frames[-1]["reset"] is False
     assert states == {}
 
 

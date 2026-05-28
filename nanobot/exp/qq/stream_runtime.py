@@ -41,32 +41,46 @@ async def _flush_delta_stream_state(
     index = int(state.get("index") or 0)
     qq_stream_id = state.get("qq_stream_id")
     flush_started_at = time.monotonic()
-    is_first_frame = not state.get("first_frame_sent")
-    new_id = await send_stream_frame(
-        chat_id=chat_id,
-        is_group=is_group,
-        msg_id=msg_id,
-        content=pending,
-        state=1,
-        index=index,
-        reset=False,
-        stream_id=str(qq_stream_id) if qq_stream_id else None,
-    )
-    flushed_at = time.monotonic()
-    if new_id:
-        state["qq_stream_id"] = new_id
-    elif is_first_frame:
-        state["disabled"] = True
-    # A QQ stream frame may be visible even when the API response does not
-    # return a stream id (for example, botpy reports a timeout after QQ has
-    # accepted the frame). Remember the visible prefix so a later fallback
-    # does not resend the same opening text as a separate normal message.
-    state["flushed_content"] = str(state.get("flushed_content") or "") + pending
-    state["pending"] = ""
-    state["index"] = index + 1
-    state["last_flush_at"] = flushed_at
-    if is_first_frame:
+    is_first_flush = not state.get("first_frame_sent")
+    chunks = qq_streaming.split_stream_frame_chunks(config, pending)
+    sent_len = 0
+    missing_first_stream_id = False
+
+    for chunk in chunks:
+        if not chunk:
+            continue
+        is_first_frame = not state.get("first_frame_sent")
+        new_id = await send_stream_frame(
+            chat_id=chat_id,
+            is_group=is_group,
+            msg_id=msg_id,
+            content=chunk,
+            state=1,
+            index=index,
+            reset=False,
+            stream_id=str(qq_stream_id) if qq_stream_id else None,
+        )
+        if new_id:
+            qq_stream_id = new_id
+            state["qq_stream_id"] = new_id
+        elif is_first_frame:
+            # The opening frame may still be visible even if QQ did not return
+            # a stream id. Stop appending and let final fallback send only the
+            # unseen tail.
+            state["disabled"] = True
+            missing_first_stream_id = True
+        sent_len += len(chunk)
+        index += 1
         state["first_frame_sent"] = True
+        if missing_first_stream_id:
+            break
+
+    flushed_at = time.monotonic()
+    state["flushed_content"] = str(state.get("flushed_content") or "") + pending[:sent_len]
+    state["pending"] = pending[sent_len:]
+    state["index"] = index
+    state["last_flush_at"] = flushed_at
+    if is_first_flush:
         started_at = float(state.get("started_at") or state["last_flush_at"])
         if logger is not None:
             first_frame_ms = int((state["last_flush_at"] - started_at) * 1000)
@@ -84,14 +98,14 @@ async def _flush_delta_stream_state(
                 pending_wait_ms,
                 send_frame_ms,
                 turn_first_frame_ms,
-                len(pending),
+                sent_len,
             )
-            if not new_id:
+            if missing_first_stream_id:
                 logger.warning(
                     "QQ delta stream first frame missing stream id; disabling append stream_key={} chat_id={} chars={}",
                     stream_key,
                     chat_id,
-                    len(pending),
+                    sent_len,
                 )
 
 
@@ -113,6 +127,30 @@ def _fallback_content_after_stream_attempt(content: str, state: dict[str, Any]) 
     if flushed and content.startswith(flushed):
         return content[len(flushed):]
     return content
+
+
+def _sync_pending_to_sanitized_content(state: dict[str, Any], content: str) -> None:
+    """Keep final pending frames aligned with the sanitized final text."""
+    flushed = str(state.get("flushed_content") or "")
+    if not state.get("first_frame_sent"):
+        state["pending"] = content
+        return
+    if flushed and content.startswith(flushed):
+        state["pending"] = content[len(flushed):]
+        return
+    if flushed.startswith(content):
+        state["pending"] = ""
+        return
+    # If prefix accounting is out of sync, do not append stale raw deltas.
+    # A short final reset can still correct visible content; long replies keep
+    # the already-visible safe prefix instead of risking QQ 40054014.
+    state["pending"] = ""
+
+
+def _final_reset_content(config: Any, content: str) -> str:
+    """Avoid QQ 40054014 by never closing a stream with an oversized frame."""
+    max_chars = max(20, int(getattr(config, "stream_chunk_chars", 180) or 180))
+    return content if len(content) <= max_chars else ""
 
 
 async def send_delta(
@@ -217,6 +255,7 @@ async def send_delta(
             return
 
         content = strip_meta_instruction_tail(str(state.get("content") or "")).strip()
+        _sync_pending_to_sanitized_content(state, content)
         if not content:
             stream_states.pop(stream_key, None)
             return
@@ -251,14 +290,15 @@ async def send_delta(
             )
         qq_stream_id = state.get("qq_stream_id")
         if not state.get("disabled") and qq_stream_id:
+            final_content = _final_reset_content(config, content)
             await send_stream_frame(
                 chat_id=chat_id,
                 is_group=is_group,
                 msg_id=msg_id,
-                content=content,
+                content=final_content,
                 state=10,
-                index=1,
-                reset=True,
+                index=int(state.get("index") or 1),
+                reset=bool(final_content),
                 stream_id=str(qq_stream_id),
             )
             if logger is not None:
@@ -351,14 +391,15 @@ async def send_text_streaming(
         if interval and index + 1 < len(chunks):
             await asyncio.sleep(interval)
 
+    final_content = _final_reset_content(config, content)
     await send_stream_frame(
         chat_id=chat_id,
         is_group=is_group,
         msg_id=msg_id,
-        content=content,
+        content=final_content,
         state=10,
-        index=1,
-        reset=True,
+        index=len(chunks),
+        reset=bool(final_content),
         stream_id=stream_id,
     )
     if logger is not None:

@@ -248,8 +248,8 @@ async def test_send_c2c_markdown_stream_when_enabled() -> None:
     assert all("stream" in call for call in calls)
     assert calls[0]["stream"] == {"state": 1, "index": 0, "reset": False}
     assert calls[1]["stream"]["id"] == "raw-1"
-    assert calls[-1]["stream"] == {"state": 10, "id": f"raw-{len(calls) - 1}", "index": 1, "reset": True}
-    assert calls[-1]["markdown"] == {"content": content}
+    assert calls[-1]["stream"] == {"state": 10, "id": f"raw-{len(calls) - 1}", "index": len(calls) - 1, "reset": False}
+    assert calls[-1]["markdown"] == {"content": ""}
     assert not channel._client.api.c2c_calls
     assert not channel._client.api.group_calls
 
@@ -345,7 +345,7 @@ async def test_send_delta_streams_and_finalizes_with_raw_http() -> None:
     assert calls[1]["markdown"] == {"content": " there"}
     assert calls[1]["stream"]["id"] == "raw-1"
     assert calls[2]["markdown"] == {"content": "hi. there"}
-    assert calls[2]["stream"] == {"state": 10, "id": "raw-2", "index": 1, "reset": True}
+    assert calls[2]["stream"] == {"state": 10, "id": "raw-2", "index": 2, "reset": True}
     assert "s1" not in channel._stream_states
     assert not channel._client.api.c2c_calls
 

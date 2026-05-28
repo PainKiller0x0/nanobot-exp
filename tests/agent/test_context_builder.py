@@ -252,6 +252,16 @@ class TestBuildUserContent:
         assert "OCR text" in result
         assert "image_url" not in result
 
+    def test_empty_ocr_lang_env_uses_default(self, monkeypatch):
+        monkeypatch.setenv("NANOBOT_CONTEXT_IMAGE_OCR_LANG", "")
+
+        assert ContextBuilder._image_ocr_lang() == "chi_sim+eng"
+
+    def test_custom_ocr_lang_env_is_trimmed(self, monkeypatch):
+        monkeypatch.setenv("NANOBOT_CONTEXT_IMAGE_OCR_LANG", " eng ")
+
+        assert ContextBuilder._image_ocr_lang() == "eng"
+
 
 # ---------------------------------------------------------------------------
 # build_system_prompt

@@ -79,6 +79,7 @@ class TestSessionTTLConfig:
     def test_session_file_cap_is_internal_constant(self):
         """Session file cap should remain an internal constant, not a config field."""
         from nanobot.session.manager import FILE_MAX_MESSAGES
+
         assert FILE_MAX_MESSAGES == 2000
 
 
@@ -109,7 +110,7 @@ class TestAgentLoopTTLParam:
             channel="cli",
             sender_id="u1",
             chat_id="direct",
-            content="hello",
+            content="GitHub action \u53c8\u62a5\u9519\u4e86\uff0c\u5e2e\u6211\u6392\u67e5",
         )
         await loop._process_message(msg)
         session.get_history.assert_called_once()
@@ -117,6 +118,39 @@ class TestAgentLoopTTLParam:
         assert isinstance(kwargs.get("max_tokens"), int)
         assert kwargs["max_tokens"] > 0
         assert kwargs["include_timestamps"] is True
+
+    @pytest.mark.asyncio
+    async def test_short_standalone_uses_light_history_replay(self, tmp_path):
+        """Short chat should keep a tiny tail without loading the full prompt."""
+        loop = _make_loop(tmp_path)
+        session = loop.sessions.get_or_create("cli:direct")
+        session.add_message("user", "old work politics topic")
+        session.add_message("assistant", "old work politics answer")
+        session.get_history = MagicMock(return_value=[{"role": "user", "content": "old topic"}])
+        loop.context.build_messages = MagicMock(return_value=[])
+        loop._run_agent_loop = AsyncMock(return_value=("ok", [], [], "stop", False))
+        loop._save_turn = MagicMock()
+
+        msg = InboundMessage(
+            channel="cli",
+            sender_id="u1",
+            chat_id="direct",
+            content="\u4eca\u665a\u6709\u70b9\u7d2f\uff0c\u5148\u6d17\u6fa1\u7761\u89c9",
+        )
+        await loop._process_message(msg)
+
+        model_history_calls = [
+            call for call in session.get_history.call_args_list if "max_tokens" in call.kwargs
+        ]
+        assert len(model_history_calls) == 1
+        kwargs = model_history_calls[0].kwargs
+        assert kwargs["max_tokens"] < 16_000
+        assert kwargs["max_tokens"] > 0
+        assert kwargs["include_timestamps"] is True
+        build_kwargs = loop.context.build_messages.call_args.kwargs
+        assert build_kwargs["history"] == [{"role": "user", "content": "old topic"}]
+        assert build_kwargs["compact_system_prompt"] is True
+        assert build_kwargs["lightweight_system_prompt"] is False
 
     @pytest.mark.asyncio
     async def test_session_file_cap_archives_and_trims_old_messages(self, tmp_path):
@@ -134,10 +168,14 @@ class TestAgentLoopTTLParam:
 
         session = loop.sessions.get_or_create("cli:direct")
         from nanobot.session.manager import FILE_MAX_MESSAGES
+
         assert len(session.messages) <= FILE_MAX_MESSAGES
 
-    def test_session_enforce_file_cap_skips_archive_when_dropped_prefix_already_consolidated(self, tmp_path):
+    def test_session_enforce_file_cap_skips_archive_when_dropped_prefix_already_consolidated(
+        self, tmp_path
+    ):
         from nanobot.session.manager import Session
+
         archive_fn = MagicMock()
         session = Session(key="cli:direct")
         for i in range(8):
@@ -151,6 +189,7 @@ class TestAgentLoopTTLParam:
 
     def test_session_enforce_file_cap_archives_only_unconsolidated_dropped_prefix(self, tmp_path):
         from nanobot.session.manager import Session
+
         archive_fn = MagicMock()
         session = Session(key="cli:direct")
         for i in range(8):
@@ -476,16 +515,15 @@ class TestAutoCompactSystemMessages:
         await loop.auto_compact._archive("cli:test")
 
         msg = InboundMessage(
-            channel="system", sender_id="subagent", chat_id="cli:test",
+            channel="system",
+            sender_id="subagent",
+            chat_id="cli:test",
             content="subagent result",
         )
         await loop._process_message(msg)
 
         session_after = loop.sessions.get_or_create("cli:test")
-        assert not any(
-            m["content"] == "old user 0"
-            for m in session_after.messages
-        )
+        assert not any(m["content"] == "old user 0" for m in session_after.messages)
         await loop.close_mcp()
 
 
@@ -606,7 +644,9 @@ class TestAutoCompactIntegration:
         )
 
         msg = InboundMessage(
-            channel="cli", sender_id="user", chat_id="test",
+            channel="cli",
+            sender_id="user",
+            chat_id="test",
             content="Let's continue, teach me present perfect",
         )
         response = await loop._process_message(msg)
@@ -654,7 +694,9 @@ class TestAutoCompactIntegration:
         await loop.auto_compact._archive("cli:test")
 
         msg = InboundMessage(
-            channel="cli", sender_id="user", chat_id="test",
+            channel="cli",
+            sender_id="user",
+            chat_id="test",
             content="Paragraph one\n\nParagraph two\n\nParagraph three",
         )
         await loop._process_message(msg)
@@ -988,7 +1030,10 @@ class TestProactiveAutoCompact:
         defer = session_after.metadata["_auto_compact_defer"]
         assert defer["pending_messages"] == 4
         assert defer["threshold_messages"] == 5
-        events = [json.loads(line) for line in (tmp_path / "auto_compact_events.jsonl").read_text().splitlines()]
+        events = [
+            json.loads(line)
+            for line in (tmp_path / "auto_compact_events.jsonl").read_text().splitlines()
+        ]
         assert events[-1]["action"] == "deferred"
         await loop.close_mcp()
 
@@ -1017,7 +1062,10 @@ class TestProactiveAutoCompact:
         assert archive_count == 1
         session_after = loop.sessions.get_or_create("cli:test")
         assert "_auto_compact_defer" not in session_after.metadata
-        events = [json.loads(line) for line in (tmp_path / "auto_compact_events.jsonl").read_text().splitlines()]
+        events = [
+            json.loads(line)
+            for line in (tmp_path / "auto_compact_events.jsonl").read_text().splitlines()
+        ]
         assert events[-1]["action"] == "archived"
         assert events[-1]["forced"] is True
         assert events[-1]["summary"] == "Forced summary."
@@ -1046,7 +1094,9 @@ class TestProactiveAutoCompact:
         assert archive_count == 1
 
         # User returns, sends new messages
-        msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="second topic")
+        msg = InboundMessage(
+            channel="cli", sender_id="user", chat_id="test", content="second topic"
+        )
         await loop._process_message(msg)
 
         # Simulate idle again

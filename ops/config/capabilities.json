@@ -434,7 +434,7 @@
     "category": "记忆",
     "kind": "dashboard",
     "service_id": "lof",
-    "entry_url": "",
+    "entry_url": null,
     "enabled": false,
     "trigger_phrases": [
       "你最近进化了吗",

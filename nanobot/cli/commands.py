@@ -845,9 +845,20 @@ def _run_gateway(
         webui_runtime_model_name=_webui_runtime_model_name,
     )
 
+    hb_cfg = config.gateway.heartbeat
+
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
         enabled = set(channels.enabled_channels)
+        fixed_channel = hb_cfg.delivery_channel
+        fixed_chat_id = hb_cfg.delivery_chat_id
+        if fixed_channel and fixed_chat_id:
+            if fixed_channel == "cli" or fixed_channel in enabled:
+                return fixed_channel, fixed_chat_id
+            logger.warning(
+                "Heartbeat fixed target channel {} is not enabled; using recent session fallback",
+                fixed_channel,
+            )
         # Prefer the most recently updated non-internal session on an enabled channel.
         for item in session_manager.list_sessions():
             key = item.get("key") or ""
@@ -911,7 +922,6 @@ def _run_gateway(
             record=True,
         )
 
-    hb_cfg = config.gateway.heartbeat
     heartbeat = HeartbeatService(
         workspace=config.workspace_path,
         provider=agent.provider,

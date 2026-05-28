@@ -705,6 +705,27 @@ class LLMProvider(ABC):
             await asyncio.sleep(chunk)
             remaining -= chunk
 
+    async def _retry_without_images_once(
+        self,
+        call: Callable[..., Awaitable[LLMResponse]],
+        kw: dict[str, Any],
+        original_messages: list[dict[str, Any]],
+        *,
+        reason: str,
+    ) -> LLMResponse | None:
+        stripped = self._strip_image_content(original_messages)
+        if stripped is None or stripped == kw["messages"]:
+            return None
+        logger.warning("{} LLM error with image content, retrying without images", reason)
+        retry_kw = dict(kw)
+        retry_kw["messages"] = stripped
+        result = await call(**retry_kw)
+        # Permanently strip images from the original messages so subsequent
+        # iterations do not repeat the error-retry cycle.
+        if result.finish_reason != "error":
+            self._strip_image_content_inplace(original_messages)
+        return result
+
     async def _run_with_retry(
         self,
         call: Callable[..., Awaitable[LLMResponse]],
@@ -734,20 +755,13 @@ class LLMProvider(ABC):
                 identical_error_count = 1 if error_key else 0
 
             if not self._is_transient_response(response):
-                stripped = self._strip_image_content(original_messages)
-                if stripped is not None and stripped != kw["messages"]:
-                    logger.warning(
-                        "Non-transient LLM error with image content, retrying without images"
-                    )
-                    retry_kw = dict(kw)
-                    retry_kw["messages"] = stripped
-                    result = await call(**retry_kw)
-                    # Permanently strip images from the original messages so
-                    # subsequent iterations do not repeat the error-retry cycle.
-                    if result.finish_reason != "error":
-                        self._strip_image_content_inplace(original_messages)
-                    return result
-                return response
+                image_fallback = await self._retry_without_images_once(
+                    call,
+                    kw,
+                    original_messages,
+                    reason="Non-transient",
+                )
+                return image_fallback or response
 
             if persistent and identical_error_count >= self._PERSISTENT_IDENTICAL_ERROR_LIMIT:
                 logger.warning(
@@ -771,6 +785,14 @@ class LLMProvider(ABC):
                     await on_retry_wait(
                         f"Model request failed after {attempt} retries, giving up."
                     )
+                image_fallback = await self._retry_without_images_once(
+                    call,
+                    kw,
+                    original_messages,
+                    reason="Transient retry-exhausted",
+                )
+                if image_fallback is not None:
+                    return image_fallback
                 break
 
             base_delay = delays[min(attempt - 1, len(delays) - 1)]

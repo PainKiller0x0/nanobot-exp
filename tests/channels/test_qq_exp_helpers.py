@@ -15,6 +15,7 @@ from nanobot.exp.qq.streaming import (
     delta_flush_policy,
     should_stream_text,
     split_stream_chunks,
+    split_stream_frame_chunks,
     supports_streaming,
 )
 
@@ -79,6 +80,7 @@ def test_streaming_policy_and_chunking() -> None:
     assert delta_flush_policy(cfg, first_frame_sent=False) == (3, 0.2)
     assert delta_flush_policy(cfg, first_frame_sent=True) == (20, 0.2)
     assert split_stream_chunks(cfg, "a" * 45) == ["a" * 20 + "\n", "a" * 20 + "\n", "a" * 5 + "\n"]
+    assert split_stream_frame_chunks(cfg, "a" * 45) == ["a" * 20, "a" * 20, "a" * 5]
 
 
 def test_streaming_policy_clamps_first_frame_to_two_chars() -> None:
