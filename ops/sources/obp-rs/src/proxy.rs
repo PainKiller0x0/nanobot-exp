@@ -1215,8 +1215,8 @@ fn apply_gemini_health_route(
         return decision;
     }
 
-    let fallback_model = router.backup_model.trim();
-    let fallback_group = group_for_role(router, "backup");
+    let fallback_model = router.emergency_model.trim();
+    let fallback_group = group_for_role(router, "emergency");
     if fallback_model.is_empty()
         || fallback_group != "gemini"
         || model_eq(fallback_model, &decision.desired_model)
@@ -1231,7 +1231,7 @@ fn apply_gemini_health_route(
     RouteDecision {
         requested_model: decision.requested_model,
         desired_model: fallback_model.to_string(),
-        role: "backup".to_string(),
+        role: "emergency".to_string(),
         group: fallback_group,
         reason: format!(
             "{}; gemini rolling health switched to {} ({})",
@@ -1848,7 +1848,7 @@ fn free_task_timeout(decision: &RouteDecision) -> Option<Duration> {
 fn fallback_roles(decision: &RouteDecision) -> &'static [&'static str] {
     if decision.group.eq_ignore_ascii_case("gemini") {
         return match decision.role.as_str() {
-            // Gemini profile must stay inside the free Gemini pool; do not leak to paid DeepSeek.
+            // Gemini profile first degrades inside Gemini, then uses the configured backup group.
             "default" | "pro" => &["emergency", "backup"],
             "emergency" => &["backup"],
             "backup" => &["emergency"],
@@ -3171,7 +3171,7 @@ mod tests {
 
         let routed = apply_gemini_health_route(&router, &stats, decision);
 
-        assert_eq!(routed.role, "backup");
+        assert_eq!(routed.role, "emergency");
         assert_eq!(routed.group, "gemini");
         assert_eq!(routed.desired_model, "gemini-3.1-flash-lite");
         assert!(routed.reason.contains("rolling health"));
@@ -3293,7 +3293,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gemini_fallbacks_do_not_leak_to_deepseek() {
+    async fn gemini_fallbacks_use_deepseek_only_as_backup() {
         let mut router = RouterConfig::default();
         RouteProfile::gemini_stack().apply_to(&mut router);
         let decision = RouteDecision {
@@ -3313,9 +3313,9 @@ mod tests {
                 ..Channel::default()
             },
             Channel {
-                name: "DeepSeek".to_string(),
+                name: "DeepSeek Backup".to_string(),
                 models: "deepseek-v4-flash".to_string(),
-                role: "default".to_string(),
+                role: "backup".to_string(),
                 group: "deepseek".to_string(),
                 priority: 1,
                 ..Channel::default()
@@ -3345,9 +3345,14 @@ mod tests {
         .await;
 
         assert!(!attempts.is_empty());
-        assert!(attempts.iter().all(|attempt| attempt.group == "gemini"));
-        assert!(attempts
-            .iter()
-            .all(|attempt| attempt.channel.group_key() == "gemini"));
+        assert_eq!(attempts[0].group, "gemini");
+        assert!(attempts.iter().any(|attempt| {
+            attempt.role == "backup"
+                && attempt.group == "deepseek"
+                && attempt.channel.group_key() == "deepseek"
+        }));
+        assert!(attempts.iter().all(|attempt| {
+            attempt.group == "gemini" || (attempt.role == "backup" && attempt.group == "deepseek")
+        }));
     }
 }

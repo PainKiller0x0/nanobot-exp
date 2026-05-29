@@ -189,11 +189,11 @@ impl RouteProfile {
             default_model: "deepseek-v4-flash".to_string(),
             pro_model: "deepseek-v4-pro".to_string(),
             emergency_model: "gemini-3.1-flash-lite".to_string(),
-            backup_model: "MiniMax-M2.7".to_string(),
+            backup_model: "deepseek-v4-flash".to_string(),
             default_group: "deepseek".to_string(),
             pro_group: "deepseek".to_string(),
             emergency_group: "gemini".to_string(),
-            backup_group: "minimax".to_string(),
+            backup_group: "deepseek".to_string(),
         }
     }
 
@@ -202,11 +202,11 @@ impl RouteProfile {
             default_model: "gemini-3.5-flash".to_string(),
             pro_model: "gemini-3.1-pro".to_string(),
             emergency_model: "gemini-3.1-flash-lite".to_string(),
-            backup_model: "gemini-3.1-flash-lite".to_string(),
+            backup_model: "deepseek-v4-flash".to_string(),
             default_group: "gemini".to_string(),
             pro_group: "gemini".to_string(),
             emergency_group: "gemini".to_string(),
-            backup_group: "gemini".to_string(),
+            backup_group: "deepseek".to_string(),
         }
     }
 
@@ -310,16 +310,18 @@ impl Default for RouterConfig {
             external_allowed_models: vec![
                 "deepseek-v4-flash".to_string(),
                 "deepseek-v4-pro".to_string(),
-                "MiniMax-M2.7".to_string(),
+                "gemini-3.5-flash".to_string(),
+                "gemini-3.1-pro".to_string(),
+                "gemini-3.1-flash-lite".to_string(),
             ],
             default_model: "deepseek-v4-flash".to_string(),
             pro_model: "deepseek-v4-pro".to_string(),
             emergency_model: "gemini-3.1-flash-lite".to_string(),
-            backup_model: "coding-plan".to_string(),
+            backup_model: "deepseek-v4-flash".to_string(),
             default_group: "deepseek".to_string(),
             pro_group: "deepseek".to_string(),
             emergency_group: "gemini".to_string(),
-            backup_group: String::new(),
+            backup_group: "deepseek".to_string(),
             default_alias_models: vec![
                 "deepseek-v4-flash".to_string(),
                 "gpt-4o-mini".to_string(),

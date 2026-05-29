@@ -79,14 +79,14 @@
     "base": "https://api.minimaxi.com/v1",
     "models": "MiniMax-M2.7",
     "model_mapping": "{\"coding-plan\": \"MiniMax-M2.7\", \"gpt-4o\": \"MiniMax-M2.7\", \"gpt-4o-mini\": \"MiniMax-M2.7\"}",
-    "status": "active",
+    "status": "disabled",
     "requests": 0,
     "last_test": null,
     "fail_count": 0,
     "disabled_until": null,
     "role": "backup",
     "group": "minimax",
-    "priority": 100,
+    "priority": 999,
     "cost_model": "minimax-m27"
   }
 ]
