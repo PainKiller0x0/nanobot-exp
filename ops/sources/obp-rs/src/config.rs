@@ -188,11 +188,11 @@ impl RouteProfile {
         Self {
             default_model: "deepseek-v4-flash".to_string(),
             pro_model: "deepseek-v4-pro".to_string(),
-            emergency_model: "LongCat-2.0-Preview".to_string(),
+            emergency_model: "gemini-3.1-flash-lite".to_string(),
             backup_model: "MiniMax-M2.7".to_string(),
             default_group: "deepseek".to_string(),
             pro_group: "deepseek".to_string(),
-            emergency_group: "longcat".to_string(),
+            emergency_group: "gemini".to_string(),
             backup_group: "minimax".to_string(),
         }
     }
@@ -311,15 +311,14 @@ impl Default for RouterConfig {
                 "deepseek-v4-flash".to_string(),
                 "deepseek-v4-pro".to_string(),
                 "MiniMax-M2.7".to_string(),
-                "LongCat-2.0-Preview".to_string(),
             ],
             default_model: "deepseek-v4-flash".to_string(),
             pro_model: "deepseek-v4-pro".to_string(),
-            emergency_model: "LongCat-2.0-Preview".to_string(),
+            emergency_model: "gemini-3.1-flash-lite".to_string(),
             backup_model: "coding-plan".to_string(),
             default_group: "deepseek".to_string(),
             pro_group: "deepseek".to_string(),
-            emergency_group: "longcat".to_string(),
+            emergency_group: "gemini".to_string(),
             backup_group: String::new(),
             default_alias_models: vec![
                 "deepseek-v4-flash".to_string(),

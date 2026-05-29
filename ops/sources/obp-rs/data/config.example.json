@@ -61,14 +61,14 @@
     "base": "https://api.longcat.chat/openai",
     "models": "LongCat-2.0-Preview",
     "model_mapping": "{\"gpt-4o\": \"LongCat-2.0-Preview\", \"gpt-4o-mini\": \"LongCat-2.0-Preview\", \"gpt-3.5-turbo\": \"LongCat-2.0-Preview\", \"deepseek-v4-flash\": \"LongCat-2.0-Preview\", \"deepseek-v4-pro\": \"LongCat-2.0-Preview\", \"gemini-flash\": \"LongCat-2.0-Preview\", \"gemini-pro\": \"LongCat-2.0-Preview\", \"coding-plan\": \"LongCat-2.0-Preview\", \"LongCat-Flash-Chat\": \"LongCat-2.0-Preview\"}",
-    "status": "active",
+    "status": "disabled",
     "requests": 0,
     "last_test": null,
     "fail_count": 0,
     "disabled_until": null,
-    "role": "emergency",
+    "role": "backup",
     "group": "longcat",
-    "priority": 100,
+    "priority": 999,
     "cost_model": "longcat"
   },
   {

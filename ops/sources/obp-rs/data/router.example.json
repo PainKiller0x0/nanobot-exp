@@ -6,7 +6,6 @@
     "deepseek-v4-flash",
     "deepseek-v4-pro",
     "MiniMax-M2.7",
-    "LongCat-2.0-Preview",
     "gemini-flash",
     "gemini-pro",
     "gemini-3.5-flash",
@@ -14,11 +13,11 @@
   ],
   "default_model": "deepseek-v4-flash",
   "pro_model": "deepseek-v4-pro",
-  "emergency_model": "LongCat-2.0-Preview",
+  "emergency_model": "gemini-3.1-flash-lite",
   "backup_model": "MiniMax-M2.7",
   "default_group": "deepseek",
   "pro_group": "deepseek",
-  "emergency_group": "longcat",
+  "emergency_group": "gemini",
   "backup_group": "minimax",
   "default_alias_models": [
     "deepseek-v4-flash",
@@ -34,11 +33,11 @@
     "default": {
       "default_model": "deepseek-v4-flash",
       "pro_model": "deepseek-v4-pro",
-      "emergency_model": "LongCat-2.0-Preview",
+      "emergency_model": "gemini-3.1-flash-lite",
       "backup_model": "MiniMax-M2.7",
       "default_group": "deepseek",
       "pro_group": "deepseek",
-      "emergency_group": "longcat",
+      "emergency_group": "gemini",
       "backup_group": "minimax"
     },
     "gemini": {
