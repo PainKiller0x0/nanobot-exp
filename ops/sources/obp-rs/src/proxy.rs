@@ -1841,7 +1841,7 @@ fn free_task_timeout(decision: &RouteDecision) -> Option<Duration> {
     let ms = env::var("OBP_FREE_TASK_TIMEOUT_MS")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .unwrap_or(8_000);
+        .unwrap_or(15_000);
     Some(Duration::from_millis(ms.max(500)))
 }
 
