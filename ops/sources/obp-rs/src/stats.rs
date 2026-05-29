@@ -847,7 +847,7 @@ mod tests {
             None,
             "LongCat".to_string(),
             "deepseek-v4-flash".to_string(),
-            "LongCat-Flash-Chat".to_string(),
+            "LongCat-2.0-Preview".to_string(),
             "emergency".to_string(),
             "test".to_string(),
             "default".to_string(),
@@ -886,7 +886,7 @@ mod tests {
             .insert("deepseek-v4-flash".to_string(), paid.clone());
         stats
             .by_model
-            .insert("LongCat-Flash-Chat".to_string(), free.clone());
+            .insert("LongCat-2.0-Preview".to_string(), free.clone());
         let mut month = UsageBucket::default();
         month.add_bucket(&paid);
         month.add_bucket(&free);
@@ -924,7 +924,7 @@ mod tests {
             .insert("deepseek-v4-flash".to_string(), paid.clone());
         stats
             .by_model
-            .insert("LongCat-Flash-Chat".to_string(), free);
+            .insert("LongCat-2.0-Preview".to_string(), free);
         stats.paid.total.requests = 1;
 
         stats.rebuild_billing_if_empty();
@@ -950,7 +950,7 @@ mod tests {
             .insert("deepseek-v4-flash".to_string(), paid.clone());
         stats
             .by_model
-            .insert("LongCat-Flash-Chat".to_string(), free.clone());
+            .insert("LongCat-2.0-Preview".to_string(), free.clone());
         let mut total = UsageBucket::default();
         total.add_bucket(&paid);
         total.add_bucket(&free);
@@ -990,7 +990,7 @@ mod tests {
             .insert("deepseek-v4-flash".to_string(), paid.clone());
         stats
             .by_model
-            .insert("LongCat-Flash-Chat".to_string(), free.clone());
+            .insert("LongCat-2.0-Preview".to_string(), free.clone());
         let mut total = UsageBucket::default();
         total.add_bucket(&paid);
         total.add_bucket(&free);

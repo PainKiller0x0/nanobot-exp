@@ -744,7 +744,8 @@ async fn handle_proxy(
         let status = StatusCode::from_u16(response.status().as_u16())
             .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let status_u16 = status.as_u16();
-        let retryable = retry_statuses.contains(&status_u16);
+        let retryable = retry_statuses.contains(&status_u16)
+            || (!status.is_success() && !image_generation_request);
 
         if stream {
             if retryable && !image_generation_request && attempt_idx + 1 < attempts.len() {
@@ -1726,7 +1727,7 @@ async fn build_attempts(
             &mut specs,
             "emergency".to_string(),
             "longcat".to_string(),
-            "LongCat-Flash-Chat".to_string(),
+            "LongCat-2.0-Preview".to_string(),
             true,
         );
     }
@@ -2765,7 +2766,7 @@ mod tests {
 
         assert_eq!(decision.role, "emergency");
         assert_eq!(decision.group, "longcat");
-        assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
+        assert_eq!(decision.desired_model, "LongCat-2.0-Preview");
         assert!(decision.reason.contains("free task"));
     }
 
@@ -2838,7 +2839,7 @@ mod tests {
 
         assert_eq!(decision.role, "emergency");
         assert_eq!(decision.group, "longcat");
-        assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
+        assert_eq!(decision.desired_model, "LongCat-2.0-Preview");
     }
 
     #[test]
@@ -2866,7 +2867,7 @@ mod tests {
 
         assert_eq!(decision.role, "emergency");
         assert_eq!(decision.group, "longcat");
-        assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
+        assert_eq!(decision.desired_model, "LongCat-2.0-Preview");
         assert!(decision.reason.contains("extract key facts"));
     }
 
@@ -2982,7 +2983,7 @@ mod tests {
         RouteProfile::gemini_stack().apply_to(&mut router);
         let decision = RouteDecision {
             requested_model: "deepseek-v4-flash".to_string(),
-            desired_model: "LongCat-Flash-Chat".to_string(),
+            desired_model: "LongCat-2.0-Preview".to_string(),
             role: "emergency".to_string(),
             group: "longcat".to_string(),
             reason: "rule free-health-and-memory".to_string(),
@@ -2990,8 +2991,8 @@ mod tests {
         let channels = vec![
             Channel {
                 name: "LongCat".to_string(),
-                models: "LongCat-Flash-Chat".to_string(),
-                model_mapping: r#"{"deepseek-v4-flash":"LongCat-Flash-Chat"}"#.to_string(),
+                models: "LongCat-2.0-Preview".to_string(),
+                model_mapping: r#"{"deepseek-v4-flash":"LongCat-2.0-Preview"}"#.to_string(),
                 role: "emergency".to_string(),
                 group: "longcat".to_string(),
                 priority: 10,
@@ -3032,7 +3033,10 @@ mod tests {
 
         assert_eq!(attempts.first().unwrap().channel.name, "LongCat");
         assert_eq!(attempts.first().unwrap().group, "longcat");
-        assert_eq!(attempts.first().unwrap().actual_model, "LongCat-Flash-Chat");
+        assert_eq!(
+            attempts.first().unwrap().actual_model,
+            "LongCat-2.0-Preview"
+        );
     }
 
     #[tokio::test]
@@ -3041,7 +3045,7 @@ mod tests {
         RouteProfile::gemini_stack().apply_to(&mut router);
         let decision = RouteDecision {
             requested_model: "deepseek-v4-flash".to_string(),
-            desired_model: "LongCat-Flash-Chat".to_string(),
+            desired_model: "LongCat-2.0-Preview".to_string(),
             role: "emergency".to_string(),
             group: "longcat".to_string(),
             reason: "rule free-health-and-memory: free task pattern matched".to_string(),
@@ -3049,8 +3053,8 @@ mod tests {
         let channels = vec![
             Channel {
                 name: "LongCat".to_string(),
-                models: "LongCat-Flash-Chat".to_string(),
-                model_mapping: r#"{"deepseek-v4-flash":"LongCat-Flash-Chat"}"#.to_string(),
+                models: "LongCat-2.0-Preview".to_string(),
+                model_mapping: r#"{"deepseek-v4-flash":"LongCat-2.0-Preview"}"#.to_string(),
                 role: "emergency".to_string(),
                 group: "longcat".to_string(),
                 priority: 10,
@@ -3140,7 +3144,7 @@ mod tests {
 
         assert_eq!(decision.role, "emergency");
         assert_eq!(decision.group, "longcat");
-        assert_eq!(decision.desired_model, "LongCat-Flash-Chat");
+        assert_eq!(decision.desired_model, "LongCat-2.0-Preview");
     }
 
     #[test]
