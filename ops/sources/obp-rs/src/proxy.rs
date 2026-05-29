@@ -1722,16 +1722,6 @@ async fn build_attempts(
         return attempts_from_specs(state, channels, decision, protocol, specs).await;
     }
 
-    if decision.group.eq_ignore_ascii_case("gemini") {
-        add_attempt_spec(
-            &mut specs,
-            "emergency".to_string(),
-            "longcat".to_string(),
-            "LongCat-2.0-Preview".to_string(),
-            true,
-        );
-    }
-
     for &role in fallback_roles(decision) {
         if role == "any" {
             add_attempt_spec(
@@ -2764,9 +2754,9 @@ mod tests {
             "default-nanobot",
         );
 
-        assert_eq!(decision.role, "emergency");
-        assert_eq!(decision.group, "longcat");
-        assert_eq!(decision.desired_model, "LongCat-2.0-Preview");
+        assert_eq!(decision.role, "default");
+        assert_eq!(decision.group, "gemini");
+        assert_eq!(decision.desired_model, "gemini-3.1-flash-lite");
         assert!(decision.reason.contains("free task"));
     }
 
@@ -2837,9 +2827,9 @@ mod tests {
             "default-nanobot",
         );
 
-        assert_eq!(decision.role, "emergency");
-        assert_eq!(decision.group, "longcat");
-        assert_eq!(decision.desired_model, "LongCat-2.0-Preview");
+        assert_eq!(decision.role, "default");
+        assert_eq!(decision.group, "gemini");
+        assert_eq!(decision.desired_model, "gemini-3.1-flash-lite");
     }
 
     #[test]
@@ -2865,9 +2855,9 @@ mod tests {
             "default-nanobot",
         );
 
-        assert_eq!(decision.role, "emergency");
-        assert_eq!(decision.group, "longcat");
-        assert_eq!(decision.desired_model, "LongCat-2.0-Preview");
+        assert_eq!(decision.role, "default");
+        assert_eq!(decision.group, "gemini");
+        assert_eq!(decision.desired_model, "gemini-3.1-flash-lite");
         assert!(decision.reason.contains("extract key facts"));
     }
 
@@ -3142,9 +3132,9 @@ mod tests {
             "default-nanobot",
         );
 
-        assert_eq!(decision.role, "emergency");
-        assert_eq!(decision.group, "longcat");
-        assert_eq!(decision.desired_model, "LongCat-2.0-Preview");
+        assert_eq!(decision.role, "default");
+        assert_eq!(decision.group, "gemini");
+        assert_eq!(decision.desired_model, "gemini-3.1-flash-lite");
     }
 
     #[test]

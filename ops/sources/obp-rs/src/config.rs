@@ -113,11 +113,11 @@ impl Channel {
         if let Some(mapped) = lookup_mapping(mapping.as_ref(), desired_model) {
             return mapped;
         }
-        if let Some(mapped) = lookup_mapping(mapping.as_ref(), requested_model) {
-            return mapped;
-        }
         if !desired_model.trim().is_empty() && self.supports_model(desired_model) {
             return desired_model.to_string();
+        }
+        if let Some(mapped) = lookup_mapping(mapping.as_ref(), requested_model) {
+            return mapped;
         }
         if !requested_model.trim().is_empty() && self.supports_model(requested_model) {
             return requested_model.to_string();
@@ -432,9 +432,9 @@ fn default_route_rules() -> Vec<RouteRule> {
         RouteRule {
             name: "free-health-and-memory".to_string(),
             priority: 10,
-            role: "emergency".to_string(),
-            model: "LongCat-2.0-Preview".to_string(),
-            group: "longcat".to_string(),
+            role: "default".to_string(),
+            model: "gemini-3.1-flash-lite".to_string(),
+            group: "gemini".to_string(),
             reason: "free task pattern matched".to_string(),
             hint_patterns: vec![
                 "heartbeat".to_string(),
