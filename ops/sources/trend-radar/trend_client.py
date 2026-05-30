@@ -44,11 +44,20 @@ post_json = HTTP.post_json
 
 
 OBP_CHAT_URL = os.environ.get("TREND_LLM_URL", "http://127.0.0.1:8000/v1/chat/completions").strip()
-OBP_MODEL = os.environ.get("TREND_LLM_MODEL", "LongCat-Flash-Chat").strip()
+OBP_MODEL = os.environ.get("TREND_LLM_MODEL", "gemini-3.1-flash-lite").strip()
 OBP_SOURCE = os.environ.get("TREND_OBP_SOURCE", "trend-radar").strip() or "trend-radar"
 NOISE_KEYWORDS = (
     "恋综", "花少", "综艺", "明星", "粉丝", "塌房", "官宣", "路透", "红毯", "演唱会",
     "哥哥", "姐姐", "姐弟恋", "cp", "CP", "代言", "私生", "站姐", "饭圈",
+)
+
+
+BAD_SUMMARY_PATTERNS = (
+    "目前缺少更多背景信息",
+    "建议先作为待观察线索",
+    "待观察线索",
+    "缺少更多背景",
+    "公开信息有限",
 )
 
 
@@ -118,9 +127,13 @@ def cmd_daily(args: argparse.Namespace) -> str:
     items = select_daily_items(data.get("items") or [], args.limit)
     if not items:
         return "热点简报暂无内容"
-    summaries = [] if args.no_llm else summarize_with_free_model(items)
-    if len(summaries) != len(items):
-        summaries = [fallback_summary(item) for item in items]
+    summaries = [fallback_summary(item) for item in items]
+    if not args.no_llm:
+        model_summaries = summarize_with_free_model(items)
+        for i, summary in enumerate(model_summaries[: len(items)]):
+            clean = clean_summary(summary)
+            if clean:
+                summaries[i] = clean
     updated = fmt_time(data.get("updated_at"))
     lines = [f"📰 Trend Radar 每日新闻简报（{updated}）", f"数据：{len(items)} 条重点，{len(data.get('last_errors') or [])} 个源异常", ""]
     for idx, (item, summary) in enumerate(zip(items, summaries), 1):
@@ -169,6 +182,15 @@ def is_noise_item(item: dict[str, Any]) -> bool:
     return False
 
 
+def clean_summary(text: Any) -> str:
+    summary = normalize_sentence(text or "")
+    if not summary:
+        return ""
+    if any(pattern in summary for pattern in BAD_SUMMARY_PATTERNS):
+        return ""
+    return short(summary, 128)
+
+
 def summarize_with_free_model(items: list[dict[str, Any]]) -> list[str]:
     if not OBP_CHAT_URL or not OBP_MODEL:
         return []
@@ -185,7 +207,8 @@ def summarize_with_free_model(items: list[dict[str, Any]]) -> list[str]:
         "你是新闻简报编辑。请为每条新闻写两句中文摘要，客观、克制、信息密度高。"
         "第一句交代发生了什么，第二句补充背景、影响、争议或为什么值得关注。"
         "要求：每条 45-90 个汉字；不要重复标题；不要写'来自某热榜'；不要营销腔；"
-        "如果原始信息不足，可以明确说目前公开信息有限，但仍要给出可读背景。"
+        "如果原始信息不足，不要编背景，也不要写'缺少背景/待观察/公开信息有限'这类套话；"
+        "直接基于标题、来源和排名给出一句克制判断。"
         "只输出 JSON 数组，长度必须和输入一致，格式如 [{\"summary\":\"...\"}]。\n\n"
         + json.dumps(rows, ensure_ascii=False)
     )
@@ -210,20 +233,24 @@ def summarize_with_free_model(items: list[dict[str, Any]]) -> list[str]:
             source=OBP_SOURCE,
         )
         parsed = extract_json_array(content)
-        summaries = [normalize_sentence(x.get("summary") if isinstance(x, dict) else x) for x in parsed]
-        summaries = [s for s in summaries if s]
-        return summaries if len(summaries) == len(items) else []
+        summaries = [clean_summary(x.get("summary") if isinstance(x, dict) else x) for x in parsed]
+        return summaries[: len(items)]
     except Exception:
         return []
 
 
 def fallback_summary(item: dict[str, Any]) -> str:
-    raw = normalize_sentence(item.get("summary") or "")
+    raw = clean_summary(item.get("summary") or "")
     if raw and not raw.endswith("热度。"):
-        return short(raw, 128)
+        return raw
     title = str(item.get("title") or "").strip()
     source = item.get("source_name") or item.get("source_id") or "热榜"
-    return short(f"{source}高位话题，核心关注点是：{title}。目前缺少更多背景信息，建议先作为待观察线索。", 128)
+    rank = item.get("rank") or item.get("best_rank") or "-"
+    tags = [str(tag) for tag in item.get("tags") or [] if str(tag).strip()]
+    tag_text = "、".join(tags[:3])
+    if tag_text:
+        return short(f"{source} #{rank}：{title}。相关标签：{tag_text}。", 128)
+    return short(f"{source} #{rank}：{title}。", 128)
 
 
 def cmd_latest(args: argparse.Namespace) -> str:
@@ -298,7 +325,7 @@ def build_parser() -> argparse.ArgumentParser:
     daily = sub.add_parser("daily")
     daily.add_argument("--limit", type=int, default=8)
     daily.add_argument("--refresh", action="store_true")
-    daily.add_argument("--no-llm", action="store_true", help="disable LongCat summary polishing")
+    daily.add_argument("--no-llm", action="store_true", help="disable LLM summary polishing")
 
     latest = sub.add_parser("latest")
     latest.add_argument("--limit", type=int, default=12)
