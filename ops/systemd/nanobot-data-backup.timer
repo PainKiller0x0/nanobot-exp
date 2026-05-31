@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Nanobot data backup snapshot
+
+[Timer]
+OnCalendar=*-*-* 03:25:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=nanobot-data-backup.service
+
+[Install]
+WantedBy=timers.target

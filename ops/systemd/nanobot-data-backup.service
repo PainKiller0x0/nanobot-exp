@@ -1,0 +1,12 @@
+[Unit]
+Description=Nanobot data backup snapshot
+Documentation=https://github.com/PainKiller0x0/nanobot-exp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/nanobot-ops/scripts/nanobot-ops-guard.py --mode backup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

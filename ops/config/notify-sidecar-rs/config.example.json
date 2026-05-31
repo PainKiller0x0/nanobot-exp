@@ -41,6 +41,33 @@
       "timezone": "Asia/Shanghai",
       "command": "python3 /root/.nanobot/workspace/skills/personal-ops-assistant/copilot.py weekly",
       "timeout_secs": 30
+    },
+    {
+      "id": "ops-guard-heal",
+      "name": "Nanobot 服务自愈巡检",
+      "enabled": false,
+      "schedule": "*/5 * * * *",
+      "timezone": "Asia/Shanghai",
+      "command": "/root/nanobot-ops/scripts/nanobot-ops-guard.py --mode heal",
+      "timeout_secs": 90
+    },
+    {
+      "id": "ops-guard-upstream",
+      "name": "Nanobot 上游版本通知",
+      "enabled": false,
+      "schedule": "30 10 * * 1",
+      "timezone": "Asia/Shanghai",
+      "command": "/root/nanobot-ops/scripts/nanobot-ops-guard.py --mode upstream",
+      "timeout_secs": 45
+    },
+    {
+      "id": "ops-guard-obp-budget",
+      "name": "OBP 月预算告警",
+      "enabled": false,
+      "schedule": "10 9,21 * * *",
+      "timezone": "Asia/Shanghai",
+      "command": "NANOBOT_OBP_MONTHLY_BUDGET_CNY=${NANOBOT_OBP_MONTHLY_BUDGET_CNY:-10} /root/nanobot-ops/scripts/nanobot-ops-guard.py --mode obp-budget",
+      "timeout_secs": 45
     }
   ]
 }

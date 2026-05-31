@@ -12,7 +12,7 @@ fi
 if [ -f "$repo/config/evolution.json" ]; then
   install -m 0644 "$repo/config/evolution.json" /root/.nanobot/evolution.json
 fi
-for f in "$repo"/systemd/*.service "$repo"/systemd/*.target; do
+for f in "$repo"/systemd/*.service "$repo"/systemd/*.target "$repo"/systemd/*.timer; do
   [ -e "$f" ] || continue
   install -m 0644 "$f" "/etc/systemd/system/$(basename "$f")"
 done
