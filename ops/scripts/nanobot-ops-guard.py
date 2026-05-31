@@ -37,6 +37,7 @@ STATE_FILE = STATE_DIR / 'state.json'
 BACKUP_DIR = ROOT / 'backups' / 'ops-guard'
 SIDECAR_API = os.environ.get('NANOBOT_SIDECAR_API', 'http://127.0.0.1:8093/api/sidecars')
 OBP_STATS_API = os.environ.get('NANOBOT_OBP_STATS_API', 'http://127.0.0.1:8000/admin/stats')
+OBP_ROUTER_API = os.environ.get('NANOBOT_OBP_ROUTER_API', 'http://127.0.0.1:8000/admin/router')
 UPSTREAM_RELEASE_API = os.environ.get(
     'NANOBOT_UPSTREAM_RELEASE_API',
     'https://api.github.com/repos/HKUDS/nanobot/releases/latest',
@@ -349,45 +350,77 @@ def by_source_summary(stats: dict[str, Any]) -> str:
     return '\n'.join(rows) if rows else '- 暂无付费来源记录'
 
 
-def run_obp_budget(args: argparse.Namespace, state: dict[str, Any]) -> list[str]:
+def obp_budget_thresholds() -> list[tuple[str, float]]:
+    try:
+        router = http_json(OBP_ROUTER_API, timeout=8)
+    except Exception:
+        router = {}
+    values = [
+        ('warn', '\u63d0\u9192\u7ebf', router.get('monthly_warn_rmb')),
+        ('downgrade', '\u964d\u7ea7\u7ebf', router.get('monthly_downgrade_rmb')),
+        ('hard-limit', '\u7194\u65ad\u7ebf', router.get('monthly_hard_limit_rmb')),
+    ]
+    thresholds: list[tuple[str, float]] = []
+    for key, label, raw in values:
+        try:
+            amount = float(raw)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if amount > 0:
+            thresholds.append((f'{key}:{amount:.2f}:{label}', amount))
+    if thresholds:
+        return thresholds
+
     budget = float(os.environ.get('NANOBOT_OBP_MONTHLY_BUDGET_CNY', '10'))
     if budget <= 0:
         return []
-    ratios = []
+    fallback = []
     for raw in os.environ.get('NANOBOT_OBP_BUDGET_ALERT_RATIOS', '0.5,0.8,1.0').split(','):
         raw = raw.strip()
-        if raw:
-            ratios.append(float(raw))
-    ratios = sorted(set(ratios))
+        if not raw:
+            continue
+        ratio = float(raw)
+        fallback.append((f'ratio:{ratio:.3f}:\u9884\u7b97 {ratio * 100:.0f}%', budget * ratio))
+    return sorted(fallback, key=lambda item: item[1])
+
+
+def threshold_label(level: str) -> str:
+    parts = level.split(':', 2)
+    return parts[2] if len(parts) == 3 else level
+
+
+def run_obp_budget(args: argparse.Namespace, state: dict[str, Any]) -> list[str]:
+    thresholds = obp_budget_thresholds()
+    if not thresholds:
+        return []
     month_key = shanghai_now().strftime('%Y-%m')
     stats = http_json(OBP_STATS_API, timeout=8)
     cost = paid_month_cost(stats, month_key)
     obp_state = state.setdefault('obp_budget', {}).setdefault(month_key, {'notified': []})
     notified = set(str(x) for x in obp_state.get('notified', []))
     messages = []
-    for ratio in ratios:
-        level = f'{ratio:.3f}'
-        if cost >= budget * ratio and level not in notified:
-            pct = ratio * 100
+    for level, amount in thresholds:
+        if cost >= amount and level not in notified:
             messages.append(
-                'OBP 月预算提醒：\n'
-                f'- 本月付费消耗：¥{cost:.4f}\n'
-                f'- 预算：¥{budget:.2f}\n'
-                f'- 已触达：{pct:.0f}% 阈值\n'
-                '按来源：\n'
+                'OBP \u6708\u9884\u7b97\u63d0\u9192\uff1a\n'
+                f'- \u672c\u6708\u4ed8\u8d39\u6d88\u8017\uff1a\u00a5{cost:.4f}\n'
+                f'- \u5df2\u8d85\u8fc7\uff1a{threshold_label(level)}\uff08\u00a5{amount:.2f}\uff09\n'
+                '\u6309\u6765\u6e90\uff1a\n'
                 f'{by_source_summary(stats)}'
             )
             notified.add(level)
     obp_state['notified'] = sorted(notified)
     obp_state['last_cost_cny'] = cost
     obp_state['last_checked_at'] = iso_now()
+    obp_state['thresholds'] = [{'level': threshold_label(level), 'amount': amount} for level, amount in thresholds]
     save_state(state, args.dry_run)
     if args.force_report and not messages:
+        threshold_text = ', '.join(f'{threshold_label(level)} \u00a5{amount:.2f}' for level, amount in thresholds)
         messages.append(
-            'OBP 月预算正常：\n'
-            f'- 本月付费消耗：¥{cost:.4f}\n'
-            f'- 预算：¥{budget:.2f}\n'
-            '按来源：\n'
+            'OBP \u6708\u9884\u7b97\u6b63\u5e38\uff1a\n'
+            f'- \u672c\u6708\u4ed8\u8d39\u6d88\u8017\uff1a\u00a5{cost:.4f}\n'
+            f'- \u9608\u503c\uff1a{threshold_text}\n'
+            '\u6309\u6765\u6e90\uff1a\n'
             f'{by_source_summary(stats)}'
         )
     return messages
