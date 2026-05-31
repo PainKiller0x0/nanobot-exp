@@ -6,6 +6,7 @@ QQChannel should stay focused on botpy send/receive mechanics.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +32,20 @@ class PreparedOutboundContent:
 
 def _valid_signed_payload(raw: str | None) -> bool:
     return bool(raw and raw.startswith(qq_signatures.SIGNED_PAYLOAD_PREFIX))
+
+
+async def _verify_signed_payload(
+    content: str,
+    *,
+    logger: Any | None,
+) -> str | None:
+    # QQ sidecar verification is HTTP-bound and historically synchronous.
+    # Keep it off the event loop so article pushes do not stall other QQ sends.
+    return await asyncio.to_thread(
+        qq_signatures.verify_and_unwrap_signed_payload,
+        content,
+        logger=logger,
+    )
 
 
 async def _recover_wechat_by_digest(
@@ -73,7 +88,7 @@ async def _unwrap_or_recover_signed_payload(
     logger: Any | None,
     timeout_sec: float = 45.0,
 ) -> str | None:
-    safe_content = qq_signatures.verify_and_unwrap_signed_payload(content, logger=logger)
+    safe_content = await _verify_signed_payload(content, logger=logger)
     if safe_content is not None:
         return safe_content
 
@@ -84,7 +99,7 @@ async def _unwrap_or_recover_signed_payload(
     if sub_id is not None:
         recovered_wechat = await run_wechat_signed(sub_id, timeout_sec=timeout_sec, force=True)
         if _valid_signed_payload(recovered_wechat):
-            recovered_body = qq_signatures.verify_and_unwrap_signed_payload(
+            recovered_body = await _verify_signed_payload(
                 recovered_wechat or "",
                 logger=logger,
             )
@@ -107,7 +122,7 @@ async def _unwrap_or_recover_signed_payload(
             logger=logger,
         )
         if _valid_signed_payload(recovered_wechat):
-            recovered_body = qq_signatures.verify_and_unwrap_signed_payload(
+            recovered_body = await _verify_signed_payload(
                 recovered_wechat or "",
                 logger=logger,
             )
@@ -123,7 +138,7 @@ async def _unwrap_or_recover_signed_payload(
 
     recovered_yage = await run_yage_signed(timeout_sec=timeout_sec, force_latest=True)
     if _valid_signed_payload(recovered_yage):
-        recovered_body = qq_signatures.verify_and_unwrap_signed_payload(
+        recovered_body = await _verify_signed_payload(
             recovered_yage or "",
             logger=logger,
         )

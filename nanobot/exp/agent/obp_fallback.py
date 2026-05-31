@@ -26,7 +26,7 @@ class OBPFallbackClient:
         base = source.get("NANOBOT_OBP_FALLBACK_BASE", "").strip()
         if not base:
             return None
-        model = source.get("NANOBOT_OBP_FALLBACK_MODEL", "LongCat-Flash-Chat").strip()
+        model = source.get("NANOBOT_OBP_FALLBACK_MODEL", "gemini-3.1-flash-lite").strip()
         api_key = (
             source.get("NANOBOT_OBP_FALLBACK_API_KEY", "").strip()
             or source.get("OBP_PROXY_TOKEN", "").strip()

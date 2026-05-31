@@ -571,13 +571,7 @@ class QQChannel(BaseChannel):
                             content=safe_content,
                         )
                         chunks_sent += 1
-                        await qq_signed_delivery.ack_delivery(
-                            self._http,
-                            safe_content,
-                            wechat_ack,
-                            chat_id=msg.chat_id,
-                            logger=logger,
-                        )
+                        self._schedule_delivery_ack(safe_content, wechat_ack, chat_id=msg.chat_id)
                         return
                     except Exception as e:
                         logger.warning(
@@ -627,13 +621,7 @@ class QQChannel(BaseChannel):
                         logger.error("QQ text send failed chat_id={} err={}", msg.chat_id, e)
                         return
                 if is_signed_payload:
-                    await qq_signed_delivery.ack_delivery(
-                        self._http,
-                        safe_content,
-                        wechat_ack,
-                        chat_id=msg.chat_id,
-                        logger=logger,
-                    )
+                    self._schedule_delivery_ack(safe_content, wechat_ack, chat_id=msg.chat_id)
         finally:
             finished_at = time.perf_counter()
             turn_done_ms = _elapsed_perf_ms(msg.metadata.get("_turn_started_perf"), finished_at)
@@ -717,6 +705,35 @@ class QQChannel(BaseChannel):
             msg_id=msg_id,
             payload=payload,
         )
+
+    def _schedule_delivery_ack(
+        self,
+        signed_payload: str,
+        ack_url: str | None,
+        *,
+        chat_id: str,
+    ) -> None:
+        if not ack_url:
+            return
+
+        async def _run() -> None:
+            try:
+                await qq_signed_delivery.ack_delivery(
+                    self._http,
+                    signed_payload,
+                    ack_url,
+                    chat_id=chat_id,
+                    logger=logger,
+                )
+            except Exception as exc:
+                logger.warning("QQ signed delivery ack failed chat_id={} err={}", chat_id, exc)
+
+        coro = _run()
+        try:
+            asyncio.create_task(coro)
+        except RuntimeError:
+            coro.close()
+            logger.debug("QQ signed delivery ack skipped: no running event loop chat_id={}", chat_id)
 
     def _should_stream_text(
         self,

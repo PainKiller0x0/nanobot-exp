@@ -9,7 +9,7 @@ use std::{
 
 use axum::{
     body::{Body, Bytes},
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Request, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri},
     middleware,
     response::{Html, IntoResponse, Response},
@@ -329,6 +329,7 @@ async fn main() {
         .route("/api/run", post(api_run))
         .route("/api/trigger", post(api_trigger))
         .with_state(app_state.clone())
+        .layer(middleware::from_fn(require_write_auth))
         .layer(middleware::map_response(add_noindex_headers));
 
     tokio::spawn(auto_refresh_loop(app_state.clone()));
@@ -339,6 +340,32 @@ async fn main() {
         .await
         .expect("bind failed");
     axum::serve(listener, app).await.expect("server failed");
+}
+
+async fn require_write_auth(req: Request, next: middleware::Next) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    if is_mutating_method(&method)
+        && !is_write_auth_exempt(&path)
+        && !is_obp_proxy_authorized(req.headers())
+    {
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({
+                "ok": false,
+                "error": "dashboard_write_requires_authentication",
+            }),
+        );
+    }
+    next.run(req).await
+}
+
+fn is_mutating_method(method: &Method) -> bool {
+    !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+fn is_write_auth_exempt(path: &str) -> bool {
+    matches!(path, "/obp-auth/login" | "/obp-auth/logout")
 }
 
 async fn add_noindex_headers(mut response: Response) -> Response {
@@ -1631,6 +1658,73 @@ async fn api_task_run(State(state): State<AppState>, AxumPath(id): AxumPath<Stri
     }
 }
 
+fn pick_json_fields(value: &serde_json::Value, keys: &[&str]) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    for key in keys {
+        if let Some(item) = value.get(*key) {
+            out.insert((*key).to_string(), item.clone());
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+fn slim_model_log(log: serde_json::Value) -> serde_json::Value {
+    pick_json_fields(
+        &log,
+        &[
+            "time",
+            "status",
+            "source",
+            "route",
+            "model",
+            "actual_model",
+            "requested_model",
+            "route_reason",
+            "channel",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "cached_tokens",
+            "cost_cny",
+            "paid",
+        ],
+    )
+}
+
+fn slim_obp_stats(stats: &serde_json::Value) -> serde_json::Value {
+    pick_json_fields(
+        stats,
+        &[
+            "paid",
+            "free",
+            "total",
+            "month",
+            "budget",
+            "deepseek_balance",
+            "deepseek_usage",
+        ],
+    )
+}
+
+fn slim_obp_router(router: &serde_json::Value) -> serde_json::Value {
+    pick_json_fields(
+        router,
+        &[
+            "enabled",
+            "dry_run",
+            "default_model",
+            "pro_model",
+            "emergency_model",
+            "backup_model",
+            "default_group",
+            "pro_group",
+            "emergency_group",
+            "backup_group",
+            "source_route_profiles",
+        ],
+    )
+}
+
 async fn api_model_routes(State(state): State<AppState>) -> impl IntoResponse {
     let stats = fetch_json_value(&state.http, "http://127.0.0.1:8000/admin/stats")
         .await
@@ -1648,6 +1742,7 @@ async fn api_model_routes(State(state): State<AppState>) -> impl IntoResponse {
     }
     recent.reverse();
     recent.truncate(80);
+    let recent = recent.into_iter().map(slim_model_log).collect::<Vec<_>>();
 
     let mut pro_reasons = serde_json::Map::new();
     let mut pro_count = 0_u64;
@@ -1682,8 +1777,8 @@ async fn api_model_routes(State(state): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "ok": true,
         "now": shanghai_now().format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-        "stats": stats,
-        "router": router,
+        "stats": slim_obp_stats(&stats),
+        "router": slim_obp_router(&router),
         "recent": recent,
         "pro_count": pro_count,
         "pro_reasons": pro_reasons,

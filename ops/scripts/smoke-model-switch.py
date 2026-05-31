@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import subprocess
 
 from smoke_common import (
     CheckResult as Check,

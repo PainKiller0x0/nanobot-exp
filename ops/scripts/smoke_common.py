@@ -8,12 +8,37 @@ server without importing Nanobot or installing test-only packages.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+
+def obp_proxy_token() -> str:
+    token = os.environ.get("OBP_PROXY_TOKEN", "").strip()
+    if token:
+        return token
+    for raw in (os.environ.get("OBP_PROXY_ENV_FILE", ""), "/root/.nanobot/secrets/obp-proxy.env"):
+        if not raw:
+            continue
+        try:
+            for line in Path(raw).read_text(encoding="utf-8").splitlines():
+                if line.strip().startswith("OBP_PROXY_TOKEN="):
+                    return line.split("=", 1)[1].strip().strip('"\'')
+        except Exception:
+            continue
+    return ""
+
+def add_write_auth(headers: dict[str, str], method: str) -> None:
+    if method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return
+    token = obp_proxy_token()
+    if token:
+        headers.setdefault("X-OBP-Token", token)
 
 
 @dataclass
@@ -47,6 +72,7 @@ def http_json(
 ) -> tuple[int, dict[str, str], Any, float]:
     data = None
     req_headers = dict(headers or {})
+    add_write_auth(req_headers, method)
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         req_headers.setdefault("Content-Type", "application/json")

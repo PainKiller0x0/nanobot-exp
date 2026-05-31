@@ -17,6 +17,32 @@ SHANGHAI = timezone(timedelta(hours=8))
 MISSING = object()
 
 
+def obp_proxy_token() -> str:
+    token = os.environ.get("OBP_PROXY_TOKEN", "").strip()
+    if token:
+        return token
+    for path in (
+        Path(os.environ.get("OBP_PROXY_ENV_FILE", "")),
+        Path("/root/.nanobot/secrets/obp-proxy.env"),
+    ):
+        if not str(path):
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip().startswith("OBP_PROXY_TOKEN="):
+                    return line.split("=", 1)[1].strip().strip('"\'')
+        except Exception:
+            continue
+    return ""
+
+def maybe_add_dashboard_write_auth(headers: dict[str, str], method: str) -> None:
+    if method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return
+    token = obp_proxy_token()
+    if token:
+        headers.setdefault("X-OBP-Token", token)
+
+
 def now_shanghai() -> datetime:
     return datetime.now(SHANGHAI)
 
@@ -107,6 +133,7 @@ class JsonHttpClient:
     ) -> Any:
         data = None
         headers = {"Accept": "application/json" if expect_json else "*/*"}
+        maybe_add_dashboard_write_auth(headers, method)
         timeout = self.timeout
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")

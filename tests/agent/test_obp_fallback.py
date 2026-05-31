@@ -15,10 +15,10 @@ def test_prepare_kwargs_removes_tools_and_caps_tokens() -> None:
             "max_tokens": 2048,
         },
         env={"NANOBOT_OBP_FALLBACK_MAX_TOKENS": "128"},
-        model="LongCat-Flash-Chat",
+        model="gemini-3.1-flash-lite",
     )
 
-    assert kwargs["model"] == "LongCat-Flash-Chat"
+    assert kwargs["model"] == "gemini-3.1-flash-lite"
     assert kwargs["tools"] is None
     assert kwargs["max_tokens"] == 128
     assert "tool_choice" not in kwargs

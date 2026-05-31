@@ -293,6 +293,7 @@ def mem_available_mb():
 
 def doctor():
     issues = []
+    warnings = []
     print('== API ==')
     try:
         data = load_api()
@@ -302,7 +303,8 @@ def doctor():
             if not item.get('ok'):
                 issues.append(f"unhealthy: {item.get('id')} {item.get('check_status')} {item.get('error') or ''}")
             for err in item.get('recent_errors') or []:
-                issues.append(f"recent warning: {item.get('id')} {err}")
+                target = issues if not item.get('ok') else warnings
+                target.append(f"recent warning: {item.get('id')} {err}")
     except Exception as exc:
         issues.append(f'api unavailable: {exc}')
         print(f'api unavailable: {exc}')
