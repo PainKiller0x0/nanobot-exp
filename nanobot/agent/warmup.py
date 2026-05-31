@@ -120,35 +120,18 @@ async def warm_session(
 
 
 def make_loop(config: Any) -> AgentLoop:
-    from nanobot.cli.commands import _make_provider
+    from nanobot.providers.factory import build_provider_snapshot, load_provider_snapshot
 
-    provider = _make_provider(config)
-    return AgentLoop(
-        bus=MessageBus(),
-        provider=provider,
-        workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        max_iterations=1,
-        context_window_tokens=config.agents.defaults.context_window_tokens,
-        history_replay_tokens=config.agents.defaults.history_replay_tokens,
-        eager_compact_tokens=0,
-        startup_warm_sessions=0,
-        context_block_limit=config.agents.defaults.context_block_limit,
-        max_tool_result_chars=config.agents.defaults.max_tool_result_chars,
-        provider_retry_mode=config.agents.defaults.provider_retry_mode,
-        web_config=config.tools.web,
-        exec_config=config.tools.exec,
-        restrict_to_workspace=config.tools.restrict_to_workspace,
+    provider_snapshot = build_provider_snapshot(config)
+    return AgentLoop.from_config(
+        config,
+        MessageBus(),
+        provider=provider_snapshot.provider,
+        model=provider_snapshot.model,
+        context_window_tokens=provider_snapshot.context_window_tokens,
+        provider_snapshot_loader=load_provider_snapshot,
+        provider_signature=provider_snapshot.signature,
         session_manager=SessionManager(config.workspace_path),
-        mcp_servers={},
-        channels_config=config.channels,
-        timezone=config.agents.defaults.timezone,
-        unified_session=config.agents.defaults.unified_session,
-        disabled_skills=config.agents.defaults.disabled_skills,
-        session_ttl_minutes=0,
-        max_messages=config.agents.defaults.max_messages,
-        consolidation_ratio=config.agents.defaults.consolidation_ratio,
-        tools_config=config.tools,
     )
 
 

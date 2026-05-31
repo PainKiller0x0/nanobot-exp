@@ -1,4 +1,5 @@
 from nanobot.exp.agent.history_budget import (
+    light_replay_max_messages,
     light_system_prompt_enabled,
     replay_budget_for_message,
     should_omit_tool_ads,
@@ -120,6 +121,17 @@ def test_light_system_prompt_feature_flag(monkeypatch) -> None:
 
     monkeypatch.setenv("NANOBOT_LIGHT_SYSTEM_PROMPT", "off")
     assert light_system_prompt_enabled() is False
+
+
+def test_light_replay_max_messages_defaults_to_ten(monkeypatch) -> None:
+    monkeypatch.delenv("NANOBOT_LIGHT_REPLAY_MESSAGES", raising=False)
+    assert light_replay_max_messages(120) == 10
+
+
+def test_light_replay_max_messages_is_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("NANOBOT_LIGHT_REPLAY_MESSAGES", "14")
+    assert light_replay_max_messages(120) == 14
+    assert light_replay_max_messages(8) == 8
 
 
 def test_mentioning_daily_report_as_life_update_stays_light() -> None:

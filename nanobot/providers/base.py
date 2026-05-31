@@ -735,6 +735,18 @@ class LLMProvider(ABC):
         retry_mode: str,
         on_retry_wait: Callable[[str], Awaitable[None]] | None,
     ) -> LLMResponse:
+        if retry_mode in {"none", "off", "disabled"}:
+            response = await call(**kw)
+            if response.finish_reason != "error":
+                return response
+            image_fallback = await self._retry_without_images_once(
+                call,
+                kw,
+                original_messages,
+                reason="No-retry",
+            )
+            return image_fallback or response
+
         attempt = 0
         delays = list(self._CHAT_RETRY_DELAYS)
         persistent = retry_mode == "persistent"

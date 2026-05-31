@@ -10,6 +10,7 @@ import os
 import re
 
 DEFAULT_LIGHT_REPLAY_TOKENS = 4_500
+DEFAULT_LIGHT_REPLAY_MESSAGES = 10
 SHORT_STANDALONE_REASONS = frozenset({"short standalone turn", "empty short turn"})
 DAILY_REPORT_TASK_REASON = "task marker: \u65e5\u62a5\u8bf7\u6c42"
 TOOL_OMIT_REASONS = SHORT_STANDALONE_REASONS | frozenset({DAILY_REPORT_TASK_REASON})
@@ -141,6 +142,19 @@ def _configured_light_budget() -> int:
 def light_system_prompt_enabled() -> bool:
     raw = os.getenv("NANOBOT_LIGHT_SYSTEM_PROMPT", "1").strip().lower()
     return raw not in _FALSE_VALUES
+
+
+def light_replay_max_messages(default_max: int) -> int:
+    """Return the message-count cap for lightweight chat history replay."""
+    raw = os.getenv("NANOBOT_LIGHT_REPLAY_MESSAGES", "").strip()
+    value = DEFAULT_LIGHT_REPLAY_MESSAGES
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = DEFAULT_LIGHT_REPLAY_MESSAGES
+    value = max(2, value)
+    return min(default_max, value) if default_max > 0 else value
 
 
 def is_short_standalone_reason(reason: str) -> bool:

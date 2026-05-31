@@ -117,3 +117,17 @@ async def test_help_alias_uses_local_command_without_llm(tmp_path) -> None:
     assert "Nanobot" in out.content
     assert "OBP" in out.content
     provider.chat_with_retry.assert_not_awaited()
+
+
+def test_recent_direct_history_keeps_last_ten_messages() -> None:
+    from nanobot.session.manager import Session
+
+    session = Session(key="qq:chat")
+    for i in range(12):
+        session.add_message("user", f"u{i}")
+
+    history = AgentLoop._recent_direct_history(session)
+
+    assert len(history) == 10
+    assert history[0]["content"] == "u2"
+    assert history[-1]["content"] == "u11"

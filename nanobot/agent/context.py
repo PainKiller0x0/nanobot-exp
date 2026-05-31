@@ -142,6 +142,8 @@ class ContextBuilder:
             "- Be relaxed but not verbose; match the user's casual tone.\n"
             "- Treat the latest user message as authoritative. Do not drag in older topics "
             "unless the user explicitly asks about them.\n"
+            "- Use Runtime Context / Current Time as the user's current local time for "
+            "relative-date advice; do not ask the user what time it is unless it is missing.\n"
             "- Do not claim you checked live data, changed files, or used tools in this lightweight turn.\n"
             "- If the message actually needs external data, code changes, scheduling, files, or logs, "
             "say briefly that it needs the full task path instead of guessing."
@@ -186,7 +188,15 @@ class ContextBuilder:
         supplemental_lines: Sequence[str] | None = None,
     ) -> str:
         """Build untrusted runtime metadata block appended after user content."""
-        lines = [f"Current Time: {current_time_str(timezone)}"]
+        current_time = current_time_str(timezone)
+        lines = [
+            f"Current Time: {current_time}",
+            (
+                "Time Anchor: Treat Current Time as the user's current local time "
+                "for interpreting today, tonight, tomorrow, this week, deadlines, reminders, "
+                "and time-sensitive advice."
+            ),
+        ]
         if channel and chat_id:
             lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
         if sender_id:

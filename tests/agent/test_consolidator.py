@@ -197,6 +197,33 @@ class TestConsolidatorTokenBudget:
         assert session.last_consolidated == 3
         assert session.get_history(max_messages=2) == [{"role": "assistant", "content": "final answer"}]
 
+    async def test_replay_window_overflow_uses_fast_no_retry_archive(
+        self,
+        consolidator,
+        monkeypatch,
+    ):
+        """Replay-window archive runs on the hot reply path, so it must fail fast."""
+        monkeypatch.setenv("NANOBOT_REPLAY_OVERFLOW_ARCHIVE_TIMEOUT_S", "3.5")
+        consolidator._SAFETY_BUFFER = 0
+        session = Session(key="test:fast-replay-overflow")
+        for i in range(10):
+            session.add_message("user", f"u{i}")
+            session.add_message("assistant", f"a{i}")
+
+        consolidator.estimate_session_prompt_tokens = MagicMock(return_value=(100, "tiktoken"))
+        consolidator.archive = AsyncMock(return_value="summary")
+
+        await consolidator.maybe_consolidate_by_tokens(
+            session,
+            replay_max_messages=6,
+        )
+
+        consolidator.archive.assert_awaited_once()
+        assert consolidator.archive.await_args.kwargs == {
+            "retry_mode": "none",
+            "timeout_s": 3.5,
+        }
+
 
     async def test_replay_window_overflow_defers_tiny_chat_batches(
         self,

@@ -144,6 +144,7 @@ class TestAgentLoopTTLParam:
         ]
         assert len(model_history_calls) == 1
         kwargs = model_history_calls[0].kwargs
+        assert kwargs["max_messages"] == 10
         assert kwargs["max_tokens"] < 16_000
         assert kwargs["max_tokens"] > 0
         assert kwargs["include_timestamps"] is True

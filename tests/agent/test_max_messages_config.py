@@ -105,7 +105,7 @@ class TestMaxMessagesIntegration:
         session = loop.sessions.get_or_create("cli:test")
         with patch.object(session, "get_history", wraps=session.get_history) as mock_hist:
             result = await loop._process_message(
-                InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
+                InboundMessage(channel="cli", sender_id="user", chat_id="test", content="GitHub action failed, check logs")
             )
 
         assert result is not None
@@ -124,7 +124,7 @@ class TestMaxMessagesIntegration:
         session = loop.sessions.get_or_create("cli:test")
         with patch.object(session, "get_history", wraps=session.get_history) as mock_hist:
             result = await loop._process_message(
-                InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
+                InboundMessage(channel="cli", sender_id="user", chat_id="test", content="GitHub action failed, check logs")
             )
 
         assert result is not None

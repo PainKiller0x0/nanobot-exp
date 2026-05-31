@@ -33,6 +33,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.exp.agent.history_budget import (
+    light_replay_max_messages,
     light_system_prompt_enabled,
     replay_budget_for_message,
     should_skip_history_replay,
@@ -1164,6 +1165,7 @@ class AgentLoop:
         await self.consolidator.maybe_consolidate_by_tokens(
             session,
             replay_max_messages=self._max_messages,
+            include_replay_overflow=False,
         )
         is_subagent = msg.sender_id == "subagent"
         if is_subagent and self._persist_subagent_followup(session, msg):
@@ -1427,6 +1429,7 @@ class AgentLoop:
         await self.consolidator.maybe_consolidate_by_tokens(
             ctx.session,
             replay_max_messages=self._max_messages,
+            include_replay_overflow=False,
         )
         self._set_tool_context(
             ctx.msg.channel,
@@ -1456,8 +1459,12 @@ class AgentLoop:
             )
         skip_history_replay = should_skip_history_replay(replay_reason)
         compact_system_prompt = should_use_compact_system_prompt(replay_reason)
+        replay_max_messages = self._max_messages
+        if should_use_compact_system_prompt(replay_reason):
+            replay_max_messages = light_replay_max_messages(self._max_messages)
+
         _hist_kwargs: dict[str, Any] = {
-            "max_messages": self._max_messages,
+            "max_messages": replay_max_messages,
             "max_tokens": replay_budget,
             "include_timestamps": True,
         }
@@ -1656,7 +1663,7 @@ class AgentLoop:
         session.updated_at = datetime.now()
 
     @staticmethod
-    def _recent_direct_history(session: Session, max_messages: int = 6) -> list[dict[str, Any]]:
+    def _recent_direct_history(session: Session, max_messages: int = 10) -> list[dict[str, Any]]:
         """Return a tiny raw tail for deterministic reply guards."""
         out: list[dict[str, Any]] = []
         for message in session.messages[-max_messages:]:

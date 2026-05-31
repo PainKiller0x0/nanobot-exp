@@ -41,6 +41,12 @@ class TestBuildRuntimeContext:
     def test_with_timezone(self):
         ctx = ContextBuilder._build_runtime_context(None, None, timezone="Asia/Shanghai")
         assert "Current Time:" in ctx
+        assert "Asia/Shanghai" in ctx
+
+    def test_runtime_context_includes_time_anchor(self):
+        ctx = ContextBuilder._build_runtime_context(None, None, timezone="Asia/Shanghai")
+        assert "Time Anchor:" in ctx
+        assert "today, tonight, tomorrow" in ctx
 
     def test_no_channel_no_chat_id_omits_both(self):
         ctx = ContextBuilder._build_runtime_context(None, None)

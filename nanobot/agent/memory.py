@@ -43,12 +43,24 @@ def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
     return max(minimum, value)
 
 
+def _float_env(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        value = float(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, value)
+
+
 def _replay_overflow_min_messages() -> int:
     return _int_env("NANOBOT_REPLAY_OVERFLOW_MIN_MESSAGES", 10, minimum=1)
 
 
 def _replay_overflow_max_wait_seconds() -> int:
     return _int_env("NANOBOT_REPLAY_OVERFLOW_MAX_WAIT_SECONDS", 12 * 60 * 60, minimum=0)
+
+
+def _replay_overflow_archive_timeout_seconds() -> float:
+    return _float_env("NANOBOT_REPLAY_OVERFLOW_ARCHIVE_TIMEOUT_S", 8.0, minimum=0.0)
 
 
 _REPLAY_OVERFLOW_DEFERRED_SINCE = "_replay_overflow_deferred_since"
@@ -630,7 +642,11 @@ class Consolidator:
             len(chunk),
             replay_max_messages,
         )
-        summary = await self.archive(chunk)
+        summary = await self.archive(
+            chunk,
+            retry_mode="none",
+            timeout_s=_replay_overflow_archive_timeout_seconds(),
+        )
         session.last_consolidated = end_idx
         session.metadata.pop(_REPLAY_OVERFLOW_DEFERRED_SINCE, None)
         self.sessions.save(session)
@@ -689,7 +705,13 @@ class Consolidator:
         except Exception:
             return truncate_text(text, budget * 4)
 
-    async def archive(self, messages: list[dict]) -> str | None:
+    async def archive(
+        self,
+        messages: list[dict],
+        *,
+        retry_mode: str = "standard",
+        timeout_s: float | None = None,
+    ) -> str | None:
         """Summarize messages via LLM and append to history.jsonl.
 
         Returns the summary text on success, None if nothing to archive.
@@ -699,7 +721,7 @@ class Consolidator:
         try:
             formatted = MemoryStore._format_messages(messages)
             formatted = self._truncate_to_token_budget(formatted)
-            response = await self.provider.chat_with_retry(
+            request = self.provider.chat_with_retry(
                 model=self.model,
                 messages=[
                     {
@@ -713,12 +735,24 @@ class Consolidator:
                 ],
                 tools=None,
                 tool_choice=None,
+                retry_mode=retry_mode,
             )
+            if timeout_s is not None and timeout_s > 0:
+                response = await asyncio.wait_for(request, timeout=timeout_s)
+            else:
+                response = await request
             if response.finish_reason == "error":
                 raise RuntimeError(f"LLM returned error: {response.content}")
             summary = response.content or "[no summary]"
             self.store.append_history(summary, max_chars=_ARCHIVE_SUMMARY_MAX_CHARS)
             return summary
+        except TimeoutError:
+            logger.warning(
+                "Consolidation LLM call timed out after {}s, raw-dumping to history",
+                timeout_s,
+            )
+            self.store.raw_archive(messages)
+            return None
         except Exception:
             logger.warning("Consolidation LLM call failed, raw-dumping to history")
             self.store.raw_archive(messages)
@@ -729,6 +763,7 @@ class Consolidator:
         session: Session,
         *,
         replay_max_messages: int | None = None,
+        include_replay_overflow: bool = True,
     ) -> None:
         """Loop: archive old messages until prompt fits within safe budget.
 
@@ -742,10 +777,12 @@ class Consolidator:
         async with lock:
             budget = self._input_token_budget
             target = int(budget * self.consolidation_ratio)
-            last_summary = await self._consolidate_replay_overflow(
-                session,
-                replay_max_messages,
-            )
+            last_summary = None
+            if include_replay_overflow:
+                last_summary = await self._consolidate_replay_overflow(
+                    session,
+                    replay_max_messages,
+                )
             try:
                 estimated, source = self.estimate_session_prompt_tokens(
                     session,
