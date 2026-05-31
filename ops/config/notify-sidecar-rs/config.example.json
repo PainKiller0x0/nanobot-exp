@@ -61,6 +61,15 @@
       "timeout_secs": 45
     },
     {
+      "id": "ops-guard-health-daily",
+      "name": "Nanobot 每日健康汇报",
+      "enabled": false,
+      "schedule": "5 9 * * *",
+      "timezone": "Asia/Shanghai",
+      "command": "/root/nanobot-ops/scripts/nanobot-ops-guard.py --mode heal --force-report",
+      "timeout_secs": 90
+    },
+    {
       "id": "ops-guard-obp-budget",
       "name": "OBP 月预算告警",
       "enabled": false,

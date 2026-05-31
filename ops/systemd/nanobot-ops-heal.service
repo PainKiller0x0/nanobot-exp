@@ -1,0 +1,10 @@
+[Unit]
+Description=Nanobot sidecar auto-heal guard
+Documentation=https://github.com/PainKiller0x0/nanobot-exp
+After=network-online.target lof-sidecar.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/nanobot-ops/scripts/nanobot-ops-guard.py --mode heal
+Nice=5

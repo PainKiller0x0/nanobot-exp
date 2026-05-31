@@ -37,6 +37,15 @@ JOBS: list[dict[str, Any]] = [
         'timeout_secs': 45,
     },
     {
+        'id': 'ops-guard-health-daily',
+        'name': '\u004e\u0061\u006e\u006f\u0062\u006f\u0074 \u6bcf\u65e5\u5065\u5eb7\u6c47\u62a5',
+        'enabled': True,
+        'schedule': '5 9 * * *',
+        'timezone': 'Asia/Shanghai',
+        'command': '/root/nanobot-ops/scripts/nanobot-ops-guard.py --mode heal --force-report',
+        'timeout_secs': 90,
+    },
+    {
         'id': 'ops-guard-obp-budget',
         'name': 'OBP 月预算告警',
         'enabled': True,
@@ -105,7 +114,8 @@ def main() -> int:
     changed = install_jobs(args.config, args.dry_run)
     if args.enable_timer:
         run_systemctl(['daemon-reload'], args.dry_run)
-        run_systemctl(['enable', '--now', 'nanobot-data-backup.timer'], args.dry_run)
+        for timer in ['nanobot-data-backup.timer', 'nanobot-ops-heal.timer']:
+            run_systemctl(['enable', '--now', timer], args.dry_run)
     if args.restart_notify and changed:
         run_systemctl(['restart', 'notify-sidecar-rs.service'], args.dry_run)
     return 0
