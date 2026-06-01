@@ -12,3 +12,4 @@ chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "deflate", "stream"] }
 scraper = "0.20"
 futures = "0.3"
+encoding_rs = "0.8"

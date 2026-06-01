@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::Path};
 use chrono::{
     DateTime, Datelike, Duration as ChronoDuration, FixedOffset, NaiveDate, Timelike, Utc,
 };
+use encoding_rs::Encoding;
 use futures::{stream, StreamExt};
 use reqwest::Client;
 use scraper::{Html as ScraperHtml, Selector};
@@ -115,13 +116,21 @@ async fn fetch_all_funds(client: &Client) -> Vec<Fund> {
 
 async fn fetch_one(client: &Client, code: &str) -> Fund {
     let url = format!("https://www.haoetf.com/qdii/{}", code);
-    match client.get(url).send().await {
+    let mut fund = match client.get(url).send().await {
         Ok(resp) if resp.status().is_success() => match resp.text().await {
             Ok(body) => parse_fund_detail(&body, code).unwrap_or_else(|| fallback_fund(code)),
             Err(_) => fallback_fund(code),
         },
         _ => fallback_fund(code),
+    };
+
+    if is_etf_creation_unit_code(&fund.code) && !fund.suspended {
+        if let Some(detail) = fetch_etf_barrier_detail(client, &fund.code).await {
+            fund.limit_text = detail;
+        }
     }
+
+    fund
 }
 
 fn parse_fund_detail(html: &str, code: &str) -> Option<Fund> {
@@ -258,6 +267,500 @@ fn parse_float(input: &str) -> Option<f64> {
     }
 }
 
+async fn fetch_etf_barrier_detail(client: &Client, code: &str) -> Option<String> {
+    match code {
+        "159941" => fetch_gffunds_etf_barrier(client, code).await,
+        "513100" => fetch_guotai_etf_barrier(client, "513101").await,
+        "513300" => fetch_chinaamc_etf_barrier(client, code).await,
+        "159660" => {
+            fetch_html_etf_barrier(
+                client,
+                &format!("https://www.99fund.com/main/products/pofund/{code}/ETFlist.shtml"),
+                Some("gb18030"),
+            )
+            .await
+        }
+        "513390" | "513500" => {
+            fetch_html_etf_barrier(
+                client,
+                &format!("https://www.bosera.com/fund/etfList.do?fundCode={code}"),
+                None,
+            )
+            .await
+        }
+        "159632" => {
+            fetch_html_etf_barrier(
+                client,
+                &format!("https://www.huaan.com.cn/etf/{code}/sgshqd.jsp"),
+                Some("gb2312"),
+            )
+            .await
+        }
+        _ => None,
+    }
+}
+
+async fn fetch_gffunds_etf_barrier(client: &Client, code: &str) -> Option<String> {
+    let date = shanghai_today().format("%Y%m%d").to_string();
+    let url = format!("http://www.gffunds.com.cn/proxy/pcflist/{code}?_time={date}");
+    let html = fetch_text(client, &url, Some("utf-8")).await?;
+    let min_unit =
+        extract_div_id_value(&html, "CreationRedemptionUnit").and_then(|v| parse_float(&v));
+    let min_value = extract_div_id_value(&html, "NAVperCU").and_then(|v| parse_float(&v));
+    let creation = extract_div_id_value(&html, "Creation");
+    let redemption = extract_div_id_value(&html, "Redemption");
+    let status = format_creation_redemption_status(creation.as_deref(), redemption.as_deref());
+
+    format_etf_barrier_detail(min_unit, min_value, None, status.as_deref())
+}
+
+async fn fetch_guotai_etf_barrier(client: &Client, pcf_code: &str) -> Option<String> {
+    let date = shanghai_today().format("%Y-%m-%d").to_string();
+    let body = serde_json::json!({
+        "api": "info.etf",
+        "params": {
+            "code": pcf_code,
+            "date": date,
+        }
+    })
+    .to_string();
+    let resp = post_guotai_etf_json(client, body).await?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let value: serde_json::Value = resp.json().await.ok()?;
+    let mut min_unit = None;
+    let mut min_value = None;
+    let mut daily_limit = None;
+    let mut status = None;
+
+    if let Some(props) = value.pointer("/t-1/properties").and_then(|v| v.as_array()) {
+        min_value = json_array_field(props, "NAVperCU");
+    }
+    if let Some(props) = value.pointer("/t/properties").and_then(|v| v.as_array()) {
+        min_unit = json_array_field(props, "CreationRedemptionUnit");
+        daily_limit = json_array_field(props, "CreationLimit")
+            .or_else(|| json_array_field(props, "NetCreationLimit"));
+        status = json_array_text(props, "CreationRedemptionSwitch");
+    }
+
+    format_etf_barrier_detail(min_unit, min_value, daily_limit, status.as_deref())
+}
+
+async fn post_guotai_etf_json(_client: &Client, body: String) -> Option<reqwest::Response> {
+    let url = "https://e.gtfund.com/Etrade/Public/cochin/info.etf";
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .ok()?;
+    let resp = client
+        .post(url)
+        .header("Content-Type", "application/json; charset=utf-8")
+        .header("User-Agent", "Mozilla/5.0")
+        .header(
+            "Referer",
+            "https://e.gtfund.com/Etrade/Jijin/view/id/513100",
+        )
+        .body(body.clone())
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_redirection() {
+        return Some(resp);
+    }
+
+    let cookie = resp
+        .headers()
+        .get(reqwest::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(str::to_string)?;
+
+    client
+        .post(url)
+        .header("Content-Type", "application/json; charset=utf-8")
+        .header("User-Agent", "Mozilla/5.0")
+        .header(
+            "Referer",
+            "https://e.gtfund.com/Etrade/Jijin/view/id/513100",
+        )
+        .header(reqwest::header::COOKIE, cookie)
+        .body(body)
+        .send()
+        .await
+        .ok()
+}
+
+async fn fetch_chinaamc_etf_barrier(client: &Client, code: &str) -> Option<String> {
+    let date = shanghai_today().format("%Y-%m-%d").to_string();
+    let resp = client
+        .post("https://www.chinaamc.com/front/front/out/etf/tradeList")
+        .form(&[
+            ("fundCode", code),
+            ("queryDate", date.as_str()),
+            ("instType", ""),
+        ])
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let value: serde_json::Value = resp.json().await.ok()?;
+    let mut min_unit = None;
+    let mut min_value = None;
+    let mut daily_limit = None;
+    let mut status = None;
+
+    if let Some(items) = value
+        .pointer("/data/firstContent")
+        .and_then(|v| v.as_array())
+    {
+        min_value = json_label_field(items, |label| label.contains("资产净值"));
+    }
+    if let Some(items) = value
+        .pointer("/data/secondContent")
+        .and_then(|v| v.as_array())
+    {
+        min_unit = json_label_field(items, |label| {
+            label.contains("最小申购")
+                && label.contains("单位")
+                && label.contains('份')
+                && !label.contains("资产净值")
+                && !label.contains("现金")
+        });
+        daily_limit = json_label_field(items, |label| {
+            label.contains("当日净申购") || label.contains("当日累计可申购")
+        });
+        status = json_label_text(items, |label| label.contains("申购赎回的允许情况"));
+    }
+
+    format_etf_barrier_detail(min_unit, min_value, daily_limit, status.as_deref())
+}
+
+async fn fetch_html_etf_barrier(
+    client: &Client,
+    url: &str,
+    fallback_encoding: Option<&'static str>,
+) -> Option<String> {
+    let html = fetch_text(client, url, fallback_encoding).await?;
+    parse_html_etf_barrier(&html)
+}
+
+fn parse_html_etf_barrier(html: &str) -> Option<String> {
+    let rows = extract_table_key_values(html);
+    let min_value = rows
+        .iter()
+        .find(|(label, _)| label.contains("最小申购") && label.contains("资产净值"))
+        .and_then(|(_, value)| parse_float(value))
+        .or_else(|| {
+            extract_value_after_label(html, "最小申购、赎回单位资产净值")
+                .and_then(|v| parse_float(&v))
+        });
+    let min_unit = rows
+        .iter()
+        .find(|(label, _)| {
+            label.contains("最小申购")
+                && label.contains("单位")
+                && !label.contains("资产净值")
+                && !label.contains("现金红利")
+                && !label.contains("现金")
+        })
+        .and_then(|(_, value)| parse_float(value))
+        .or_else(|| {
+            extract_value_after_label(html, "最小申购、赎回单位</th>").and_then(|v| parse_float(&v))
+        })
+        .or_else(|| {
+            extract_value_after_label(html, "最小申购赎回单位(单位").and_then(|v| parse_float(&v))
+        });
+    let daily_limit = rows
+        .iter()
+        .find(|(label, value)| {
+            let is_creation_limit = label.contains("当天净申购")
+                || label.contains("当日净申购")
+                || label.contains("当日累计申购")
+                || label.contains("当日累计可申购");
+            is_creation_limit && parse_float(value).is_some()
+        })
+        .and_then(|(_, value)| parse_float(value))
+        .or_else(|| {
+            extract_value_after_label(html, "当天净申购的基金份额上限")
+                .and_then(|v| parse_float(&v))
+        })
+        .or_else(|| {
+            extract_value_after_label(html, "当日累计申购份额上限").and_then(|v| parse_float(&v))
+        });
+    let status = rows
+        .iter()
+        .find(|(label, _)| label.contains("申购赎回的允许情况") || label == "是否允许申购")
+        .map(|(_, value)| {
+            if value == "否" {
+                "不允许申购".to_string()
+            } else if value == "是" {
+                "允许申购".to_string()
+            } else {
+                value.clone()
+            }
+        });
+
+    format_etf_barrier_detail(min_unit, min_value, daily_limit, status.as_deref())
+}
+
+fn extract_value_after_label(html: &str, label: &str) -> Option<String> {
+    let pos = html.find(label)?;
+    let after = &html[pos + label.len()..];
+    let td_pos = after.find("<td")?;
+    let td_start = pos + label.len() + td_pos + after[td_pos..].find('>')? + 1;
+    let td_end = html[td_start..].find("</td>")? + td_start;
+    let value = normalize_cell_text(&strip_html_tags(&html[td_start..td_end]));
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn strip_html_tags(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for ch in input.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.replace("&nbsp;", " ")
+}
+
+async fn fetch_text(
+    client: &Client,
+    url: &str,
+    fallback_encoding: Option<&'static str>,
+) -> Option<String> {
+    let resp = client
+        .get(url)
+        .header("User-Agent", "Mozilla/5.0")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string());
+    let bytes = resp.bytes().await.ok()?;
+    let encoding_label = content_type
+        .as_deref()
+        .and_then(charset_from_content_type)
+        .or(fallback_encoding);
+
+    if let Some(label) = encoding_label {
+        if let Some(encoding) = Encoding::for_label(label.as_bytes()) {
+            let (text, _, _) = encoding.decode(bytes.as_ref());
+            return Some(text.into_owned());
+        }
+    }
+
+    Some(String::from_utf8_lossy(bytes.as_ref()).into_owned())
+}
+
+fn charset_from_content_type(content_type: &str) -> Option<&str> {
+    content_type
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("charset=").map(str::trim))
+}
+
+fn extract_table_key_values(html: &str) -> Vec<(String, String)> {
+    let doc = ScraperHtml::parse_document(html);
+    let tr_sel = match Selector::parse("tr") {
+        Ok(sel) => sel,
+        Err(_) => return Vec::new(),
+    };
+    let cell_sel = match Selector::parse("th, td") {
+        Ok(sel) => sel,
+        Err(_) => return Vec::new(),
+    };
+
+    doc.select(&tr_sel)
+        .filter_map(|tr| {
+            let cells: Vec<String> = tr
+                .select(&cell_sel)
+                .map(|c| normalize_cell_text(&c.text().collect::<Vec<_>>().join("")))
+                .filter(|s| !s.is_empty())
+                .collect();
+            if cells.len() >= 2 {
+                Some((cells[0].clone(), cells[1].clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn normalize_cell_text(input: &str) -> String {
+    input
+        .replace('\u{a0}', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn json_label_field<F>(items: &[serde_json::Value], pred: F) -> Option<f64>
+where
+    F: Fn(&str) -> bool,
+{
+    items.iter().find_map(|item| {
+        let label = item.get("label")?.as_str()?;
+        let value = item.get("value")?.as_str()?;
+        if pred(label) {
+            parse_float(value)
+        } else {
+            None
+        }
+    })
+}
+
+fn json_label_text<F>(items: &[serde_json::Value], pred: F) -> Option<String>
+where
+    F: Fn(&str) -> bool,
+{
+    items.iter().find_map(|item| {
+        let label = item.get("label")?.as_str()?;
+        let value = item.get("value")?.as_str()?.trim();
+        if pred(label) && !value.is_empty() {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn json_array_field(items: &[serde_json::Value], field: &str) -> Option<f64> {
+    items.iter().find_map(|item| {
+        let arr = item.as_array()?;
+        if arr.get(2)?.as_str()? == field {
+            parse_float(arr.get(1)?.as_str()?)
+        } else {
+            None
+        }
+    })
+}
+
+fn json_array_text(items: &[serde_json::Value], field: &str) -> Option<String> {
+    items.iter().find_map(|item| {
+        let arr = item.as_array()?;
+        if arr.get(2)?.as_str()? == field {
+            let value = arr.get(1)?.as_str()?.trim();
+            if value.is_empty() || value == "-" {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn extract_div_id_value(html: &str, id: &str) -> Option<String> {
+    let single = format!("id='{id}'");
+    let double = format!("id=\"{id}\"");
+    let marker_pos = html.find(&single).or_else(|| html.find(&double))?;
+    let start = html[marker_pos..].find('>')? + marker_pos + 1;
+    let end = html[start..].find('<')? + start;
+    let value = html[start..end].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn format_etf_barrier_detail(
+    min_unit: Option<f64>,
+    min_value: Option<f64>,
+    daily_limit: Option<f64>,
+    status: Option<&str>,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    match (min_unit, min_value) {
+        (Some(unit), Some(value)) => parts.push(format!(
+            "最小申赎单位{}/约{}",
+            format_share_count(unit),
+            format_money_wan(value)
+        )),
+        (Some(unit), None) => parts.push(format!("最小申赎单位{}", format_share_count(unit))),
+        (None, Some(value)) => parts.push(format!("最小申赎单位约{}", format_money_wan(value))),
+        (None, None) => return None,
+    }
+    if let Some(limit) = daily_limit {
+        parts.push(format!("当日申购上限{}", format_share_count(limit)));
+    }
+    if let Some(status) = status.and_then(normalize_status_text) {
+        parts.push(format!("状态{}", status));
+    }
+    Some(parts.join("，"))
+}
+
+fn normalize_status_text(status: &str) -> Option<&str> {
+    let value = status.trim();
+    if value.is_empty() || value == "-" || value == "不限" || value == "不设上限" {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn format_creation_redemption_status(
+    creation: Option<&str>,
+    redemption: Option<&str>,
+) -> Option<String> {
+    match (creation.map(str::trim), redemption.map(str::trim)) {
+        (Some("是"), Some("是")) => Some("申购赎回皆允许".to_string()),
+        (Some("是"), Some("否")) => Some("仅允许申购".to_string()),
+        (Some("否"), Some("是")) => Some("仅允许赎回".to_string()),
+        (Some("否"), Some("否")) => Some("暂停申赎".to_string()),
+        _ => None,
+    }
+}
+
+fn format_share_count(v: f64) -> String {
+    if v >= 10_000.0 {
+        let wan = v / 10_000.0;
+        if (wan.fract()).abs() < 0.05 {
+            format!("{:.0}万份", wan)
+        } else {
+            format!("{:.1}万份", wan)
+        }
+    } else {
+        format!("{:.0}份", v)
+    }
+}
+
+fn format_money_wan(v: f64) -> String {
+    if v >= 10_000.0 {
+        let wan = v / 10_000.0;
+        if wan >= 100.0 {
+            format!("{:.1}万元", wan)
+        } else {
+            format!("{:.0}万元", wan)
+        }
+    } else {
+        format!("{:.0}元", v)
+    }
+}
+
+fn shanghai_today() -> NaiveDate {
+    let sh_tz = FixedOffset::east_opt(8 * 3600).expect("tz");
+    Utc::now().with_timezone(&sh_tz).date_naive()
+}
+
 type HistoryMap = HashMap<String, HashMap<String, f64>>;
 
 async fn load_history(path: &Path) -> HistoryMap {
@@ -357,7 +860,7 @@ fn high_entry_barrier_reason(f: &Fund) -> Option<String> {
         return Some(format!("🧱{}", text));
     }
     if is_etf_creation_unit_code(&f.code) && !f.suspended {
-        return Some("🧱ETF一级申赎：最小申赎单位通常50万份起/百万元级".to_string());
+        return Some("🧱ETF一级申赎：PCF门槛暂未抓到".to_string());
     }
     None
 }
@@ -671,12 +1174,9 @@ mod tests {
 
         assert_eq!(
             high_entry_barrier_reason(&f).as_deref(),
-            Some("🧱ETF一级申赎：最小申赎单位通常50万份起/百万元级")
+            Some("🧱ETF一级申赎：PCF门槛暂未抓到")
         );
-        assert_eq!(
-            display_limit_text(&f),
-            "ETF一级申赎：最小申赎单位通常50万份起/百万元级"
-        );
+        assert_eq!(display_limit_text(&f), "ETF一级申赎：PCF门槛暂未抓到");
         assert!(!is_low_barrier_candidate(&f));
     }
 
@@ -698,5 +1198,50 @@ mod tests {
             Some("🧱最小申赎单位50万份")
         );
         assert!(!is_low_barrier_candidate(&f));
+    }
+
+    #[test]
+    fn etf_barrier_detail_formats_specific_unit_and_money() {
+        assert_eq!(
+            format_etf_barrier_detail(
+                Some(1_000_000.0),
+                Some(2_309_357.23),
+                Some(1_000_000.0),
+                Some("不允许申购")
+            )
+            .as_deref(),
+            Some("最小申赎单位100万份/约230.9万元，当日申购上限100万份，状态不允许申购")
+        );
+    }
+
+    #[test]
+    fn html_etf_barrier_parser_reads_pcf_table_rows() {
+        let html = r#"
+            <table>
+              <tr><th>最小申购、赎回单位资产净值(单位：元)</th><td>￥2,309,357.23</td></tr>
+              <tr><th>最小申购、赎回单位(单位：份)</th><td>1,000,000</td></tr>
+              <tr><th>当日累计申购份额上限(单位：份)</th><td>1,000,000.00</td></tr>
+              <tr><th>是否允许申购</th><td>否</td></tr>
+            </table>
+        "#;
+
+        assert_eq!(
+            parse_html_etf_barrier(html).as_deref(),
+            Some("最小申赎单位100万份/约230.9万元，当日申购上限100万份，状态不允许申购")
+        );
+    }
+
+    #[test]
+    fn div_id_parser_reads_gffunds_pcf_values() {
+        let html = "<div id='NAVperCU'>2007892.56</div><div id=\"CreationRedemptionUnit\">1300000.00份</div>";
+
+        assert_eq!(
+            extract_div_id_value(html, "CreationRedemptionUnit").as_deref(),
+            Some("1300000.00份")
+        );
+        assert_eq!(
+            extract_div_id_value(html, "NAVperCU").as_deref(),
+            Some("2007892.56")
+        );
     }
 }
