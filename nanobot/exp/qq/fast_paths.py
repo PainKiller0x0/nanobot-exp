@@ -12,10 +12,54 @@ from urllib.parse import urlparse
 _GENERIC_URL_RE = re.compile(r"https?://[^\s<>\]）)\"']+")
 _INBOX_SPECIAL_HOSTS = ("mp.weixin.qq.com", "yage-ai.kit.com", "jintiankansha.me")
 _BACKREAD_RE = re.compile(r"^(?:帮我|给我|麻烦)?(?:补读|补看|回看|再看一下)\s*[:：]?\s*(.*?)\s*$")
+_OPS_QUERY_PREFIXES = {
+    "",
+    "帮我",
+    "给我",
+    "麻烦",
+    "麻烦你",
+    "请",
+    "查",
+    "查一下",
+    "查查",
+    "看",
+    "看下",
+    "看一下",
+    "看看",
+    "帮我查",
+    "帮我看",
+    "帮我看看",
+    "给我查",
+    "给我看",
+    "我想知道",
+    "告诉我",
+}
+_OPS_QUERY_SUFFIXES = {"", "吗", "嘛", "呢", "吧", "一下", "下", "看看", "怎么样", "如何", "咋样"}
 
 
 def _compact(content: str) -> str:
     return re.sub(r"[\s，。！？!?、:：；;,.]+", "", (content or "").strip().lower())
+
+
+def _matches_ops_intent(compact: str, phrases: tuple[str, ...], *, max_len: int = 24) -> bool:
+    """Return True only for concise command-like ops questions.
+
+    Fast paths must not steal normal chat. A sentence that merely mentions
+    "系统状态" or "帮助" should still go to the LLM unless it looks like a
+    deliberate short command.
+    """
+    if compact in phrases:
+        return True
+    if len(compact) > max_len:
+        return False
+
+    for phrase in phrases:
+        if phrase not in compact:
+            continue
+        before, _, after = compact.partition(phrase)
+        if before in _OPS_QUERY_PREFIXES and after in _OPS_QUERY_SUFFIXES:
+            return True
+    return False
 
 
 def match_personal_ops_command(content: str) -> str | None:
@@ -26,48 +70,52 @@ def match_personal_ops_command(content: str) -> str | None:
     if _GENERIC_URL_RE.search(content or ""):
         return None
 
-    if any(k in compact for k in ("今天有什么要看", "今天看什么", "今日摘要", "今天摘要", "今日简报", "早报")):
+    if _matches_ops_intent(compact, ("今天有什么要看", "今天看什么", "今日摘要", "今天摘要", "今日简报", "早报")):
         return "today"
-    if any(k in compact for k in ("文章怎么读", "哪篇值得看", "文章优先级", "阅读消化")):
+    if _matches_ops_intent(compact, ("文章怎么读", "哪篇值得看", "文章优先级", "阅读消化")):
         return "reading"
-    if any(k in compact for k in ("有没有异常", "异常雷达", "服务哪里不对", "哪里不对劲")):
+    if _matches_ops_intent(compact, ("有没有异常", "异常雷达", "服务哪里不对", "哪里不对劲")):
         return "anomalies"
-    if any(k in compact for k in ("obp花了多少钱", "模型成本", "成本怎么样", "按来源消耗", "花了多少钱")):
+    if _matches_ops_intent(compact, ("obp花了多少钱", "模型成本", "成本怎么样", "按来源消耗", "花了多少钱")):
         return "cost"
-    if any(k in compact for k in ("睡前总结", "今天收束", "收束一下", "睡前收束")):
+    if _matches_ops_intent(compact, ("睡前总结", "今天收束", "收束一下", "睡前收束")):
         return "night"
-    if any(k in compact for k in ("本周总结", "自省周报", "进化了什么", "本周复盘")):
+    if _matches_ops_intent(compact, ("本周总结", "自省周报", "进化了什么", "本周复盘")):
         return "weekly"
-    if any(k in compact for k in ("决策日志", "最近决策", "记录的决策")):
+    if _matches_ops_intent(compact, ("决策日志", "最近决策", "记录的决策")):
         return "decision-log"
-    if (
-        any(k in compact for k in ("你能做什么", "能力列表", "能力菜单", "菜单", "帮助"))
-        and len(compact) <= 16
+    if _matches_ops_intent(
+        compact,
+        ("你能做什么", "你可以做什么", "你有什么功能", "能力列表", "能力菜单", "菜单", "帮助", "help"),
+        max_len=16,
     ):
         return "menu"
-    if "内存" in compact and len(compact) <= 24:
-        return "system"
-    if any(
-        k in compact
-        for k in ("系统状态", "服务状态", "服务健康", "服务还活着", "健康检查", "服务器状态")
+    if _matches_ops_intent(
+        compact,
+        ("内存", "内存怎么样", "内存占用", "系统内存", "服务器内存", "内存还好吗"),
+        max_len=16,
     ):
         return "system"
-    if any(k in compact for k in ("定时任务", "cron", "任务状态", "任务报错", "哪些任务在跑")):
+    if _matches_ops_intent(
+        compact,
+        ("系统状态", "服务状态", "服务健康", "服务还活着", "健康检查", "服务器状态", "系统还好吗"),
+        max_len=18,
+    ):
+        return "system"
+    if _matches_ops_intent(compact, ("定时任务", "cron", "cron状态", "任务状态", "任务报错", "哪些任务在跑")):
         return "tasks"
-    if any(k in compact for k in ("今天先看什么", "先看什么")) and not any(
+    if _matches_ops_intent(compact, ("今天先看什么", "先看什么")) and not any(
         k in compact for k in ("收件箱", "待读", "稍后看")
     ):
         return "decision"
-    if any(
-        k in compact
-        for k in ("今天怎么安排", "有什么建议", "决策建议", "下一步做什么", "现在该干嘛")
-    ):
+    if _matches_ops_intent(compact, ("今天怎么安排", "有什么建议", "决策建议", "下一步做什么", "现在该干嘛")):
         return "decision"
-    if any(
-        k in compact for k in ("鸭哥", "微信文章", "rss文章", "今天文章", "文章有哪些", "文章更新")
-    ):
+    if _matches_ops_intent(compact, ("鸭哥", "微信文章", "rss文章", "今天文章", "文章有哪些", "文章更新")):
         return "articles"
-    if any(k in compact for k in ("lof", "qdii", "基金溢价", "溢价机会", "套利机会")):
+    if _matches_ops_intent(
+        compact,
+        ("lof", "lof看板", "lof机会", "lof套利", "lof怎么样", "qdii", "基金溢价", "溢价机会", "套利机会"),
+    ):
         return "lof"
     return None
 
