@@ -1,6 +1,8 @@
 use std::{collections::HashMap, path::Path};
 
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, FixedOffset, Timelike, Utc};
+use chrono::{
+    DateTime, Datelike, Duration as ChronoDuration, FixedOffset, NaiveDate, Timelike, Utc,
+};
 use futures::{stream, StreamExt};
 use reqwest::Client;
 use scraper::{Html as ScraperHtml, Selector};
@@ -295,9 +297,26 @@ fn consecutive_days(history: &HistoryMap, code: &str, threshold_percent: f64, da
     let sh_tz = FixedOffset::east_opt(8 * 3600).expect("tz");
     let today = Utc::now().with_timezone(&sh_tz).date_naive();
 
+    consecutive_days_until(history, code, threshold_percent, days, today)
+}
+
+fn consecutive_days_until(
+    history: &HistoryMap,
+    code: &str,
+    threshold_percent: f64,
+    days: i64,
+    today: NaiveDate,
+) -> i64 {
     let mut c = 0;
-    for i in 0..days {
+    let mut checked_trading_days = 0;
+    let mut i = 0;
+    while checked_trading_days < days && i < days + 14 {
         let d = today - ChronoDuration::days(i);
+        i += 1;
+        if d.weekday().number_from_monday() > 5 {
+            continue;
+        }
+        checked_trading_days += 1;
         let k = d.to_string();
         if let Some(v) = history.get(code).and_then(|m| m.get(&k)) {
             if *v >= threshold_percent {
@@ -305,7 +324,7 @@ fn consecutive_days(history: &HistoryMap, code: &str, threshold_percent: f64, da
             } else {
                 break;
             }
-        } else if d.weekday().number_from_monday() <= 5 {
+        } else {
             break;
         }
     }
@@ -338,7 +357,7 @@ fn high_entry_barrier_reason(f: &Fund) -> Option<String> {
         return Some(format!("🧱{}", text));
     }
     if is_etf_creation_unit_code(&f.code) && !f.suspended {
-        return Some("🧱ETF申赎门槛高".to_string());
+        return Some("🧱ETF一级申赎：最小申赎单位通常50万份起/百万元级".to_string());
     }
     None
 }
@@ -628,14 +647,36 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_days_skips_weekends_without_consuming_window() {
+        let mut history = HistoryMap::new();
+        history.insert(
+            "513300".to_string(),
+            HashMap::from([
+                ("2026-05-28".to_string(), 5.8),
+                ("2026-05-29".to_string(), 8.02),
+                ("2026-06-01".to_string(), 9.69),
+            ]),
+        );
+        let monday = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+
+        assert_eq!(
+            consecutive_days_until(&history, "513300", 5.0, 3, monday),
+            3
+        );
+    }
+
+    #[test]
     fn etf_creation_unit_codes_are_not_low_barrier_candidates() {
         let f = sample_fund("513300", "-", false);
 
         assert_eq!(
             high_entry_barrier_reason(&f).as_deref(),
-            Some("🧱ETF申赎门槛高")
+            Some("🧱ETF一级申赎：最小申赎单位通常50万份起/百万元级")
         );
-        assert_eq!(display_limit_text(&f), "ETF申赎门槛高");
+        assert_eq!(
+            display_limit_text(&f),
+            "ETF一级申赎：最小申赎单位通常50万份起/百万元级"
+        );
         assert!(!is_low_barrier_candidate(&f));
     }
 
