@@ -328,6 +328,46 @@ fn format_limit(limit: Option<f64>, limit_text: &str) -> String {
     }
 }
 
+fn is_etf_creation_unit_code(code: &str) -> bool {
+    code.starts_with("159") || code.starts_with("513")
+}
+
+fn high_entry_barrier_reason(f: &Fund) -> Option<String> {
+    let text = f.limit_text.trim();
+    if text.contains("万份") || text.contains("最小") || text.contains("申赎单位") {
+        return Some(format!("🧱{}", text));
+    }
+    if is_etf_creation_unit_code(&f.code) && !f.suspended {
+        return Some("🧱ETF申赎门槛高".to_string());
+    }
+    None
+}
+
+fn has_enough_turnover(f: &Fund) -> bool {
+    f.amount.unwrap_or(0.0) >= AMOUNT_THRESHOLD
+}
+
+fn has_enough_limit(f: &Fund) -> bool {
+    f.limit.map(|v| v >= LIMIT_THRESHOLD).unwrap_or(true)
+}
+
+fn is_low_barrier_candidate(f: &Fund) -> bool {
+    has_enough_turnover(f)
+        && !f.suspended
+        && has_enough_limit(f)
+        && high_entry_barrier_reason(f).is_none()
+}
+
+fn display_limit_text(f: &Fund) -> String {
+    let formatted = format_limit(f.limit, &f.limit_text);
+    if formatted == "-" {
+        if let Some(reason) = high_entry_barrier_reason(f) {
+            return reason.trim_start_matches("🧱").to_string();
+        }
+    }
+    formatted
+}
+
 fn generate_report(tag: &str, funds: &[Fund], history: &HistoryMap) -> String {
     let sh_tz = FixedOffset::east_opt(8 * 3600).expect("tz");
     let now = Utc::now().with_timezone(&sh_tz);
@@ -348,15 +388,8 @@ fn generate_report(tag: &str, funds: &[Fund], history: &HistoryMap) -> String {
     let mut opportunities: Vec<(&Fund, f64, i64)> = Vec::new();
     for f in funds {
         if let Some(p) = f.premium {
-            let amount_ok = f.amount.unwrap_or(0.0) >= AMOUNT_THRESHOLD;
-            let limit_ok = f.limit.map(|v| v >= LIMIT_THRESHOLD).unwrap_or(true);
             let days = consecutive_days(history, &f.code, 5.0, CONSECUTIVE_DAYS);
-            if p >= PREMIUM_THRESHOLD
-                && amount_ok
-                && !f.suspended
-                && limit_ok
-                && days >= CONSECUTIVE_DAYS
-            {
+            if p >= PREMIUM_THRESHOLD && is_low_barrier_candidate(f) && days >= CONSECUTIVE_DAYS {
                 opportunities.push((f, p - DEFAULT_COST, days));
             }
         }
@@ -366,6 +399,12 @@ fn generate_report(tag: &str, funds: &[Fund], history: &HistoryMap) -> String {
             .partial_cmp(&a.0.premium)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    let tradable_ranked: Vec<&Fund> = with_premium
+        .iter()
+        .copied()
+        .filter(|f| f.premium.unwrap_or(0.0) >= PREMIUM_THRESHOLD && is_low_barrier_candidate(f))
+        .collect();
 
     let mut lines = Vec::new();
     lines.push(format!(
@@ -383,7 +422,7 @@ fn generate_report(tag: &str, funds: &[Fund], history: &HistoryMap) -> String {
     lines.push(format!("💸 默认成本: {:.2}%", DEFAULT_COST * 100.0));
     lines.push("".to_string());
 
-    lines.push("🔥 套利机会（溢价≥5% + 成交额≥50万 + 限额≥100元）".to_string());
+    lines.push("🔥 套利机会（溢价≥5% + 成交额≥50万 + 排除ETF申赎高门槛）".to_string());
     if opportunities.is_empty() {
         lines.push("   暂无符合条件的套利机会 ⏳".to_string());
     } else {
@@ -394,15 +433,18 @@ fn generate_report(tag: &str, funds: &[Fund], history: &HistoryMap) -> String {
                 f.name,
                 f.premium.unwrap_or(0.0) * 100.0,
                 profit * 100.0,
-                format_limit(f.limit, &f.limit_text),
+                display_limit_text(f),
                 days
             ));
         }
     }
 
     lines.push("".to_string());
-    lines.push("📊 溢价率TOP10".to_string());
-    for (idx, f) in with_premium.iter().take(10).enumerate() {
+    lines.push("📊 低门槛溢价TOP10（已排除ETF申赎高门槛）".to_string());
+    if tradable_ranked.is_empty() {
+        lines.push("   暂无低门槛高溢价候选；前排多为ETF申赎高门槛/暂停/低成交。".to_string());
+    }
+    for (idx, f) in tradable_ranked.iter().take(10).enumerate() {
         let p = f.premium.unwrap_or(0.0) * 100.0;
         let level = if p >= 10.0 {
             "🔴"
@@ -421,12 +463,13 @@ fn generate_report(tag: &str, funds: &[Fund], history: &HistoryMap) -> String {
             ""
         };
         lines.push(format!(
-            "   {}. [{}]{} {}{:.1}% {} {}",
+            "   {}. [{}]{} {}{:.1}% 限额:{} {} {}",
             idx + 1,
             f.code,
             f.name,
             level,
             p,
+            display_limit_text(f),
             pause,
             badge
         ));
@@ -440,10 +483,12 @@ fn generate_report(tag: &str, funds: &[Fund], history: &HistoryMap) -> String {
         if p < PREMIUM_THRESHOLD {
             continue;
         }
-        let amount_ok = f.amount.unwrap_or(0.0) >= AMOUNT_THRESHOLD;
-        let limit_ok = f.limit.map(|v| v >= LIMIT_THRESHOLD).unwrap_or(true);
+        let amount_ok = has_enough_turnover(f);
+        let limit_ok = has_enough_limit(f);
+        let barrier = high_entry_barrier_reason(f);
         let days = consecutive_days(history, &f.code, 5.0, CONSECUTIVE_DAYS);
-        let eligible = amount_ok && !f.suspended && limit_ok && days >= CONSECUTIVE_DAYS;
+        let eligible =
+            amount_ok && !f.suspended && limit_ok && barrier.is_none() && days >= CONSECUTIVE_DAYS;
         if eligible {
             continue;
         }
@@ -455,7 +500,10 @@ fn generate_report(tag: &str, funds: &[Fund], history: &HistoryMap) -> String {
             reasons.push(format!("💧成交额{}", f.amount.unwrap_or(0.0)));
         }
         if !limit_ok {
-            reasons.push(format!("🔒限额{}", format_limit(f.limit, &f.limit_text)));
+            reasons.push(format!("🔒限额{}", display_limit_text(f)));
+        }
+        if let Some(reason) = barrier {
+            reasons.push(reason);
         }
         if days < CONSECUTIVE_DAYS {
             reasons.push(format!("📅连续仅{}天(需3天)", days));
@@ -492,7 +540,7 @@ fn build_board(funds: &[Fund], history: &HistoryMap) -> BoardData {
             price: f.price,
             change_pct: f.change_pct,
             amount_wan: f.amount.map(|a| a / 10_000.0),
-            limit_text: format_limit(f.limit, &f.limit_text),
+            limit_text: display_limit_text(f),
             suspended: f.suspended,
             consecutive_days: consecutive_days(history, &f.code, 5.0, CONSECUTIVE_DAYS),
             history: history_points(history, &f.code, 30),
@@ -535,6 +583,24 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
+    fn sample_fund(code: &str, limit_text: &str, suspended: bool) -> Fund {
+        Fund {
+            code: code.to_string(),
+            name: "测试基金".to_string(),
+            premium: Some(0.08),
+            rt_nav: Some(1.0),
+            rt_premium_pct: Some(8.0),
+            latest_nav: Some(1.0),
+            latest_premium_pct: Some(8.0),
+            price: Some(1.08),
+            change_pct: Some(0.0),
+            amount: Some(600_000.0),
+            limit: None,
+            suspended,
+            limit_text: limit_text.to_string(),
+        }
+    }
+
     #[test]
     fn trading_session_matches_shanghai_market_hours() {
         let utc = Utc.with_ymd_and_hms(2026, 5, 13, 1, 45, 0).unwrap();
@@ -559,5 +625,37 @@ mod tests {
         assert_eq!(format_limit(Some(0.0), "暂停申购"), "暂停申购");
         assert_eq!(format_limit(None, "不限"), "不限");
         assert_eq!(format_limit(Some(20000.0), ""), "2万");
+    }
+
+    #[test]
+    fn etf_creation_unit_codes_are_not_low_barrier_candidates() {
+        let f = sample_fund("513300", "-", false);
+
+        assert_eq!(
+            high_entry_barrier_reason(&f).as_deref(),
+            Some("🧱ETF申赎门槛高")
+        );
+        assert_eq!(display_limit_text(&f), "ETF申赎门槛高");
+        assert!(!is_low_barrier_candidate(&f));
+    }
+
+    #[test]
+    fn ordinary_lof_can_stay_in_low_barrier_ranking() {
+        let f = sample_fund("161129", "不限", false);
+
+        assert!(high_entry_barrier_reason(&f).is_none());
+        assert_eq!(display_limit_text(&f), "不限");
+        assert!(is_low_barrier_candidate(&f));
+    }
+
+    #[test]
+    fn minimum_share_text_marks_high_entry_barrier() {
+        let f = sample_fund("161999", "最小申赎单位50万份", false);
+
+        assert_eq!(
+            high_entry_barrier_reason(&f).as_deref(),
+            Some("🧱最小申赎单位50万份")
+        );
+        assert!(!is_low_barrier_candidate(&f));
     }
 }
