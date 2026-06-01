@@ -102,7 +102,7 @@ def main() -> int:
 
     cached = load_cached_report(tag)
     if cached:
-        print(f"[WARN] LOF realtime refresh failed, using cached report: {refresh_error}")
+        print(f"[WARN] LOF realtime refresh failed, using cached report: {refresh_error}", file=sys.stderr)
         print(cached)
         return 0
 

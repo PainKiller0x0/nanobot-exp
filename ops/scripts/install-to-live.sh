@@ -12,6 +12,17 @@ fi
 if [ -f "$repo/config/evolution.json" ]; then
   install -m 0644 "$repo/config/evolution.json" /root/.nanobot/evolution.json
 fi
+install_skill_source() {
+  local rel="$1"
+  local mode="$2"
+  local dst="/root/.nanobot/workspace/skills/$rel"
+  if [ -f "$repo/sources/$rel" ]; then
+    mkdir -p "$(dirname "$dst")"
+    install -m "$mode" "$repo/sources/$rel" "$dst"
+  fi
+}
+install_skill_source "_shared/ops_common.py" 0644
+install_skill_source "qdii-monitor/send_qq.py" 0755
 for f in "$repo"/systemd/*.service "$repo"/systemd/*.target "$repo"/systemd/*.timer; do
   [ -e "$f" ] || continue
   install -m 0644 "$f" "/etc/systemd/system/$(basename "$f")"
