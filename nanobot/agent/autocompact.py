@@ -88,6 +88,8 @@ class AutoCompact:
         except Exception:
             logger.debug("Auto-compact: failed to write event log", exc_info=True)
 
+
+
     def _split_unconsolidated(
         self, session: Session,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -131,7 +133,6 @@ class AutoCompact:
             "threshold_messages": threshold,
             "forced": forced,
         }
-
     def check_expired(self, schedule_background: Callable[[Coroutine], None],
                       active_session_keys: Collection[str] = ()) -> None:
         """Schedule archival for idle sessions, skipping those with in-flight agent tasks."""
@@ -146,98 +147,22 @@ class AutoCompact:
                 self._archiving.add(key)
                 schedule_background(self._archive(key))
 
+
     async def _archive(self, key: str) -> None:
         try:
-            self.sessions.invalidate(key)
-            session = self.sessions.get_or_create(key)
-            archive_msgs, kept_msgs = self._split_unconsolidated(session)
-            pending_count = len(archive_msgs) + len(kept_msgs)
-            if not pending_count:
-                session.metadata.pop(self._DEFER_META_KEY, None)
-                session.updated_at = datetime.now()
-                self.sessions.save(session)
-                self._write_event("empty", key, pending_messages=0)
-                return
-
-            now = datetime.now()
-            should_defer, defer_info = self._defer_decision(session, pending_count, now)
-            if should_defer:
-                started_at = defer_info["started_at"]
-                session.metadata[self._DEFER_META_KEY] = {
-                    "started_at": started_at.isoformat(),
-                    "last_checked_at": now.isoformat(),
-                    "next_check_at": (now + timedelta(minutes=max(1, self._ttl))).isoformat(),
-                    "pending_messages": pending_count,
-                    "threshold_messages": defer_info["threshold_messages"],
-                    "elapsed_minutes": defer_info["elapsed_minutes"],
-                    "periods": defer_info["periods"],
-                    "max_defer_hours": self._MAX_DEFER_HOURS,
-                }
-                session.updated_at = now
-                self.sessions.save(session)
-                logger.info(
-                    "Auto-compact: deferred {} (pending={}, threshold={}, elapsed={}m)",
-                    key,
-                    pending_count,
-                    defer_info["threshold_messages"],
-                    defer_info["elapsed_minutes"],
-                )
-                self._write_event(
-                    "deferred",
-                    key,
-                    pending_messages=pending_count,
-                    threshold_messages=defer_info["threshold_messages"],
-                    elapsed_minutes=defer_info["elapsed_minutes"],
-                    periods=defer_info["periods"],
-                    next_check_at=session.metadata[self._DEFER_META_KEY]["next_check_at"],
-                    archived_preview=self._message_preview(archive_msgs),
-                )
-                return
-
-            defer_meta = session.metadata.get(self._DEFER_META_KEY)
-            last_active = (
-                self._parse_dt(defer_meta.get("started_at"))
-                if isinstance(defer_meta, dict)
-                else None
-            ) or session.updated_at
-            summary = ""
-            if archive_msgs:
-                summary = await self.consolidator.archive(archive_msgs) or ""
-            session.metadata.pop(self._DEFER_META_KEY, None)
+            summary = await self.consolidator.compact_idle_session(
+                key, self._RECENT_SUFFIX_MESSAGES,
+            )
             if summary and summary != "(nothing)":
-                self._summaries[key] = (summary, last_active)
-                session.metadata["_last_summary"] = {
-                    "text": summary,
-                    "last_active": last_active.isoformat(),
-                }
-            session.messages = kept_msgs
-            session.last_consolidated = 0
-            session.updated_at = datetime.now()
-            self.sessions.save(session)
-            if archive_msgs:
-                logger.info(
-                    "Auto-compact: archived {} (archived={}, kept={}, summary={}, forced={})",
-                    key,
-                    len(archive_msgs),
-                    len(kept_msgs),
-                    bool(summary),
-                    defer_info["forced"],
-                )
-                self._write_event(
-                    "archived",
-                    key,
-                    pending_messages=pending_count,
-                    archived_messages=len(archive_msgs),
-                    kept_messages=len(kept_msgs),
-                    threshold_messages=defer_info["threshold_messages"],
-                    elapsed_minutes=defer_info["elapsed_minutes"],
-                    forced=defer_info["forced"],
-                    summary=summary[: self._EVENT_PREVIEW_CHARS],
-                    archived_preview=self._message_preview(archive_msgs),
-                )
+                session = self.sessions.get_or_create(key)
+                meta = session.metadata.get("_last_summary")
+                if isinstance(meta, dict):
+                    self._summaries[key] = (
+                        meta["text"],
+                        datetime.fromisoformat(meta["last_active"]),
+                    )
         except Exception:
             logger.exception("Auto-compact: failed for {}", key)
-            self._write_event("failed", key)
         finally:
             self._archiving.discard(key)
 

@@ -6,6 +6,8 @@
 .env
 .web
 .orion
+nanobot-desktop/
+desktop/
 
 # Claude / AI assistant artifacts
 docs/superpowers/
@@ -97,7 +99,6 @@ logs/
 tmp/
 temp/
 *.tmp
-
 # Runtime-generated patch artifacts
 /docker-compose.slim.yml
 /docker-compose.reflexio.yml
@@ -115,3 +116,5 @@ ops/**/*.db
 ops/**/*.sqlite
 ops/**/*.log
 ops/config/notify-sidecar-rs/config.json
+exp/
+.playwright-mcp/

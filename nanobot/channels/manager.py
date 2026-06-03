@@ -59,11 +59,17 @@ class ChannelManager:
         *,
         session_manager: "SessionManager | None" = None,
         webui_runtime_model_name: Callable[[], str | None] | None = None,
+        webui_static_dist: bool = True,
+        webui_runtime_surface: str = "browser",
+        webui_runtime_capabilities: dict[str, Any] | None = None,
     ):
         self.config = config
         self.bus = bus
         self._session_manager = session_manager
         self._webui_runtime_model_name = webui_runtime_model_name
+        self._webui_static_dist = webui_static_dist
+        self._webui_runtime_surface = webui_runtime_surface
+        self._webui_runtime_capabilities = dict(webui_runtime_capabilities or {})
         self.channels: dict[str, BaseChannel] = {}
         self._dispatch_task: asyncio.Task | None = None
         self._send_queues: dict[tuple[str, str], asyncio.Queue[tuple[BaseChannel, OutboundMessage]]] = {}
@@ -74,36 +80,52 @@ class ChannelManager:
 
     def _init_channels(self) -> None:
         """Initialize channels discovered via pkgutil scan + entry_points plugins."""
-        from nanobot.channels.registry import discover_all
+        from nanobot.channels.registry import discover_channel_names, discover_enabled
 
         transcription_provider = self.config.channels.transcription_provider
         transcription_key = self._resolve_transcription_key(transcription_provider)
         transcription_base = self._resolve_transcription_base(transcription_provider)
         transcription_language = self.config.channels.transcription_language
 
-        for name, cls in discover_all().items():
+        # Collect enabled module names first, then only import those.
+        # Channel configs live in ChannelsConfig's extra fields (via
+        # extra="allow"), so we enumerate candidates from pkgutil scan
+        # (cheap, no imports) and any plugin keys in __pydantic_extra__.
+        names = discover_channel_names()
+        candidate_names = set(names)
+        extra = getattr(self.config.channels, "__pydantic_extra__", None) or {}
+        candidate_names.update(extra.keys())
+
+        enabled_names: set[str] = set()
+        for name in candidate_names:
             section = getattr(self.config.channels, name, None)
             if section is None:
                 continue
-            enabled = (
+            if (
                 section.get("enabled", False)
                 if isinstance(section, dict)
                 else getattr(section, "enabled", False)
-            )
-            if not enabled:
+            ):
+                enabled_names.add(name)
+
+        for name, cls in discover_enabled(enabled_names, _names=names).items():
+            section = getattr(self.config.channels, name, None)
+            if section is None:
                 continue
             try:
                 kwargs: dict[str, Any] = {}
-                # Only the WebSocket channel currently hosts the embedded webui
-                # surface; other channels stay oblivious to these knobs.
                 if cls.name == "websocket":
                     if self._session_manager is not None:
                         kwargs["session_manager"] = self._session_manager
-                        static_path = _default_webui_dist()
+                        static_path = _default_webui_dist() if self._webui_static_dist else None
                         if static_path is not None:
                             kwargs["static_dist_path"] = static_path
+                    kwargs["workspace_path"] = self.config.workspace_path
+                    kwargs["restrict_to_workspace"] = self.config.tools.restrict_to_workspace
                     if self._webui_runtime_model_name is not None:
                         kwargs["runtime_model_name"] = self._webui_runtime_model_name
+                    kwargs["runtime_surface"] = self._webui_runtime_surface
+                    kwargs["runtime_capabilities_overrides"] = self._webui_runtime_capabilities
                 channel = cls(section, self.bus, **kwargs)
                 channel.transcription_provider = transcription_provider
                 channel.transcription_api_key = transcription_key

@@ -5,8 +5,6 @@ from dataclasses import fields
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
 from nanobot.agent.tools.base import Tool
 
 
@@ -89,9 +87,12 @@ def test_discover_finds_concrete_tools():
     loader = ToolLoader()
     discovered = loader.discover()
     class_names = {cls.__name__ for cls in discovered}
+    assert "ApplyPatchTool" in class_names
     assert "ExecTool" in class_names
+    assert "CliAppsTool" in class_names
     assert "MessageTool" in class_names
     assert "SpawnTool" in class_names
+    assert "WriteStdinTool" in class_names
 
 
 def test_discover_excludes_abstract_and_mcp():
@@ -110,6 +111,31 @@ def test_discover_skips_private_classes():
     discovered = loader.discover()
     for cls in discovered:
         assert not cls.__name__.startswith("_")
+
+
+def test_loader_registers_exec_with_real_tools_config(tmp_path):
+    """Real config objects catch bad ctx.config attribute paths that mocks hide."""
+    from types import SimpleNamespace
+
+    from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.config.schema import ToolsConfig
+
+    ctx = ToolContext(
+        config=ToolsConfig(),
+        workspace=str(tmp_path),
+        bus=None,
+        subagent_manager=SimpleNamespace(
+            get_running_count=lambda: 0,
+            max_concurrent_subagents=4,
+        ),
+        cron_service=None,
+        timezone="UTC",
+    )
+    registry = ToolRegistry()
+    registered = ToolLoader().load(ctx, registry)
+
+    assert "exec" in registered
+    assert registry.has("exec")
 
 
 # --- Task 4: _FsTool.create() ---
@@ -364,6 +390,7 @@ def test_config_defaults():
     assert config.tools.my.enable is True
     assert config.tools.my.allow_set is False
     assert config.tools.image_generation.enabled is False
+    assert config.tools.cli_apps.enable is True
     assert config.tools.restrict_to_workspace is False
 
 
@@ -406,7 +433,8 @@ def test_loader_registers_same_tools_as_old_hardcoded():
 
     expected = {
         "read_file", "write_file", "edit_file", "list_dir",
-        "grep", "notebook_edit", "exec", "web_search", "web_fetch",
+        "find_files", "grep", "exec", "write_stdin", "list_exec_sessions",
+        "web_search", "web_fetch",
         "message", "spawn", "cron",
     }
     actual = set(registered)
