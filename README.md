@@ -1,291 +1,282 @@
 # nanobot-exp
 
-Personal production fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot).
+`nanobot-exp` is a personal production fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot).
 
-> This repository is not the official nanobot homepage. It is a small, upstream-friendly runtime fork used to run a personal long-lived agent with external extensions and Rust sidecars.
+This repository keeps the Nanobot core close to upstream while adding the production glue I actually use every day: QQ/WeChat channels, sidecars, model routing, content workflows, operations guardrails, and dashboards.
+
+> Current baseline: Nanobot `0.2.1` plus the `ops/` sidecar layer. Runtime secrets, databases, logs and live target IDs are intentionally kept out of git.
 
 ## 中文说明
 
 ### 这个仓库是什么
 
-`nanobot-exp` 是我的 nanobot 实验/线上版本。目标不是把 nanobot 改成一个越来越重的个人项目，而是把职责拆开：
+这是一个“上游 Nanobot + 个人生产胶水”的仓库，不是重新发明一个全新的 agent 框架。
 
-- `nanobot/` 尽量保持接近上游，方便继续同步 [HKUDS/nanobot](https://github.com/HKUDS/nanobot)。
-- 自己写的轮子、定时任务、RSS、行情、记忆看板、通知桥等，尽量放到 extensions 或 sidecars。
-- 线上部署以小内存 VPS 为目标，优先选择 Rust sidecar 和 systemd/Podman 管理。
-- 公网入口收口到一个管理/看板端口，其他服务走本机或容器内部访问。
+核心思路：
 
-当前本体基线：已合入上游 `v0.2.0`，Python `>=3.11`。上游 `main` 仍可能继续前进，更新前先在默认 nanobot 回测。
+- `nanobot/` 尽量跟随上游，只保留必要的下游兼容、QQ/微信体验和安全修复。
+- `ops/` 承载线上服务编排、sidecar 源码快照、systemd 单元、部署脚本和运维工具。
+- 各类重功能尽量放到 sidecar 或 skill，不把 Nanobot 主进程拖成一个越来越重的常驻巨兽。
+- 默认 nanobot 先更新、回测、跑 GitHub Actions，再同步给广州 nanobot 等其他实例。
 
 ### 设计原则
 
-1. **上游优先**：能不改 nanobot 本体就不改，本体只保留必要补丁。
-2. **外挂优先**：个人能力通过 `scripts/install_extentions.sh`、runtime glue、sidecar 接入。
-3. **低内存优先**：长期运行的任务优先从 Python cron 拆到 Rust sidecar。
-4. **可回滚优先**：脚本生成 overlay/env 文件，不直接把线上状态写死进仓库。
-5. **公网收口**：线上建议只暴露一个 dashboard/reverse-proxy 入口，例如 `http://<host>:8093/`。
+| 原则 | 说明 |
+| --- | --- |
+| 跟上游而不是吞上游 | 上游有的核心能力尽量复用；下游差异放在胶水层、配置层和 sidecar。 |
+| 少常驻，多按需 | 浏览器、抓取、清洗、趋势分析等重活尽量按需或独立服务运行。 |
+| 真实数据优先 | 系统状态、LOF、成本、cron、sidecar health 走真实脚本和 API，不让 LLM 乱猜。 |
+| 成本可见 | OBP 记录来源、模型、免费/付费 token 和成本，方便控制 API 钱包。 |
+| 安全默认收口 | 业务端口不公网直连；公网只走 Caddy/域名反代和认证策略。 |
 
-### 当前架构
+## 当前架构
 
 ```text
-                        public http
-                            |
-                            v
-                    <host>:8093
-                LOF / Sidecars dashboard
-                            |
-       +--------------------+--------------------+
-       |                    |                    |
-   /rss/ proxy        /reflexio/ proxy       /obp/ proxy
-       |                    |                    |
- RSS sidecar        Reflexio sidecar        OBP failover
- 127.0.0.1:8091     127.0.0.1:8081         127.0.0.1:8000
-
- Nanobot core runs separately and talks to internal sidecars.
- QQ / Notify / health ports stay on loopback whenever possible.
+QQ / WeChat / API clients
+        |
+        v
+Nanobot core 0.2.x
+  - chat loop / tools / memory / cron
+  - QQ streaming output
+  - direct ops replies for health/status questions
+        |
+        +---------------- internal tools / callbacks ----------------+
+                                                                     |
+Public web entry                                                     |
+  Caddy :80/:443                                                     |
+  auth / noindex / reverse proxy                                     |
+        |                                                            |
+        v                                                            |
+127.0.0.1:8093 dashboard gateway                                     |
+  /                 今日驾驶舱 / 能力总控台                           |
+  /rss/             RSS、微信文章、Markdown 预览、付费文章清洗器       |
+  /inbox            知识收件箱                                        |
+  /lof              LOF / QDII 套利监控                               |
+  /trends/          Trend Radar Lite                                  |
+  /reflexio/        记忆与反思看板                                    |
+  /obp/             OBP 管理页面                                      |
+  /obp/v1           OpenAI-compatible API                             |
+  /obp/anthropic/v1 Anthropic-compatible API                          |
+        |
+        +--> Rust / Python sidecars on loopback or container network
 ```
 
-这个结构的重点是：nanobot 负责核心聊天/Agent 循环，sidecar 负责具体业务系统。这样上游更新时，主仓库不会被个人业务逻辑缠死。
+公网入口不要写死裸 IP。线上业务端口 `8000/8080/8081/8091/8092/8093/8094/8095` 默认不直接暴露，统一经 Caddy 反代和认证策略访问。
 
-更多架构细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+## 能力地图
 
-### 和上游有什么不同
+| 层 | 组件 | 当前用途 |
+| --- | --- | --- |
+| 聊天入口 | QQ、微信、OpenAI-compatible API | 日常对话、图片理解、运维快捷问答、定时推送出口。 |
+| 内容工作台 | RSS sidecar、知识收件箱、付费文章清洗器 | 微信/RSS 文章抓取、广告过滤、Markdown 预览、手动评分、删除、补读。 |
+| 趋势雷达 | Trend Radar Lite | 多源热点采集、历史热搜、每日新闻简报、MCP 风格工具接口。 |
+| 投资看板 | LOF sidecar | QDII/LOF 实时刷新、溢价连续统计、申赎门槛过滤、QQ 报告推送。 |
+| 模型网关 | OBP | 模型组、fallback、emergency、OpenAI/Anthropic 兼容入口、来源和成本账本。 |
+| 记忆系统 | Nanobot memory、Reflexio | 对话记忆、延迟压缩、记忆看板、反思数据保留。 |
+| 运维守卫 | sidecarctl、ops guard、systemd timers | 服务自愈、备份、上游版本通知、OBP 预算告警、健康日报。 |
+| 驾驶舱 | dashboard gateway | 今日重点、服务健康、任务状态、模型成本、能力矩阵、快速入口。 |
 
-- 增加了线上部署脚本和精简脚本。
-- 增加了 extensions 安装胶水，方便把个人能力独立出去。
-- 增加了 sidecar 化迁移文档和运行时 overlay。
-- 对 QQ、WeChat、Cron、内存、容器运行做了线上使用取向的补丁。
-- README 不再复刻官方介绍页，而是说明这个 fork 的定位和运维方式。
+## 和上游有什么不同
 
-### 快速开始
+这个 fork 的目标不是改掉 Nanobot，而是把它变成一个可长期运行的个人系统。
 
-克隆本仓库：
+主要差异：
+
+- QQ 渠道体验：流式输出、ack、媒体发送、图片/文本组合、超时和重复输出保护。
+- WeChat/RSS/知识工作流：微信文章、RSS、飞书/普通链接收纳、文章评分、清洗和补读。
+- Sidecar 化：LOF、OBP、Trend Radar、Notify、Reflexio、QQ bridge 等服务从主进程拆出。
+- OBP 模型路由：按来源、任务类型、成本、fallback 和 emergency 做统一路由与审计。
+- 运维闭环：`sidecarctl`、ops guard、备份 timer、自愈 timer、上游版本提醒和预算提醒。
+- 生产安全：业务端口收口到 loopback/Caddy，secrets 不进 git，公开页面避免裸 IP 暴露。
+
+## 本地快速开始
 
 ```bash
-git clone git@github.com:PainKiller0x0/nanobot-exp.git
-cd nanobot-exp
+uv sync
+uv run nanobot --config ~/.nanobot/config.json
+uv run pytest tests/
 ```
 
-安装依赖，推荐使用 `uv`：
+只开发上游核心功能时，直接跑 Nanobot 测试即可。涉及 sidecar、真实推送、OBP、RSS、LOF 或线上定时任务时，需要在生产服务器或等价的本地服务环境中回测。
+
+常用检查：
 
 ```bash
-uv sync --all-extras
+uv run ruff check nanobot tests --select F
+uv run pytest tests/
 ```
 
-或者用普通 Python 环境：
+## 生产部署形态
 
-```bash
-python3 -m pip install -e .
-```
+线上默认是 Podman + systemd + Caddy：
 
-初始化配置：
-
-```bash
-nanobot onboard
-```
-
-本地聊天：
-
-```bash
-nanobot agent
-```
-
-启动网关：
-
-```bash
-nanobot gateway
-```
-
-快速回测：
-
-```bash
-scripts/run_smoke.sh
-```
-
-### Extensions 胶水
-
-脚本名 `install_extentions.sh` 中的 `extentions` 拼写是历史兼容保留，暂时不要改名。
-
-安装外部扩展仓库：
-
-```bash
-scripts/install_extentions.sh \
-  --repo git@github.com:YOUR_ORG/nanobot-extensions.git \
-  --ref main \
-  --modules extensions.example
-
-source ~/.nanobot/extensions.env
-cat ~/.nanobot/extensions.lock
-```
-
-更多说明见 [docs/EXTENSIONS_GLUE.md](docs/EXTENSIONS_GLUE.md)。
-
-### Ops / Sidecars 快照
-
-`ops/` 保存当前线上可复现的运维胶水：Rust sidecar 源码、systemd unit、部署脚本、服务矩阵配置和 Nanobot skill 快照。
-
-它的用途是“让这台服务器能重新拼起来”，不是保存线上状态：
-
-- 提交源码、脚本、unit、example 配置。
-- 不提交 `target/`、日志、数据库、真实 cron 目标 ID、token、env。
-- 真实配置仍然放在 `/root/.nanobot` 或服务器本地 `/root/nanobot-ops`。
-
-常用命令：
-
-```bash
-ops/scripts/deploy-sidecar.sh --status all
-ops/scripts/deploy-sidecar.sh trend
-ops/bin/sidecarctl status
-```
-
-当前 sidecar 入口统一经 `http://<host>:8093/` 反代，包括 `/rss/`、`/reflexio/`、`/obp/`、`/trends/`。
-
-### Runtime / 线上脚本
-
-常用脚本：
-
-| Script | Purpose |
+| 服务 | 说明 |
 | --- | --- |
-| `scripts/run_smoke.sh` | 快速回归测试 |
-| `scripts/install_extentions.sh` | 安装外部扩展并生成 env/lock |
-| `scripts/apply_slim_profile.sh` | 生成低内存 compose/env overlay |
-| `scripts/apply_runtime_profiles.sh` | 一次性生成 runtime overlays |
-| `scripts/rollback_runtime_profiles.sh` | 回滚 runtime overlays |
-| `scripts/memory_report.sh` | 查看主机/容器/进程内存 |
-| `scripts/memory_budget_check.sh` | 内存预算检查，适合 cron/CI |
-| `scripts/ops_quick_optimize.sh` | 安全清理临时文件和旧备份 |
-| `scripts/apply_wechat_rss_rs.sh` | 迁移 WeChat/RSS sidecar 的辅助脚本 |
-| `scripts/tune_legacy_nanobot_container.sh` | legacy 容器精简调优 |
+| `podman-nanobot-cage.service` | Nanobot 主容器。 |
+| `lof-sidecar.service` | 8093 loopback 网关和 LOF 看板。 |
+| `obp-rs.service` | OBP 模型网关。 |
+| `podman-wechat-rss-sidecar.service` | RSS / 微信文章 sidecar。 |
+| `notify-sidecar-rs.service` | 定时任务桥和推送调度。 |
+| `qq-sidecar-rs.service` | QQ 消息出口桥。 |
+| `trend-sidecar-rs.service` | Trend Radar Lite。 |
+| `nanobot-reflexio-rs.service` | Reflexio 记忆看板。 |
+| `nanobot-ops-heal.timer` | 低层自愈巡检。 |
+| `nanobot-data-backup.timer` | 数据备份。 |
 
-更多说明见 [docs/RUNTIME_PATCH_SCRIPTS.md](docs/RUNTIME_PATCH_SCRIPTS.md)。
+服务 registry 位于 `ops/config/sidecars.json`，驾驶舱和 `sidecarctl` 都从这里读取。
 
-### Docker / Compose
-
-本仓库保留基础 compose：
+## 运维命令
 
 ```bash
-docker compose up -d nanobot-gateway
+sidecarctl status
+sidecarctl doctor
+sidecarctl stack
+sidecarctl url rss
+sidecarctl logs lof
+sidecarctl restart notify
 ```
 
-低内存 overlay：
-
 ```bash
-scripts/apply_slim_profile.sh
-docker compose -f docker-compose.yml -f docker-compose.slim.yml up -d nanobot-gateway
+python3 ops/scripts/nanobot-ops-guard.py --mode heal --force-report
+python3 ops/scripts/nanobot-ops-guard.py --mode backup --dry-run
+python3 ops/scripts/nanobot-ops-guard.py --mode upstream --force-report
+python3 ops/scripts/nanobot-ops-guard.py --mode obp-budget --force-report
 ```
 
-如果线上仍使用 legacy `nanobot-cage`，优先用对应脚本调优，而不是手改容器：
-
 ```bash
-scripts/tune_legacy_nanobot_container.sh --apply
+/usr/local/sbin/rust-sidecar-maintain status
+/usr/local/sbin/rust-sidecar-maintain build-install
+/usr/local/sbin/rust-sidecar-maintain clean-targets
 ```
 
-### 上游同步流程
+## OBP API
 
-建议把官方仓库作为 `official` remote：
+OBP 是统一模型入口，既服务默认 nanobot，也可以服务广州 nanobot 等其他实例。
 
-```bash
-git remote add official https://github.com/HKUDS/nanobot.git
-git fetch official --tags
+OpenAI-compatible：
+
+```text
+POST https://<public-domain>/obp/v1/chat/completions
 ```
 
-同步上游：
+Anthropic-compatible：
+
+```text
+POST https://<public-domain>/obp/anthropic/v1/messages
+```
+
+认证方式由线上配置决定，支持 Basic Auth / Bearer Token。公开 README 不记录真实账号、密码、token、base URL 或 provider key。
+
+OBP 记录：
+
+- 请求来源，例如 `default-nanobot`、`guangzhou-nanobot`。
+- 请求模型、实际模型、渠道、fallback 原因。
+- token、缓存命中、免费/付费分类和成本。
+- 月预算、熔断、backup 和 emergency 路径。
+
+## 内容与信息工作流
+
+| 功能 | 入口 | 说明 |
+| --- | --- | --- |
+| RSS 文章 | `/rss/` | 微信文章、鸭哥 AI 要闻、Markdown 预览、明暗模式。 |
+| 付费文章清洗器 | `/rss/cleaner` | 面向手动复制的长文，规则清洗为 Markdown，可按需 LLM 精修。 |
+| 知识收件箱 | `/inbox` | 链接收纳、抓取、摘要、评分、删除、手动校正。 |
+| Trend Radar | `/trends/` | 热榜采集、历史榜、每日简报、过滤八卦噪声。 |
+| 补读 | Nanobot 指令 | 对已抓取文章按原推送格式重新发送全文。 |
+
+原则是：能规则处理就不调用模型；需要摘要/判断时优先走免费或低成本模型；真正复杂问题再升级。
+
+## 上游同步流程
+
+默认链路：
 
 ```bash
-git checkout main
 git fetch official --tags
 git merge official/main
-scripts/run_smoke.sh
-git push exp main
+uv run ruff check nanobot tests --select F
+uv run pytest tests/
+git push exp HEAD:main
 ```
 
-如果冲突发生在个人业务逻辑里，优先考虑把它继续拆到 extension/sidecar，而不是让 `nanobot/` 越来越难合并。
+同步策略：
 
-### Secrets 和线上数据
+- 先在默认 nanobot 更新和回测。
+- GitHub Actions 通过后再给其他实例升级。
+- 不把线上 secrets、数据库、日志、真实 cron target、浏览器 cookie 放进 git。
+- 如果上游改动和下游胶水冲突，优先保持上游核心结构，下游差异挪到 `ops/`、skill 或 sidecar。
 
-不要提交这些内容：
+## Secrets 和线上数据
 
-- `~/.nanobot/config.json` 中的私密配置。
-- `~/.nanobot/secrets/*.env`。
-- QQ、WeChat、LLM、GitHub、云厂商 token。
-- 线上日志、媒体文件、数据库、RSS 抓取缓存。
+不要提交：
 
-仓库只放代码、脚本、文档和可复现的部署胶水。
+- `/root/.nanobot/config.json` 中的真实密钥值。
+- `/root/.nanobot/secrets/*.env`。
+- runtime database、history、日志、cookie、真实 QQ/微信目标 ID。
+- Rust `target/`、Podman image layer、临时备份和缓存。
 
-### 相关文档
+建议配置方式：
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/quick-start.md](docs/quick-start.md)
-- [docs/configuration.md](docs/configuration.md)
-- [docs/chat-apps.md](docs/chat-apps.md)
-- [docs/deployment.md](docs/deployment.md)
-- [docs/EXTENSIONS_GLUE.md](docs/EXTENSIONS_GLUE.md)
-- [docs/RUNTIME_PATCH_SCRIPTS.md](docs/RUNTIME_PATCH_SCRIPTS.md)
+```json
+{
+  "providers": {
+    "custom": {
+      "apiKey": "${NANOBOT_PROVIDER_API_KEY}"
+    }
+  }
+}
+```
 
-### 上游致谢
+真实值放在受限权限的 env 文件里，由 systemd / Podman 注入。
 
-核心项目来自 [HKUDS/nanobot](https://github.com/HKUDS/nanobot)，许可证见 [LICENSE](LICENSE)。本仓库保留上游 MIT License，并在此基础上维护个人实验和线上部署相关改动。
+## 目录速览
+
+```text
+nanobot/                 Nanobot core and downstream compatibility patches
+tests/                   Core regression tests
+ops/                     Live-server sidecars, scripts, units and registry
+ops/sources/             Source snapshots for Rust/Python sidecars
+ops/systemd/             Systemd units and timers
+ops/config/              Sidecar and capability registries
+scripts/                 Local smoke/deploy/helper scripts
+docs/                    Architecture notes and implementation docs
+```
+
+## 相关文档
+
+- `docs/ARCHITECTURE.md`: 当前架构设计和边界。
+- `docs/adr/`: 架构决策记录。
+- `ops/README.md`: 线上 ops 层说明。
+- `ops/docs/restore.md`: 恢复与备份说明。
+
+## Upstream Credit
+
+Nanobot is originally developed by [HKUDS](https://github.com/HKUDS). This fork exists because I use Nanobot as a real personal assistant and need a production-shaped layer around it.
 
 ## English Brief
 
-`nanobot-exp` is a personal production fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot).
+`nanobot-exp` keeps Nanobot close to upstream while adding a private production layer for daily use.
 
-The goal is not to turn the upstream core into a private monolith. The goal is to keep the core close to upstream, while moving personal automations into extensions and sidecars.
+### What This Fork Adds
 
-### What this fork adds
+- QQ/WeChat production channel fixes, including QQ streaming and media handling.
+- Sidecar-based services for RSS, LOF/QDII monitoring, Trend Radar, Reflexio, Notify and OBP.
+- A unified dashboard gateway served behind Caddy instead of exposing raw service ports.
+- OBP model routing with OpenAI-compatible and Anthropic-compatible APIs, source tracking, fallback paths and cost accounting.
+- Knowledge Inbox, article cleaning, RSS previews, daily briefs and full-article replay.
+- Ops guardrails: backups, self-healing, upstream release checks, budget alerts and service registry tooling.
 
-- Upstream-friendly runtime patches.
-- Extension installer glue via `scripts/install_extentions.sh`.
-- Low-memory deployment helpers.
-- Sidecar-first architecture for RSS, LOF/QDII, notifications, Reflexio memory dashboard, QQ bridge and failover services.
-- A single-public-entry deployment pattern, usually `http://<host>:8093/`.
-
-### Local quick start
-
-```bash
-git clone git@github.com:PainKiller0x0/nanobot-exp.git
-cd nanobot-exp
-uv sync --all-extras
-nanobot onboard
-nanobot agent
-```
-
-Run smoke tests:
+### Local Development
 
 ```bash
-scripts/run_smoke.sh
+uv sync
+uv run nanobot --config ~/.nanobot/config.json
+uv run ruff check nanobot tests --select F
+uv run pytest tests/
 ```
 
-### Ops / Sidecar Snapshot
+### Production Notes
 
-The `ops/` directory tracks reproducible live-server glue: Rust sidecar sources, systemd units, deployment scripts, sidecar registry and Nanobot skill snapshots.
-
-It intentionally excludes runtime state: build targets, logs, databases, real cron target IDs, tokens and env files.
-
-Typical commands:
-
-```bash
-ops/scripts/deploy-sidecar.sh --status all
-ops/scripts/deploy-sidecar.sh trend
-ops/bin/sidecarctl status
-```
-
-### Extension install
-
-```bash
-scripts/install_extentions.sh \
-  --repo git@github.com:YOUR_ORG/nanobot-extensions.git \
-  --ref main
-source ~/.nanobot/extensions.env
-```
-
-### Upstream sync
-
-```bash
-git fetch official --tags
-git merge official/main
-scripts/run_smoke.sh
-git push exp main
-```
-
-Keep secrets, runtime state, logs and local data out of git.
+- Public access should go through Caddy and a domain, not raw IP plus service port.
+- Runtime secrets and data are excluded from git.
+- Sidecars are tracked as reproducible source snapshots under `ops/sources/`.
+- The default Nanobot instance is the staging ground before changes are pushed and rolled out to other instances.
