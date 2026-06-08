@@ -50,7 +50,6 @@ from nanobot.security.workspace_access import (
 )
 from nanobot.session.goal_state import (
     goal_state_runtime_lines,
-    goal_state_ws_blob,
     runner_wall_llm_timeout_s,
 )
 from nanobot.session.manager import Session, SessionManager
@@ -59,7 +58,6 @@ from nanobot.session.webui_turns import (
     WebuiTurnCoordinator,
     build_bus_progress_callback,
     mark_webui_session,
-    maybe_generate_webui_title_after_turn,
     publish_turn_run_status,
 )
 from nanobot.utils.document import extract_documents, reference_non_image_attachments
@@ -977,6 +975,19 @@ class AgentLoop:
         gate = self._concurrency_gate or nullcontext()
 
         pending: asyncio.Queue | None = None
+
+        def _has_internal_continuation(queue: asyncio.Queue | None) -> bool:
+            if queue is None:
+                return False
+            try:
+                items = list(queue._queue)
+            except Exception:
+                return False
+            return any(
+                turn_continuation.internal_continuation_inbound(getattr(item, "metadata", None))
+                for item in items
+            )
+
         try:
             async with lock, gate:
                 # Only the task that owns the session lock may publish the
@@ -1043,46 +1054,20 @@ class AgentLoop:
                                 metadata=msg.metadata or {},
                             )
                         )
-                    if msg.channel == "websocket":
+                    if (
+                        msg.channel == "websocket"
+                        and not turn_continuation.internal_continuation_pending(msg.metadata)
+                        and not _has_internal_continuation(pending)
+                    ):
                         # Signal that the turn is fully complete (all tools executed,
                         # final text streamed).  This lets WS clients know when to
                         # definitively stop the loading indicator.
                         turn_lat = self._pending_turn_latency_ms.pop(session_key, None)
-                        turn_metadata: dict[str, Any] = {**msg.metadata, "_turn_end": True}
-                        if turn_lat is not None:
-                            turn_metadata["latency_ms"] = int(turn_lat)
-                        sess_turn = self.sessions.get_or_create(session_key)
-                        turn_metadata["goal_state"] = goal_state_ws_blob(sess_turn.metadata)
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
-                                content="",
-                                metadata=turn_metadata,
-                            )
+                        await self._webui_turns.handle_turn_end(
+                            msg,
+                            session_key=session_key,
+                            latency_ms=turn_lat,
                         )
-                        if msg.metadata.get("webui") is True:
-
-                            async def _generate_title_and_notify() -> None:
-                                generated = await maybe_generate_webui_title_after_turn(
-                                    channel=msg.channel,
-                                    metadata=msg.metadata,
-                                    sessions=self.sessions,
-                                    session_key=session_key,
-                                    provider=self.provider,
-                                    model=self.model,
-                                )
-                                if generated:
-                                    await self.bus.publish_outbound(
-                                        OutboundMessage(
-                                            channel=msg.channel,
-                                            chat_id=msg.chat_id,
-                                            content="",
-                                            metadata={**msg.metadata, "_session_updated": True},
-                                        )
-                                    )
-
-                            self._schedule_background(_generate_title_and_notify())
                 except asyncio.CancelledError:
                     logger.info("Task cancelled for session {}", session_key)
                     # Preserve partial context from the interrupted turn so
@@ -1124,6 +1109,7 @@ class AgentLoop:
             # them to the bus so they are processed as fresh inbound messages
             # rather than silently lost.
             queue = self._pending_queues.pop(session_key, None)
+            continuation_pending = False
             if queue is not None:
                 leftover = 0
                 while True:
@@ -1131,6 +1117,10 @@ class AgentLoop:
                         item = queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
+                    if turn_continuation.internal_continuation_inbound(
+                        getattr(item, "metadata", None),
+                    ):
+                        continuation_pending = True
                     await self.bus.publish_inbound(item)
                     leftover += 1
                 if leftover:
@@ -1139,8 +1129,9 @@ class AgentLoop:
                         leftover,
                         session_key,
                     )
-            await publish_turn_run_status(self.bus, msg, "idle")
-            self._pending_turn_latency_ms.pop(session_key, None)
+            if not continuation_pending:
+                await publish_turn_run_status(self.bus, msg, "idle")
+                self._pending_turn_latency_ms.pop(session_key, None)
 
     async def close_mcp(self) -> None:
         """Drain pending background archives, then close MCP connections."""
@@ -1896,6 +1887,7 @@ class AgentLoop:
                 )
         finally:
             if channel == "websocket":
-                await self._webui_turns.publish_run_status(msg, "idle")
-                self._pending_turn_latency_ms.pop(session_key, None)
-                self._webui_turns.discard(session_key)
+                if not turn_continuation.internal_continuation_pending(msg.metadata):
+                    await self._webui_turns.publish_run_status(msg, "idle")
+                    self._pending_turn_latency_ms.pop(session_key, None)
+                    self._webui_turns.discard(session_key)

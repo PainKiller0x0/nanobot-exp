@@ -127,12 +127,13 @@ class AutoCompact:
         forced = elapsed_seconds >= self._MAX_DEFER_HOURS * 3600
         should_defer = pending_count < threshold and not forced
         return should_defer, {
-            "started_at": started_at,
+            "started_at": started_at.isoformat(),
             "elapsed_minutes": int(elapsed_seconds // 60),
             "periods": periods,
             "threshold_messages": threshold,
             "forced": forced,
         }
+
     def check_expired(self, schedule_background: Callable[[Coroutine], None],
                       active_session_keys: Collection[str] = ()) -> None:
         """Schedule archival for idle sessions, skipping those with in-flight agent tasks."""
@@ -150,17 +151,36 @@ class AutoCompact:
 
     async def _archive(self, key: str) -> None:
         try:
+            session = self.sessions.get_or_create(key)
+            defer_meta: dict[str, Any] = {}
+            if isinstance(session, Session):
+                pending_count = max(0, len(session.messages) - session.last_consolidated)
+                if pending_count > 0:
+                    should_defer, defer_meta = self._defer_decision(
+                        session,
+                        pending_count,
+                        datetime.now(),
+                    )
+                    defer_meta["pending_messages"] = pending_count
+                    if should_defer:
+                        session.metadata[self._DEFER_META_KEY] = defer_meta
+                        self.sessions.save(session)
+                        self._write_event("deferred", key, **defer_meta)
+                        return
+
             summary = await self.consolidator.compact_idle_session(
                 key, self._RECENT_SUFFIX_MESSAGES,
             )
-            if summary and summary != "(nothing)":
-                session = self.sessions.get_or_create(key)
-                meta = session.metadata.get("_last_summary")
-                if isinstance(meta, dict):
-                    self._summaries[key] = (
-                        meta["text"],
-                        datetime.fromisoformat(meta["last_active"]),
-                    )
+            session = self.sessions.get_or_create(key)
+            session.metadata.pop(self._DEFER_META_KEY, None)
+            meta = session.metadata.get("_last_summary")
+            if summary and summary != "(nothing)" and isinstance(meta, dict):
+                self._summaries[key] = (
+                    meta["text"],
+                    datetime.fromisoformat(meta["last_active"]),
+                )
+            self.sessions.save(session)
+            self._write_event("archived", key, summary=summary, **defer_meta)
         except Exception:
             logger.exception("Auto-compact: failed for {}", key)
         finally:

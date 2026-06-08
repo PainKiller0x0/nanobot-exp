@@ -120,6 +120,95 @@ def _openai_compat_timeout_s() -> float:
     return _float_env("NANOBOT_OPENAI_COMPAT_TIMEOUT_S", _OPENAI_COMPAT_REQUEST_TIMEOUT_S)
 
 
+_DEFAULT_STREAM_IDLE_TIMEOUT_S = 90.0
+_DEFAULT_IMAGE_STREAM_IDLE_TIMEOUT_S = 180.0
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return ""
+
+
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return _message_text(message)
+    return ""
+
+
+def _explicit_image_generation_prompt(messages: list[dict[str, Any]]) -> bool:
+    text = _last_user_text(messages).strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    negative_markers = (
+        "do not generate image",
+        "don't generate image",
+        "not generate image",
+        "just describe",
+        "画图崩",
+        "生图失败",
+        "生成图片失败",
+        "帮我看下日志",
+        "看下日志",
+        "报错",
+    )
+    if any(marker in lowered for marker in negative_markers):
+        return False
+    english_markers = (
+        "generate an image",
+        "create an image",
+        "draw an image",
+        "make an image",
+        "generate a picture",
+        "create a picture",
+        "draw a picture",
+    )
+    chinese_markers = (
+        "给我画",
+        "帮我画",
+        "画一张",
+        "画张",
+        "生成一张图",
+        "生成图片",
+        "创建图片",
+        "出一张图",
+    )
+    return any(marker in lowered for marker in english_markers) or any(
+        marker in text for marker in chinese_markers
+    )
+
+
+def _stream_idle_timeout_s(messages: list[dict[str, Any]]) -> float:
+    default = _float_env("NANOBOT_STREAM_IDLE_TIMEOUT_S", _DEFAULT_STREAM_IDLE_TIMEOUT_S)
+    if not _explicit_image_generation_prompt(messages):
+        return default
+    return _float_env("NANOBOT_IMAGE_STREAM_IDLE_TIMEOUT_S", _DEFAULT_IMAGE_STREAM_IDLE_TIMEOUT_S)
+
+
+def _image_background_enabled() -> bool:
+    raw = os.environ.get("NANOBOT_IMAGE_BACKGROUND", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _coerce_completion_response(result: Any) -> LLMResponse:
+    if isinstance(result, str):
+        return LLMResponse(content=result, finish_reason="stop")
+    return OpenAICompatProvider._parse(result)
+
+
 def _float_env(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
@@ -1431,8 +1520,41 @@ class OpenAICompatProvider(LLMProvider):
         on_tool_call_delta: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> LLMResponse:
         await self._ensure_client()
-        idle_timeout_s = int(os.environ.get("NANOBOT_STREAM_IDLE_TIMEOUT_S", "90"))
+        idle_timeout_s = _stream_idle_timeout_s(messages)
         try:
+            if _explicit_image_generation_prompt(messages):
+                kwargs = self._build_kwargs(
+                    messages, tools, model, max_tokens, temperature,
+                    reasoning_effort, tool_choice,
+                )
+                kwargs["timeout"] = idle_timeout_s
+
+                async def _run_image_generation() -> LLMResponse:
+                    result = await self._create_chat_completion_with_route_log(kwargs)
+                    return _coerce_completion_response(result)
+
+                if _image_background_enabled():
+                    queued_text = "?????????? Image generation started."
+                    if on_content_delta:
+                        await on_content_delta(queued_text)
+
+                    async def _background_image_generation() -> None:
+                        try:
+                            response = await _run_image_generation()
+                            if response.content and on_content_delta:
+                                await on_content_delta(response.content)
+                        except Exception as exc:
+                            if on_content_delta:
+                                await on_content_delta(f"Image generation failed: {exc}")
+
+                    asyncio.create_task(_background_image_generation())
+                    return LLMResponse(content=queued_text, finish_reason="queued")
+
+                response = await _run_image_generation()
+                if response.content and on_content_delta:
+                    await on_content_delta(response.content)
+                return response
+
             if self._should_use_responses_api(model, reasoning_effort):
                 try:
                     body = self._build_responses_body(
@@ -1579,6 +1701,8 @@ class OpenAICompatProvider(LLMProvider):
         extra_headers.setdefault("X-OBP-Request-ID", request_id)
         extra_headers.setdefault("X-Request-ID", request_id)
         extra_headers.setdefault("X-Nanobot-Trace-ID", request_id)
+        if _explicit_image_generation_prompt(updated.get("messages") or []):
+            extra_headers.setdefault("X-OBP-Image-Generation", "1")
         route_log = _log_obp_route_headers(
             kwargs.get("extra_body") or updated.get("extra_body")
         )

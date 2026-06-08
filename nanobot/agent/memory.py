@@ -777,7 +777,7 @@ class Consolidator:
         async with lock:
             # Refresh session reference: AutoCompact may have replaced it.
             fresh = self.sessions.get_or_create(session.key)
-            if fresh is not session:
+            if isinstance(fresh, Session) and fresh is not session:
                 session = fresh
             if not session.messages:
                 return
