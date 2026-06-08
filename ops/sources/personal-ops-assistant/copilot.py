@@ -36,7 +36,18 @@ from ops_summary import (  # noqa: E402
     source_name,
     status_text,
     top_lof_rows,
+    render_inbox,
 )
+
+INBOX_URL = "http://127.0.0.1:8093/api/inbox"
+
+def inbox_items():
+    try:
+        data = fetch_json(INBOX_URL)
+        items = safe_items(data.get("items", []) if isinstance(data, dict) else [])
+        return [i for i in items if isinstance(i, dict)]
+    except Exception:
+        return []
 
 DATA_DIR = Path(os.environ.get("PERSONAL_OPS_DATA_DIR", "/root/.nanobot/data/personal-ops-assistant"))
 DECISIONS = DATA_DIR / "decisions.jsonl"
@@ -48,23 +59,6 @@ OBP_HTTP = JsonHttpClient(
     ],
     timeout=5,
 )
-
-
-def safe_items(value: Any) -> list[dict[str, Any]]:
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, dict)]
-    if isinstance(value, dict):
-        for key in ("items", "entries", "data", "rows"):
-            rows = value.get(key)
-            if isinstance(rows, list):
-                return [item for item in rows if isinstance(item, dict)]
-    return []
-
-
-def parse_dt(value: Any):
-    from ops_summary import parse_dt as _parse_dt
-
-    return _parse_dt(value)
 
 
 def metric_count(value: Any) -> int:
@@ -525,6 +519,9 @@ def main() -> int:
         print(render_tasks(data))
     elif args.command == "decision":
         print(render_decision(data))
+    inbox_section = render_inbox(inbox_items())
+    if inbox_section:
+        out.append(inbox_section)
     return 0
 
 

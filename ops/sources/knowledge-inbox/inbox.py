@@ -63,7 +63,7 @@ _SHARED_DIR = Path(__file__).resolve().parents[1] / "_shared"
 if _SHARED_DIR.exists() and str(_SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(_SHARED_DIR))
 
-from ops_common import clean_article_markdown  # noqa: E402
+from ops_common import clean_article_markdown, short  # noqa: E402
 
 INTEREST_KEYWORDS = {
     "ai", "llm", "agent", "openai", "claude", "gemini", "rust", "python", "nanobot",
@@ -112,10 +112,6 @@ def clean_ws(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
-
-def short(text: Any, limit: int = 80) -> str:
-    s = clean_ws(str(text or "")).replace("\n", " ")
-    return s if len(s) <= limit else s[: limit - 1] + "…"
 
 
 def valid_url(value: str) -> str:

@@ -27,6 +27,7 @@ from nanobot.providers.openai_responses import (
     convert_tools,
     parse_response_output,
 )
+from nanobot.agent.trace_context import current_trace_id
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI as AsyncOpenAIType
@@ -314,6 +315,38 @@ def _merge_responses_extra_body(
 
     return merged
 
+
+_OBP_ROUTE_HEADER_NAMES: dict[str, str] = {
+    "request_id": "x-obp-request-id",
+    "source": "x-obp-source",
+    "requested_model": "x-obp-requested-model",
+    "actual_model": "x-obp-actual-model",
+    "channel": "x-obp-channel",
+    "route": "x-obp-route",
+    "group": "x-obp-group",
+    "first_chunk_ms": "x-obp-first-chunk-ms",
+    "first_text_ms": "x-obp-first-text-ms",
+    "reason": "x-obp-reason",
+}
+
+
+def _read_header(headers: Any, name: str) -> str | None:
+    """Read a header value from various header container types."""
+    if headers is None:
+        return None
+    # OpenAI SDK response headers (case-insensitive dict-like)
+    if hasattr(headers, "get"):
+        val = headers.get(name)
+        if val is not None:
+            return str(val)
+    # Raw httpx headers (list of (bytes, bytes))
+    if isinstance(headers, list):
+        for k, v in headers:
+            if isinstance(k, bytes):
+                k = k.decode()
+            if k.lower() == name.lower():
+                return v.decode() if isinstance(v, bytes) else str(v)
+    return None
 
 def _log_obp_route_headers(source: Any) -> dict[str, str | None]:
     headers = getattr(source, "headers", None)
@@ -1380,7 +1413,7 @@ class OpenAICompatProvider(LLMProvider):
                 messages, tools, model, max_tokens, temperature,
                 reasoning_effort, tool_choice,
             )
-            return self._parse(await self._client.chat.completions.create(**kwargs))
+            return self._parse(await self._create_chat_completion_with_route_log(kwargs))
         except Exception as e:
             return self._handle_error(e, spec=self._spec, api_base=self.api_base)
 
@@ -1463,7 +1496,7 @@ class OpenAICompatProvider(LLMProvider):
                 kwargs.setdefault("extra_body", {})["tool_stream"] = True
             kwargs["stream"] = True
             kwargs["stream_options"] = {"include_usage": True}
-            stream = await self._client.chat.completions.create(**kwargs)
+            stream = await self._create_chat_completion_with_route_log(kwargs)
             chunks: list[Any] = []
             stream_iter = stream.__aiter__()
             while True:
@@ -1530,32 +1563,31 @@ class OpenAICompatProvider(LLMProvider):
         if not _is_obp_endpoint(self._effective_base):
             return kwargs
         updated = dict(kwargs)
-        headers = dict(updated.get("extra_headers", {}))
-        headers.setdefault("X-OBP-Source", os.environ.get("NANOBOT_OBP_SOURCE", "default-nanobot"))
+        extra_headers = dict(updated.get("extra_headers") or {})
+        extra_headers.setdefault(
+            "X-OBP-Source",
+            os.environ.get("NANOBOT_OBP_SOURCE", "default-nanobot"),
+        )
         trace_id = current_trace_id()
         if trace_id:
-            headers["X-OBP-Trace-Id"] = trace_id
-        route_log = _log_obp_route_headers(kwargs.get("extra_body") or updated.get("extra_body"))
+            extra_headers.setdefault("X-OBP-Trace-Id", trace_id)
+        request_id = (
+            extra_headers.get("X-OBP-Request-ID")
+            or current_trace_id()
+            or "nb-" + uuid.uuid4().hex
+        )
+        extra_headers.setdefault("X-OBP-Request-ID", request_id)
+        extra_headers.setdefault("X-Request-ID", request_id)
+        extra_headers.setdefault("X-Nanobot-Trace-ID", request_id)
+        route_log = _log_obp_route_headers(
+            kwargs.get("extra_body") or updated.get("extra_body")
+        )
         if route_log:
-            headers.update(route_log)
-        updated["extra_headers"] = headers
-        return updated
-
-
-        if not _is_obp_endpoint(self._effective_base):
-            return kwargs
-        updated = dict(kwargs)
-        extra_headers = dict(updated.get("extra_headers") or {})
-        request_id = extra_headers.get("X-OBP-Request-ID") or current_trace_id() or f"nb-{uuid.uuid4().hex}"
-        extra_headers.setdefault("X-OBP-Request-ID", request_id)
-        extra_headers.setdefault("X-Request-ID", request_id)
-        extra_headers.setdefault("X-Nanobot-Trace-ID", request_id)
+            extra_headers.update(route_log)
         messages = updated.get("messages")
-        if isinstance(messages, list) and _latest_user_requests_image_generation(messages):
-            # Keep image generation side effects out of normal OBP fallback retries.
-            extra_headers.setdefault("X-OBP-Image-Generation", "1")
         updated["extra_headers"] = extra_headers
         return updated
+
 
     async def _create_chat_completion_with_route_log(self, kwargs: dict[str, Any]) -> Any:
         """Create a chat completion and log OBP routing headers when present."""
@@ -1580,402 +1612,3 @@ class OpenAICompatProvider(LLMProvider):
         if hasattr(parsed, "__await__"):
             parsed = await parsed
         return parsed
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        reasoning_effort: str | None = None,
-        tool_choice: str | dict[str, Any] | None = None,
-    ) -> LLMResponse:
-        try:
-            if self._should_use_responses_api(model, reasoning_effort):
-                try:
-                    body = self._build_responses_body(
-                        messages, tools, model, max_tokens, temperature,
-                        reasoning_effort, tool_choice,
-                    )
-                    result = parse_response_output(await self._client.responses.create(**body))
-                    self._record_responses_success(model, reasoning_effort)
-                    return result
-                except Exception as responses_error:
-                    if self._spec and self._spec.name == "github_copilot":
-                        # Copilot gateway exposes GPT-5/o-series only via /responses;
-                        # falling back to /chat/completions cannot succeed and would
-                        # hide the real error.
-                        raise
-                    if not self._should_fallback_from_responses_error(responses_error):
-                        raise
-                    self._record_responses_failure(model, reasoning_effort)
-
-            kwargs = self._build_kwargs(
-                messages, tools, model, max_tokens, temperature,
-                reasoning_effort, tool_choice,
-            )
-            result = await self._create_chat_completion_with_route_log(kwargs)
-            return self._parse(result)
-        except Exception as e:
-            return self._handle_error(e, spec=self._spec, api_base=self.api_base)
-
-    async def chat_stream(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        reasoning_effort: str | None = None,
-        tool_choice: str | dict[str, Any] | None = None,
-        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
-        on_thinking_delta: Callable[[str], Awaitable[None]] | None = None,
-    ) -> LLMResponse:
-        idle_timeout_s = _stream_idle_timeout_s(messages)
-        try:
-            # Gemini Web FastAPI's streaming image path can finish with no image,
-            # while the same prompt succeeds via non-streaming chat completions.
-            # Image generation is not meaningfully progressive anyway, so keep
-            # normal chats streaming but complete explicit image requests in one go.
-            if _latest_user_requests_image_generation(messages):
-                kwargs = self._build_kwargs(
-                    messages, tools, model, max_tokens, temperature,
-                    reasoning_effort, tool_choice,
-                )
-                kwargs["timeout"] = _image_request_timeout_s()
-
-                if on_content_delta and _bool_env("NANOBOT_IMAGE_BACKGROUND", True):
-                    ack = "?????????????????????????"
-                    await on_content_delta(ack)
-
-                    async def _deliver_image_result() -> None:
-                        try:
-                            result = await self._create_chat_completion_with_route_log(kwargs)
-                            response = self._parse(result)
-                            content = response.content or "?????????????????"
-                        except Exception as e:  # pragma: no cover - defensive background guard
-                            content = self._handle_error(e, spec=self._spec, api_base=self.api_base).content
-                        try:
-                            await on_content_delta(content)
-                        except Exception as e:  # pragma: no cover - channel may be gone
-                            logger.warning("Background image delivery failed: {}", e)
-
-                    asyncio.create_task(_deliver_image_result())
-                    return LLMResponse(content=ack, finish_reason="queued")
-
-                result = await self._create_chat_completion_with_route_log(kwargs)
-                response = self._parse(result)
-                if response.content and on_content_delta:
-                    await on_content_delta(response.content)
-                return response
-
-            if self._should_use_responses_api(model, reasoning_effort):
-                try:
-                    body = self._build_responses_body(
-                        messages, tools, model, max_tokens, temperature,
-                        reasoning_effort, tool_choice,
-                    )
-                    body["stream"] = True
-                    stream = await self._client.responses.create(**body)
-
-                    async def _timed_stream():
-                        stream_iter = stream.__aiter__()
-                        while True:
-                            try:
-                                yield await asyncio.wait_for(
-                                    stream_iter.__anext__(),
-                                    timeout=idle_timeout_s,
-                                )
-                            except StopAsyncIteration:
-                                break
-
-                    content, tool_calls, finish_reason, usage, reasoning_content = await consume_sdk_stream(
-                        _timed_stream(),
-                        on_content_delta,
-                    )
-                    self._record_responses_success(model, reasoning_effort)
-                    return LLMResponse(
-                        content=content or None,
-                        tool_calls=tool_calls,
-                        finish_reason=finish_reason,
-                        usage=usage,
-                        reasoning_content=reasoning_content,
-                    )
-                except Exception as responses_error:
-                    if self._spec and self._spec.name == "github_copilot":
-                        # Copilot gateway exposes GPT-5/o-series only via /responses;
-                        # falling back to /chat/completions cannot succeed and would
-                        # hide the real error.
-                        raise
-                    if not self._should_fallback_from_responses_error(responses_error):
-                        raise
-                    self._record_responses_failure(model, reasoning_effort)
-
-            kwargs = self._build_kwargs(
-                messages, tools, model, max_tokens, temperature,
-                reasoning_effort, tool_choice,
-            )
-            kwargs["stream"] = True
-            kwargs["stream_options"] = {"include_usage": True}
-            stream = await self._create_chat_completion_with_route_log(kwargs)
-            chunks: list[Any] = []
-            stream_iter = stream.__aiter__()
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        stream_iter.__anext__(),
-                        timeout=idle_timeout_s,
-                    )
-                except StopAsyncIteration:
-                    break
-                chunks.append(chunk)
-                if chunk.choices:
-                    delta_obj = chunk.choices[0].delta
-                    if on_content_delta:
-                        text = getattr(delta_obj, "content", None)
-                        if text:
-                            await on_content_delta(text)
-                    if on_thinking_delta:
-                        reasoning = getattr(delta_obj, "reasoning_content", None) or getattr(
-                            delta_obj, "reasoning", None,
-                        )
-                        r_text = self._extract_text_content(reasoning)
-                        if r_text:
-                            await on_thinking_delta(r_text)
-            return self._parse_chunks(chunks)
-        except asyncio.TimeoutError:
-            return LLMResponse(
-                content=(
-                    f"Error calling LLM: stream stalled for more than "
-                    f"{idle_timeout_s} seconds"
-                ),
-                finish_reason="error",
-                error_kind="timeout",
-            )
-        except Exception as e:
-            return self._handle_error(e, spec=self._spec, api_base=self.api_base)
-
-        if not _is_obp_endpoint(self._effective_base):
-            return kwargs
-        updated = dict(kwargs)
-        extra_headers = dict(updated.get("extra_headers") or {})
-        request_id = extra_headers.get("X-OBP-Request-ID") or current_trace_id() or f"nb-{uuid.uuid4().hex}"
-        extra_headers.setdefault("X-OBP-Request-ID", request_id)
-        extra_headers.setdefault("X-Request-ID", request_id)
-        extra_headers.setdefault("X-Nanobot-Trace-ID", request_id)
-        messages = updated.get("messages")
-        if isinstance(messages, list) and _latest_user_requests_image_generation(messages):
-            # Keep image generation side effects out of normal OBP fallback retries.
-            extra_headers.setdefault("X-OBP-Image-Generation", "1")
-        updated["extra_headers"] = extra_headers
-        return updated
-
-    async def _create_chat_completion_with_route_log(self, kwargs: dict[str, Any]) -> Any:
-        """Create a chat completion and log OBP routing headers when present."""
-        completions = self._client.chat.completions
-        kwargs = self._with_obp_request_headers(kwargs)
-        if not _is_obp_endpoint(self._effective_base):
-            return await completions.create(**kwargs)
-
-        raw_endpoint = getattr(completions, "with_raw_response", None)
-        if raw_endpoint is None:
-            result = await completions.create(**kwargs)
-            route = _log_obp_route_headers(result)
-            if route:
-                self._last_obp_route = route
-            return result
-
-        raw_response = await raw_endpoint.create(**kwargs)
-        route = _log_obp_route_headers(raw_response)
-        if route:
-            self._last_obp_route = route
-        parsed = raw_response.parse()
-        if hasattr(parsed, "__await__"):
-            parsed = await parsed
-        return parsed
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        reasoning_effort: str | None = None,
-        tool_choice: str | dict[str, Any] | None = None,
-    ) -> LLMResponse:
-        try:
-            if self._should_use_responses_api(model, reasoning_effort):
-                try:
-                    body = self._build_responses_body(
-                        messages, tools, model, max_tokens, temperature,
-                        reasoning_effort, tool_choice,
-                    )
-                    result = parse_response_output(await self._client.responses.create(**body))
-                    self._record_responses_success(model, reasoning_effort)
-                    return result
-                except Exception as responses_error:
-                    if self._spec and self._spec.name == "github_copilot":
-                        # Copilot gateway exposes GPT-5/o-series only via /responses;
-                        # falling back to /chat/completions cannot succeed and would
-                        # hide the real error.
-                        raise
-                    if not self._should_fallback_from_responses_error(responses_error):
-                        raise
-                    self._record_responses_failure(model, reasoning_effort)
-
-            kwargs = self._build_kwargs(
-                messages, tools, model, max_tokens, temperature,
-                reasoning_effort, tool_choice,
-            )
-            result = await self._create_chat_completion_with_route_log(kwargs)
-            return self._parse(result)
-        except Exception as e:
-            return self._handle_error(e, spec=self._spec, api_base=self.api_base)
-
-    async def chat_stream(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        model: str | None = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        reasoning_effort: str | None = None,
-        tool_choice: str | dict[str, Any] | None = None,
-        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
-        on_thinking_delta: Callable[[str], Awaitable[None]] | None = None,
-    ) -> LLMResponse:
-        idle_timeout_s = _stream_idle_timeout_s(messages)
-        try:
-            # Gemini Web FastAPI's streaming image path can finish with no image,
-            # while the same prompt succeeds via non-streaming chat completions.
-            # Image generation is not meaningfully progressive anyway, so keep
-            # normal chats streaming but complete explicit image requests in one go.
-            if _latest_user_requests_image_generation(messages):
-                kwargs = self._build_kwargs(
-                    messages, tools, model, max_tokens, temperature,
-                    reasoning_effort, tool_choice,
-                )
-                kwargs["timeout"] = _image_request_timeout_s()
-
-                if on_content_delta and _bool_env("NANOBOT_IMAGE_BACKGROUND", True):
-                    ack = "?????????????????????????"
-                    await on_content_delta(ack)
-
-                    async def _deliver_image_result() -> None:
-                        try:
-                            result = await self._create_chat_completion_with_route_log(kwargs)
-                            response = self._parse(result)
-                            content = response.content or "?????????????????"
-                        except Exception as e:  # pragma: no cover - defensive background guard
-                            content = self._handle_error(e, spec=self._spec, api_base=self.api_base).content
-                        try:
-                            await on_content_delta(content)
-                        except Exception as e:  # pragma: no cover - channel may be gone
-                            logger.warning("Background image delivery failed: {}", e)
-
-                    asyncio.create_task(_deliver_image_result())
-                    return LLMResponse(content=ack, finish_reason="queued")
-
-                result = await self._create_chat_completion_with_route_log(kwargs)
-                response = self._parse(result)
-                if response.content and on_content_delta:
-                    await on_content_delta(response.content)
-                return response
-
-            if self._should_use_responses_api(model, reasoning_effort):
-                try:
-                    body = self._build_responses_body(
-                        messages, tools, model, max_tokens, temperature,
-                        reasoning_effort, tool_choice,
-                    )
-                    body["stream"] = True
-                    stream = await self._client.responses.create(**body)
-
-                    async def _timed_stream():
-                        stream_iter = stream.__aiter__()
-                        while True:
-                            try:
-                                yield await asyncio.wait_for(
-                                    stream_iter.__anext__(),
-                                    timeout=idle_timeout_s,
-                                )
-                            except StopAsyncIteration:
-                                break
-
-                    content, tool_calls, finish_reason, usage, reasoning_content = await consume_sdk_stream(
-                        _timed_stream(),
-                        on_content_delta,
-                    )
-                    self._record_responses_success(model, reasoning_effort)
-                    return LLMResponse(
-                        content=content or None,
-                        tool_calls=tool_calls,
-                        finish_reason=finish_reason,
-                        usage=usage,
-                        reasoning_content=reasoning_content,
-                    )
-                except Exception as responses_error:
-                    if self._spec and self._spec.name == "github_copilot":
-                        # Copilot gateway exposes GPT-5/o-series only via /responses;
-                        # falling back to /chat/completions cannot succeed and would
-                        # hide the real error.
-                        raise
-                    if not self._should_fallback_from_responses_error(responses_error):
-                        raise
-                    self._record_responses_failure(model, reasoning_effort)
-
-            kwargs = self._build_kwargs(
-                messages, tools, model, max_tokens, temperature,
-                reasoning_effort, tool_choice,
-            )
-            kwargs["stream"] = True
-            kwargs["stream_options"] = {"include_usage": True}
-            stream = await self._create_chat_completion_with_route_log(kwargs)
-            chunks: list[Any] = []
-            stream_iter = stream.__aiter__()
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        stream_iter.__anext__(),
-                        timeout=idle_timeout_s,
-                    )
-                except StopAsyncIteration:
-                    break
-                chunks.append(chunk)
-                if chunk.choices:
-                    delta_obj = chunk.choices[0].delta
-                    if on_content_delta:
-                        text = getattr(delta_obj, "content", None)
-                        if text:
-                            await on_content_delta(text)
-                    if on_thinking_delta:
-                        reasoning = getattr(delta_obj, "reasoning_content", None) or getattr(
-                            delta_obj, "reasoning", None,
-                        )
-                        r_text = self._extract_text_content(reasoning)
-                        if r_text:
-                            await on_thinking_delta(r_text)
-            return self._parse_chunks(chunks)
-        except asyncio.TimeoutError:
-            return LLMResponse(
-                content=(
-                    f"Error calling LLM: stream stalled for more than "
-                    f"{idle_timeout_s} seconds"
-                ),
-                finish_reason="error",
-                error_kind="timeout",
-            )
-        except Exception as e:
-            return self._handle_error(e, spec=self._spec, api_base=self.api_base)
-
-        return self.default_model

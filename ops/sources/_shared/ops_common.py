@@ -230,6 +230,16 @@ def post_chat_completion_content(
     return (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
 
+def safe_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        for key in ("items", "entries", "data", "rows"):
+            rows = value.get(key)
+            if isinstance(rows, list):
+                return [item for item in rows if isinstance(item, dict)]
+    return []
+
 # --- Article push helpers ---
 NBRAW_SIGNED_PREFIX = "NBRAW1-SHA256:"
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200b\u200c\u200d\ufeff]")

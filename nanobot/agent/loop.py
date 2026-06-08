@@ -50,6 +50,7 @@ from nanobot.security.workspace_access import (
 )
 from nanobot.session.goal_state import (
     goal_state_runtime_lines,
+    goal_state_ws_blob,
     runner_wall_llm_timeout_s,
     sustained_goal_active,
 )
@@ -59,6 +60,8 @@ from nanobot.session.webui_turns import (
     WebuiTurnCoordinator,
     build_bus_progress_callback,
     mark_webui_session,
+    maybe_generate_webui_title_after_turn,
+    publish_turn_run_status,
 )
 from nanobot.utils.document import extract_documents, reference_non_image_attachments
 from nanobot.utils.helpers import image_placeholder_text

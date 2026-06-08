@@ -273,6 +273,11 @@ ops/sources/_shared/ops_common.py
 - `parse_dt`、`fmt_time`、`now_shanghai`。
 - `holiday_info`、`is_cn_workday`：复用中国法定节假日/补班日判断。
 - `short`：适合 QQ 输出的短文本截断。
+- `safe_items`：安全提取 items/entries/data/rows，已从 copilot.py 收口。
+- `clean_article_markdown`、`format_article_push_body`、`is_wechat_paid_teaser`：文章清洗和推送格式化。
+- `load_json_dict`、`normalize_sentence`、`markdown_link_text`、`extract_json_array`。
+- `sign_nbraw_sha256`：签名 payload。
+- `post_chat_completion_content`：轻量 LLM 调用 helper。
 
 目前应复用它的脚本包括：
 
@@ -361,6 +366,8 @@ LOF 定时报告不是直接读缓存发送。Notify 任务调用 `qdii-monitor/
 - 通过 QQ bridge 或 Nanobot 配置分发通知。
 - 负责 HERMES、天气、RSS/鸭哥、LOF 报告等主动推送。
 - 把循环任务从 Nanobot core 内存里拿出去。
+
+LOF 溢价告警通过 notify cron 调度 `lof_alert.py`（工作日 10:00/14:00），默认阈值 8%，只在检测到美元溢价超过阈值时推送 QQ 告警，日常 5% 提醒不做额外推送。
 
 HERMES 任务调用 `hermes-check/hermes_check.py`。脚本应读取 `8093/api/sidecars` 聚合健康状态，而不是硬编码逐个端口探测。
 
@@ -460,6 +467,10 @@ QQ 回复 / dashboard 摘要
 ## 当前实现 review
 
 方向是对的：
+
+- 所有 systemd 服务已加 `MemoryMax`（Podman 容器 `--memory 128m-256m`，Rust sidecar `MemoryMax=64M`），避免容器无限制增长或 Rust sidecar 内存泄漏不被约束。
+- copilot `render_today` 已包含知识收件箱交集；不再需要单独查 inbox 才能看到飞书文档。
+- 知识收件箱已支持微信链接解析、免费 LongCat 摘要、删除、预览整理和噪音关键词过滤，适合作为按需 skill，而不是常驻服务。
 
 - core/sidecar 拆分已经形成，个人功能大多离开 `nanobot/`。
 - Podman 迁移后，常驻内存比 Docker 低。
@@ -568,3 +579,81 @@ ops/scripts/check-nanobot-exp-patches.sh /root/nanobot
 ```
 
 8. 只要服务图、core patch、端口绑定、主动推送链路或共享 helper 边界变化，就同步更新本文档。
+9. 新增 Python helper 前先检查 \`_shared/ops_common.py\` 是否已有等价函数；若不满足需求，优先扩展 ops_common 而不是在消费者脚本中本地重定义。
+10. 新增 skill 脚本时，按顺序判断是否应引入 \`_shared/ops_common.py\`（HTTP、时间、文本、节假日等基础工具）。
+11. 如果必须新定义与 ops_common 同名的函数，用显式别名导入避免阴影：\`from ops_common import short as _short\`。
+
+## 公共实现收口记录
+
+2026-06-04 对 ops/sources/ 下的 Python skill 脚本做了系统性重复扫描和收口修复。
+
+### 扫描方法
+
+扫描 \`ops/sources/_shared/ops_common.py\` 中所有 def 和 class 定义作为共享符号，然后对 7 个消费脚本逐一比对本地 def 定义，标记出重定义。
+
+### 已修复的重复
+
+| 文件 | 重复函数 | 处理方式 |
+|---|---|---|
+| \`personal-ops-assistant/copilot.py\` | \`parse_dt\` | 删除本地定义，改用 ops_summary 导入（已从 ops_common 导入） |
+| \`personal-ops-assistant/copilot.py\` | \`safe_items\` | 迁入 \`_shared/ops_common.py\`，消费者统一 import |
+| \`knowledge-inbox/inbox.py\` | \`short\` | 删除本地定义（默认 limit=80），改用 \`from ops_common import short\`（所有调用已传显式 limit） |
+| \`trend-radar/trend_client.py\` | \`fmt_time\` | 删除本地包装，改用 import 别名 \`common_fmt_time\`（已有），统一调用 |
+
+### 保留的"重复"（设计保留，非真正重复）
+
+| 文件 | 函数 | 保留理由 |
+|---|---|---|
+| \`wechat-rss-sidecar-skill/client.py\` | \`request()\` | 模块级薄包装，\`HTTP.request()\` 的 11 次内部调用已通过此入口；与 \`JsonHttpClient.request()\` 类方法语义不同 |
+| \`trend-radar/trend_client.py\` | \`fmt_time()\` | 虽已删除本地定义，但保留 import alias \`common_fmt_time\` 以避免与现有关联函数冲突 |
+
+### 当前结果
+
+| 指标 | 值 |
+|---|---|
+| \`_shared/ops_common.py\` 共享符号数 | **37**（\`JsonHttpClient\`、\`short\`、\`safe_items\`、\`parse_dt\`、\`fmt_time\`、\`now_shanghai\`、\`clean_article_markdown\` 等） |
+| 扫描的消费脚本数 | 7 |
+| 修复的重复定义数 | **4/6**（2 处设计保留） |
+| 剩余重复 | 0 处需要修复的实际重复 |
+
+\`_shared/ops_common.py\` 已涵盖 HTTP 请求、时间解析、文本截断、JSON 数组提取、节假日判断、文章清洗、签名 payload 和轻量 LLM 调用；新增功能应优先复用而非重写。
+
+
+9. 新增 Python helper 前先检查 \`_shared/ops_common.py\` 是否已有等价函数；若不满足需求，优先扩展 ops_common 而不是在消费者脚本中本地重定义。
+10. 新增 skill 脚本时，按顺序判断是否应引入 \`_shared/ops_common.py\`（HTTP、时间、文本、节假日等基础工具）。
+11. 如果必须新定义与 ops_common 同名的函数，用显式别名导入避免阴影：\`from ops_common import short as _short\`。
+
+## 公共实现收口记录
+
+2026-06-04 对 ops/sources/ 下的 Python skill 脚本做了系统性重复扫描和收口修复。
+
+### 扫描方法
+
+扫描 \`ops/sources/_shared/ops_common.py\` 中所有 def 和 class 定义作为共享符号，然后对 7 个消费脚本逐一比对本地 def 定义，标记出重定义。
+
+### 已修复的重复
+
+| 文件 | 重复函数 | 处理方式 |
+|---|---|---|
+| \`personal-ops-assistant/copilot.py\` | \`parse_dt\` | 删除本地定义，改用 ops_summary 导入（已从 ops_common 导入） |
+| \`personal-ops-assistant/copilot.py\` | \`safe_items\` | 迁入 \`_shared/ops_common.py\`，消费者统一 import |
+| \`knowledge-inbox/inbox.py\` | \`short\` | 删除本地定义（默认 limit=80），改用 \`from ops_common import short\`（所有调用已传显式 limit） |
+| \`trend-radar/trend_client.py\` | \`fmt_time\` | 删除本地包装，改用 import 别名 \`common_fmt_time\`（已有），统一调用 |
+
+### 保留的"重复"（设计保留，非真正重复）
+
+| 文件 | 函数 | 保留理由 |
+|---|---|---|
+| \`wechat-rss-sidecar-skill/client.py\` | \`request()\` | 模块级薄包装，\`HTTP.request()\` 的 11 次内部调用已通过此入口；与 \`JsonHttpClient.request()\` 类方法语义不同 |
+| \`trend-radar/trend_client.py\` | \`fmt_time()\` | 虽已删除本地定义，但保留 import alias \`common_fmt_time\` 以避免与现有关联函数冲突 |
+
+### 当前结果
+
+| 指标 | 值 |
+|---|---|
+| \`_shared/ops_common.py\` 共享符号数 | **37**（\`JsonHttpClient\`、\`short\`、\`safe_items\`、\`parse_dt\`、\`fmt_time\`、\`now_shanghai\`、\`clean_article_markdown\` 等） |
+| 扫描的消费脚本数 | 7 |
+| 修复的重复定义数 | **4/6**（2 处设计保留） |
+| 剩余重复 | 0 处需要修复的实际重复 |
+
+\`_shared/ops_common.py\` 已涵盖 HTTP 请求、时间解析、文本截断、JSON 数组提取、节假日判断、文章清洗、签名 payload 和轻量 LLM 调用；新增功能应优先复用而非重写。

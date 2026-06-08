@@ -220,6 +220,19 @@ def render_lof(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_inbox(items: list) -> str:
+    if not items:
+        return ""
+    recent = sorted(items, key=lambda x: x.get("captured_at", ""), reverse=True)[:5]
+    lines = ["📥 知识收件箱（近期 5 篇）"]
+    for item in recent:
+        title = (item.get("title") or "无标题")[:40]
+        label = item.get("auto_decision_label", "")
+        score = item.get("auto_decision_score", 0)
+        lines.append(f"  {label} ({score}/100)  {title}")
+    return "\n".join(lines)
+
+
 def render_articles(data: dict[str, Any]) -> str:
     articles = data.get("articles") or {}
     subs = data.get("subscriptions") or {}
