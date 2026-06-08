@@ -9,7 +9,6 @@ import subprocess
 import tempfile
 import time
 from contextlib import suppress
-from importlib.resources import files as pkg_files
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 

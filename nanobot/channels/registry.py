@@ -54,7 +54,6 @@ def discover_plugins(enabled_names: set[str] | None = None) -> dict[str, type[Ba
     from importlib.metadata import entry_points
 
     plugins: dict[str, type[BaseChannel]] = {}
-    allowed = _channel_allowlist()
     for ep in entry_points(group="nanobot.channels"):
         if enabled_names is not None and ep.name not in enabled_names:
             continue

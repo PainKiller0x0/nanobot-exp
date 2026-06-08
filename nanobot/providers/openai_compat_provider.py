@@ -1584,7 +1584,6 @@ class OpenAICompatProvider(LLMProvider):
         )
         if route_log:
             extra_headers.update(route_log)
-        messages = updated.get("messages")
         updated["extra_headers"] = extra_headers
         return updated
 

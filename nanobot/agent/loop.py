@@ -52,7 +52,6 @@ from nanobot.session.goal_state import (
     goal_state_runtime_lines,
     goal_state_ws_blob,
     runner_wall_llm_timeout_s,
-    sustained_goal_active,
 )
 from nanobot.session.manager import Session, SessionManager
 from nanobot.session import turn_continuation
@@ -1583,7 +1582,6 @@ class AgentLoop:
             ctx.final_content = EMPTY_FINAL_RESPONSE_MESSAGE
 
         ctx.save_skip = 1 + len(ctx.history) + (1 if ctx.user_persisted_early else 0)
-        skip_msgs = ctx.all_messages[ctx.save_skip :]
         latency_started_at = (
             ctx.visible_run_started_at
             if turn_continuation.internal_continuation_inbound(ctx.msg.metadata)
