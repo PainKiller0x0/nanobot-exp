@@ -239,19 +239,27 @@ def run_heal(args: argparse.Namespace, state: dict[str, Any]) -> list[str]:
     except Exception as exc:
         entry = heal_state.setdefault('sidecar-api', {'failures': 0, 'last_restart_at': 0})
         entry['failures'] = int(entry.get('failures', 0)) + 1
+        entry['last_bad_at'] = iso_now()
         entry['last_error'] = str(exc)
         if entry['failures'] >= threshold and now_ts - int(entry.get('last_restart_at', 0)) >= cooldown:
             if args.dry_run:
                 messages.append(f'[dry-run] sidecar API failed {entry["failures"]} times; would restart lof-sidecar.service')
             else:
                 proc = run_cmd(['systemctl', 'restart', 'lof-sidecar.service'], timeout=60)
+                failures = int(entry['failures'])
                 entry['last_restart_at'] = now_ts
                 if proc.returncode == 0:
-                    messages.append(f'Nanobot 自愈：sidecar 管理接口连续 {entry["failures"]} 次不可用，已重启 lof-sidecar.service。')
+                    entry['failures'] = 0
+                    messages.append(f'Nanobot 自愈：sidecar 管理接口连续 {failures} 次不可用，已重启 lof-sidecar.service。')
                 else:
                     messages.append(f'Nanobot 自愈失败：lof-sidecar.service 重启失败：{(proc.stderr or proc.stdout).strip()[:300]}')
         save_state(state, args.dry_run)
         return messages
+
+    api_entry = heal_state.setdefault('sidecar-api', {'failures': 0, 'last_restart_at': 0})
+    api_entry['failures'] = 0
+    api_entry['last_error'] = ''
+    api_entry['last_ok_at'] = iso_now()
 
     seen_ids = set()
     for item in items:

@@ -7,4 +7,5 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/root/nanobot-ops/scripts/nanobot-ops-guard.py --mode heal
+TimeoutStartSec=120
 Nice=5

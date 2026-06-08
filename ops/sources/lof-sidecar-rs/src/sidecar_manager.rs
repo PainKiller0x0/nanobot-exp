@@ -99,7 +99,7 @@ fn default_managed_sidecars() -> Vec<ManagedSidecar> {
         homepage_url: Some("/".into()),
         check_url: Some("http://127.0.0.1:8093/health".into()),
         check_kind: Some("http".into()),
-        public: true,
+        public: false,
         logs_command: "journalctl -u lof-sidecar.service -f".into(),
         restart_command: "systemctl restart lof-sidecar.service".into(),
     }]

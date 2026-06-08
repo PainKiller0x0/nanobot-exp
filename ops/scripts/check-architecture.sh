@@ -93,13 +93,13 @@ for port, owners in sorted(ports.items()):
 
 public = [item for item in sidecars if isinstance(item, dict) and item.get("public") is True]
 public_ids = [item.get("id") for item in public]
-if public_ids != ["lof"]:
-    errors.append(f"public sidecar should be exactly ['lof']; got {public_ids}")
+if public_ids:
+    errors.append(f"sidecars must not listen directly on public interfaces; got {public_ids}")
 lof = next((item for item in sidecars if isinstance(item, dict) and item.get("id") == "lof"), None)
 if not lof:
     errors.append("missing lof sidecar")
 elif lof.get("port") != 8093:
-    errors.append(f"lof sidecar must own public port 8093; got {lof.get('port')}")
+    errors.append(f"lof sidecar must own local dashboard port 8093; got {lof.get('port')}")
 
 sidecar_ids = set(ids)
 cap_ids = [item.get("id") for item in capabilities if isinstance(item, dict)]

@@ -41,13 +41,13 @@
   {
     "id": "lof",
     "name": "LOF 看板",
-    "description": "LOF/QDII 估值看板、历史溢价和报告。公网入口，也是本管理页所在服务。",
+    "description": "LOF/QDII 估值看板、历史溢价和报告。本服务仅本机监听，对外访问统一走 Caddy 反代。",
     "port": 8093,
     "unit": "lof-sidecar.service",
     "homepage_url": "/lof",
     "check_url": "http://127.0.0.1:8093/health",
     "check_kind": "http",
-    "public": true,
+    "public": false,
     "logs_command": "journalctl -u lof-sidecar.service -f",
     "restart_command": "systemctl restart lof-sidecar.service"
   },
@@ -106,7 +106,7 @@
   {
     "id": "podman-public-rule",
     "name": "Public Port Guard",
-    "description": "公网端口收口规则：外部只保留 8093 入口，旧业务端口 8000/8080/8081/8091/8092/8094 在 eth0 上显式关闭。",
+    "description": "公网端口收口规则：外部只走 Caddy 80/443，业务端口 8000/8080/8081/8091/8092/8093/8094 均不直接暴露。",
     "port": null,
     "unit": "podman-port-forward-allow.service",
     "homepage_url": null,

@@ -207,6 +207,7 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(8093);
+    let host = std::env::var("LOF_SIDECAR_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let timeout_secs: u64 = std::env::var("LOF_SIDECAR_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -334,7 +335,9 @@ async fn main() {
 
     tokio::spawn(auto_refresh_loop(app_state.clone()));
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr: SocketAddr = format!("{host}:{port}")
+        .parse()
+        .expect("invalid LOF_SIDECAR_HOST/LOF_SIDECAR_PORT");
     println!("lof-sidecar-rs listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
