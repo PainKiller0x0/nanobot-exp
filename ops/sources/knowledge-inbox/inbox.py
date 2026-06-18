@@ -63,7 +63,7 @@ _SHARED_DIR = Path(__file__).resolve().parents[1] / "_shared"
 if _SHARED_DIR.exists() and str(_SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(_SHARED_DIR))
 
-from ops_common import clean_article_markdown, short  # noqa: E402
+from ops_common import clean_article_markdown  # noqa: E402
 
 INTEREST_KEYWORDS = {
     "ai", "llm", "agent", "openai", "claude", "gemini", "rust", "python", "nanobot",
@@ -113,6 +113,10 @@ def clean_ws(text: str) -> str:
     return text.strip()
 
 
+def short(text: Any, limit: int = 80) -> str:
+    s = clean_ws(str(text or "")).replace("\n", " ")
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
 
 def valid_url(value: str) -> str:
     url = (value or "").strip()
@@ -151,6 +155,13 @@ def request_headers_for_url(url: str) -> dict[str, str]:
             "User-Agent": WECHAT_USER_AGENT,
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Referer": "https://mp.weixin.qq.com/",
+        })
+    if is_feishu_docx_url(url):
+        # Feishu also blocks custom bot UAs. A normal browser UA returns the
+        # actual doc HTML (with clientVars data) for publicly shared docs.
+        headers.update({
+            "User-Agent": WECHAT_USER_AGENT,
+            "Accept-Language": "zh-CN,zh;q=0.9",
         })
     return headers
 
@@ -400,7 +411,7 @@ def fetch_with_rendered_browser(url: str) -> FetchedPage | None:
 
     payload: dict[str, Any] = {}
     rendered_text = ""
-    attempts = 1 if is_feishu_docx_url(url) else 2
+    attempts = 2 if is_feishu_docx_url(url) else 2
     for attempt in range(attempts):
         if is_feishu_docx_url(url):
             cmd = [
@@ -411,7 +422,7 @@ def fetch_with_rendered_browser(url: str) -> FetchedPage | None:
                 "--limit",
                 "60000",
                 "--wait-ms",
-                "8000",
+                "20000",
                 "--timeout",
                 str(RENDER_TIMEOUT_SECS),
                 "--output-limit",
@@ -480,48 +491,72 @@ def read_render_token() -> str:
         return ""
 
 
+def render_gateway_urls() -> list[str]:
+    candidates = [
+        RENDER_GATEWAY_URL,
+        "http://host.containers.internal:8093/api/internal/render-text",
+        "http://127.0.0.1:8093/api/internal/render-text",
+        "http://localhost:8093/api/internal/render-text",
+    ]
+    urls: list[str] = []
+    for candidate in candidates:
+        value = (candidate or "").strip()
+        if value and value not in urls:
+            urls.append(value)
+    return urls
+
+
 def fetch_with_render_gateway(url: str) -> FetchedPage | None:
     if os.environ.get("NANOBOT_INBOX_RENDER_ENABLED", "1").strip().lower() in {"0", "false", "off", "no"}:
         return None
     token = read_render_token()
-    if not token or not RENDER_GATEWAY_URL:
+    gateway_urls = render_gateway_urls()
+    if not token or not gateway_urls:
         return None
     payload = {
         "url": url,
         "token": token,
         "limit": 40_000,
     }
-    req = Request(
-        RENDER_GATEWAY_URL,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlopen(req, timeout=RENDER_TIMEOUT_SECS + 25) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict) or not data.get("ok"):
-        return None
-    rendered_text = clean_ws(str(data.get("text") or ""))
-    if len(rendered_text) < 80:
-        return None
-    title, markdown = rendered_text_to_markdown(rendered_text, url)
-    if not title:
-        title = short(markdown.splitlines()[0] if markdown else url, 90)
-    source_message = "普通抓取遇到跳转循环，已通过宿主机浏览器渲染服务抓取正文。"
-    return FetchedPage(
-        url=url,
-        final_url=str(data.get("url") or url),
-        title=title,
-        description="",
-        markdown=markdown,
-        content_type="text/plain; rendered=gateway",
-        source_status="rendered",
-        source_message=source_message,
-    )
+    for gateway_url in gateway_urls:
+        req = Request(
+            gateway_url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=RENDER_TIMEOUT_SECS + 25) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or not data.get("ok"):
+            continue
+        rendered_text = clean_ws(str(data.get("text") or ""))
+        if len(rendered_text) < 80:
+            continue
+        title, markdown = rendered_text_to_markdown(rendered_text, url)
+        if not title:
+            title = short(markdown.splitlines()[0] if markdown else url, 90)
+        source_message = "普通抓取遇到跳转循环，已通过宿主机浏览器渲染服务抓取正文。"
+        return FetchedPage(
+            url=url,
+            final_url=str(data.get("url") or url),
+            title=title,
+            description="",
+            markdown=markdown,
+            content_type="text/plain; rendered=gateway",
+            source_status="rendered",
+            source_message=source_message,
+        )
+    return None
 
+
+def fetch_with_rendering(url: str) -> FetchedPage | None:
+    rendered = fetch_with_render_gateway(url)
+    if rendered is not None:
+        return rendered
+    return fetch_with_rendered_browser(url)
 
 def redirect_loop_fallback(url: str, exc: HTTPError) -> FetchedPage | None:
     if exc.code not in {301, 302, 303, 307, 308}:
@@ -529,10 +564,7 @@ def redirect_loop_fallback(url: str, exc: HTTPError) -> FetchedPage | None:
     message = str(exc)
     if "infinite loop" not in message.lower():
         return None
-    rendered = fetch_with_rendered_browser(url)
-    if rendered is not None:
-        return rendered
-    rendered = fetch_with_render_gateway(url)
+    rendered = fetch_with_rendering(url)
     if rendered is not None:
         return rendered
     host = urlparse(url).netloc or "目标网页"
@@ -561,6 +593,10 @@ def redirect_loop_fallback(url: str, exc: HTTPError) -> FetchedPage | None:
 
 def fetch_url(url: str) -> FetchedPage:
     url = valid_url(url)
+    if is_feishu_docx_url(url):
+        rendered = fetch_with_rendering(url)
+        if rendered is not None:
+            return rendered
     req = Request(url, headers=request_headers_for_url(url))
     try:
         with urlopen(req, timeout=TIMEOUT_SECS) as resp:

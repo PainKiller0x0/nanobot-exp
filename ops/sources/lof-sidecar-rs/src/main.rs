@@ -368,7 +368,10 @@ fn is_mutating_method(method: &Method) -> bool {
 }
 
 fn is_write_auth_exempt(path: &str) -> bool {
-    matches!(path, "/obp-auth/login" | "/obp-auth/logout")
+    matches!(
+        path,
+        "/obp-auth/login" | "/obp-auth/logout" | "/api/internal/render-text"
+    )
 }
 
 async fn add_noindex_headers(mut response: Response) -> Response {
