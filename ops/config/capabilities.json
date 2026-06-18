@@ -435,7 +435,7 @@
     "kind": "dashboard",
     "service_id": "lof",
     "entry_url": null,
-    "enabled": false,
+    "enabled": true,
     "trigger_phrases": [
       "你最近进化了吗",
       "进化日志",
@@ -453,7 +453,7 @@
     "mcp_tools": [
       "evolution.list"
     ],
-    "notes": "私有运行数据。/evolution 和 /api/evolution 会返回 410 Gone，防止搜索引擎继续抓取。"
+    "notes": "私有运行数据。/evolution 页面保持 410 Gone；/api/evolution 仅作为驾驶舱内部 JSON 数据源使用，并带 noindex 响应头。"
   },
   {
     "id": "browser-operator",
