@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import re
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,25 @@ _ARREARAGE_ERROR_MESSAGE = (
     "account is in arrears. Please top up / check the billing status of your API key and try again."
 )
 _PERSISTED_MODEL_ERROR_PLACEHOLDER = "[Assistant reply unavailable due to model error.]"
+_PROVIDER_ERROR_TAIL_RE = re.compile(
+    r"\s*(?:Error calling LLM:\s*)?(?:Gemini request failed:\s*)?Gemini API error code:\s*\d+.*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_provider_error_tail(text: str | None) -> str | None:
+    """Remove provider transport errors that leaked into normal model text."""
+    if not text:
+        return text
+    cleaned = _PROVIDER_ERROR_TAIL_RE.sub("", text)
+    return cleaned.rstrip()
+
+
+def _sanitize_provider_delta(delta: str) -> str:
+    cleaned = _strip_provider_error_tail(delta)
+    return cleaned or ""
+
+
 _MAX_EMPTY_RETRIES = 2
 _MAX_LENGTH_RECOVERIES = 3
 _MAX_INJECTIONS_PER_TURN = 3
@@ -379,7 +399,7 @@ class AgentRunner:
                 response.thinking_blocks,
                 response.content,
             )
-            response.content = cleaned_content
+            response.content = _strip_provider_error_tail(cleaned_content)
             if reasoning_text and not context.streamed_reasoning:
                 await hook.emit_reasoning(reasoning_text)
                 await hook.emit_reasoning_end()
@@ -765,8 +785,10 @@ class AgentRunner:
 
         if wants_streaming:
             async def _stream(delta: str) -> None:
-                if delta:
-                    context.streamed_content = True
+                delta = _sanitize_provider_delta(delta)
+                if not delta:
+                    return
+                context.streamed_content = True
                 await hook.on_stream(context, delta)
 
             async def _thinking(delta: str) -> None:
@@ -788,6 +810,7 @@ class AgentRunner:
 
             async def _stream_progress(delta: str) -> None:
                 nonlocal stream_buf
+                delta = _sanitize_provider_delta(delta)
                 if not delta:
                     return
                 prev_clean = strip_think(stream_buf)
