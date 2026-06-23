@@ -73,7 +73,9 @@ def _strip_provider_error_tail(text: str | None) -> str | None:
     """Remove provider transport errors that leaked into normal model text."""
     if not text:
         return text
-    cleaned = _PROVIDER_ERROR_TAIL_RE.sub("", text)
+    cleaned, count = _PROVIDER_ERROR_TAIL_RE.subn("", text)
+    if count == 0:
+        return text
     return cleaned.rstrip()
 
 
