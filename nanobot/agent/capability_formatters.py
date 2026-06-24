@@ -8,8 +8,14 @@ from nanobot.agent.capability_registry import enabled_capabilities, group_by_cat
 from nanobot.agent.capability_snapshot import capability_summary
 from nanobot.agent.direct_reply_common import (
     as_dict as _dict,
+)
+from nanobot.agent.direct_reply_common import (
     as_list as _list,
+)
+from nanobot.agent.direct_reply_common import (
     items_from as _items,
+)
+from nanobot.agent.direct_reply_common import (
     short_text as _short,
 )
 

@@ -6,8 +6,6 @@
 .env
 .web
 .orion
-nanobot-desktop/
-desktop/
 
 # Claude / AI assistant artifacts
 docs/superpowers/
@@ -118,3 +116,4 @@ ops/**/*.log
 ops/config/notify-sidecar-rs/config.json
 exp/
 .playwright-mcp/
+bridge/node_modules/

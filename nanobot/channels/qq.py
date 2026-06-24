@@ -1161,6 +1161,15 @@ class QQChannel(BaseChannel):
                 "QQ access denied for sender {} chat_id={} message_id={}",
                 user_id, chat_id, getattr(data, "id", "unknown"),
             )
+            # Preserve upstream pairing behavior for unauthorized direct messages,
+            # while group messages remain silently ignored.
+            if not is_group:
+                await self._handle_message(
+                    sender_id=user_id,
+                    chat_id=chat_id,
+                    content="",
+                    is_dm=True,
+                )
             return
 
         ack_message = (getattr(self.config, "ack_message", "") or "").strip()
@@ -1236,6 +1245,7 @@ class QQChannel(BaseChannel):
                 "message_id": data.id,
                 "attachments": att_meta,
             },
+            is_dm=not is_group,
         )
 
     async def _handle_attachments(

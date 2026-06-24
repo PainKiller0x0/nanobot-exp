@@ -24,6 +24,7 @@ class AutoCompact:
     _MIN_MESSAGE_CAP = 60
     _MAX_DEFER_HOURS = 12
     _EVENT_PREVIEW_CHARS = 4_000
+    _INTERNAL_SESSION_PREFIXES = ("dream:",)
 
     def __init__(self, sessions: SessionManager, consolidator: Consolidator,
                  session_ttl_minutes: int = 0):
@@ -134,13 +135,17 @@ class AutoCompact:
             "forced": forced,
         }
 
+    @classmethod
+    def _is_internal_session(cls, key: str) -> bool:
+        return key.startswith(cls._INTERNAL_SESSION_PREFIXES)
+
     def check_expired(self, schedule_background: Callable[[Coroutine], None],
                       active_session_keys: Collection[str] = ()) -> None:
         """Schedule archival for idle sessions, skipping those with in-flight agent tasks."""
         now = datetime.now()
         for info in self.sessions.list_sessions():
             key = info.get("key", "")
-            if not key or key in self._archiving:
+            if not key or self._is_internal_session(key) or key in self._archiving:
                 continue
             if key in active_session_keys:
                 continue
@@ -150,6 +155,9 @@ class AutoCompact:
 
 
     async def _archive(self, key: str) -> None:
+        if self._is_internal_session(key):
+            self._archiving.discard(key)
+            return
         try:
             session = self.sessions.get_or_create(key)
             defer_meta: dict[str, Any] = {}
@@ -187,6 +195,10 @@ class AutoCompact:
             self._archiving.discard(key)
 
     def prepare_session(self, session: Session, key: str) -> tuple[Session, str | None]:
+        if self._is_internal_session(key):
+            self._archiving.discard(key)
+            self._summaries.pop(key, None)
+            return session, None
         if key in self._archiving or self._is_expired(session.updated_at):
             logger.info("Auto-compact: reloading session {} (archiving={})", key, key in self._archiving)
             session = self.sessions.get_or_create(key)

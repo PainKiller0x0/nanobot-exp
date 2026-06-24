@@ -6,6 +6,8 @@ from typing import Any
 
 from nanobot.agent.direct_reply_common import (
     get_json as _common_get_json,
+)
+from nanobot.agent.direct_reply_common import (
     post_json as _common_post_json,
 )
 

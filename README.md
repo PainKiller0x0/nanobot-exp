@@ -4,7 +4,7 @@
 
 This repository keeps the Nanobot core close to upstream while adding the production glue I actually use every day: QQ/WeChat channels, sidecars, model routing, content workflows, operations guardrails, and dashboards.
 
-> Current baseline: Nanobot `0.2.1` plus the `ops/` sidecar layer. Runtime secrets, databases, logs and live target IDs are intentionally kept out of git.
+> Current baseline: Nanobot `0.2.2` plus the `ops/` sidecar layer. Runtime secrets, databases, logs and live target IDs are intentionally kept out of git.
 
 ## 中文说明
 

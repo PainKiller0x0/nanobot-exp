@@ -60,8 +60,12 @@ SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/dream", "\u624b\u52a8\u89e6\u53d1\u8bb0\u5fc6\u6574\u7406"),
     ("/dream-log", "\u67e5\u770b\u6700\u8fd1\u8bb0\u5fc6\u53d8\u66f4"),
     ("/dream-restore", "\u56de\u6eda\u8bb0\u5fc6\u7248\u672c"),
+    ("/skill", "\u5217\u51fa\u53ef\u7528\u6280\u80fd"),
     ("/help", "\u663e\u793a\u8fd9\u4e2a\u9762\u677f"),
-    ("/pairing [list|approve|deny|revoke]", "\u7ba1\u7406\u804a\u5929\u914d\u5bf9\u8bf7\u6c42"),
+    (
+        "/pairing [list|approve <code>|deny <code>|revoke <user_id>]",
+        "\u7ba1\u7406\u804a\u5929\u914d\u5bf9\u8bf7\u6c42",
+    ),
 )
 
 HELP_ALIASES: tuple[str, ...] = (
