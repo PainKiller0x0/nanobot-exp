@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
@@ -1372,3 +1373,20 @@ class TestSummaryPersistence:
         fresh = loop.sessions.get_or_create("cli:test")
         assert "_last_summary" not in fresh.metadata
         await loop.close_mcp()
+
+
+
+def test_event_log_rotation_keeps_recent_tail(tmp_path):
+    sessions = MagicMock()
+    sessions.workspace = tmp_path
+    compact = AutoCompact(sessions, MagicMock())
+    compact._EVENT_FILE_MAX_BYTES = 2_048
+    compact._EVENT_FILE_RETAIN_BYTES = 512
+    compact._event_file.write_bytes((b'{"old":"' + b"x" * 4096 + b'"}\n'))
+
+    compact._write_event("archived", "qq:test", summary="latest")
+
+    data = compact._event_file.read_bytes()
+    assert len(data) < 1_024
+    assert b'"key": "qq:test"' in data
+    assert b'"summary": "latest"' in data

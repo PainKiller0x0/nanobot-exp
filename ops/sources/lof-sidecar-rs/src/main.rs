@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
+    io::SeekFrom,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -19,6 +20,7 @@ use axum::{
 use chrono::{DateTime, Duration as ChronoDuration, FixedOffset, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -435,21 +437,56 @@ async fn api_auto_compact(State(state): State<AppState>) -> impl IntoResponse {
     Json(read_auto_compact_events(&state.auto_compact_events_file).await)
 }
 
-async fn read_auto_compact_events(path: &Path) -> serde_json::Value {
-    let Ok(text) = tokio::fs::read_to_string(path).await else {
-        return serde_json::json!({
-            "ok": true,
-            "path": path.display().to_string(),
-            "items": [],
-            "note": "暂无压缩事件。AutoCompact 只有在开启 idleCompactAfterMinutes 后才会写入。"
-        });
-    };
-    let mut items: Vec<serde_json::Value> = text
+const AUTO_COMPACT_EVENT_LIMIT: usize = 30;
+const AUTO_COMPACT_TAIL_BYTES: u64 = 256 * 1024;
+
+async fn read_recent_json_lines(
+    path: &Path,
+    limit: usize,
+    max_bytes: u64,
+) -> std::io::Result<Vec<serde_json::Value>> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let len = file.metadata().await?.len();
+    let start = len.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(start)).await?;
+
+    let mut bytes = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut bytes).await?;
+    if start > 0 {
+        if let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
+            bytes.drain(..=newline);
+        } else {
+            bytes.clear();
+        }
+    }
+
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(text
         .lines()
+        .rev()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .collect();
-    items.reverse();
-    items.truncate(30);
+        .take(limit)
+        .collect())
+}
+
+async fn read_auto_compact_events(path: &Path) -> serde_json::Value {
+    let items = match read_recent_json_lines(
+        path,
+        AUTO_COMPACT_EVENT_LIMIT,
+        AUTO_COMPACT_TAIL_BYTES,
+    )
+    .await
+    {
+        Ok(items) => items,
+        Err(_) => {
+            return serde_json::json!({
+                "ok": true,
+                "path": path.display().to_string(),
+                "items": [],
+                "note": "暂无压缩事件。AutoCompact 只有在开启 idleCompactAfterMinutes 后才会写入。"
+            });
+        }
+    };
     serde_json::json!({
         "ok": true,
         "path": path.display().to_string(),
@@ -2461,4 +2498,27 @@ async fn persist_run(state: &AppState, run: LastRun, board: Option<BoardData>) -
     }
     save_state(&state.state_file, &current).await;
     run
+}
+
+#[cfg(test)]
+mod bounded_event_tests {
+    use super::read_recent_json_lines;
+
+    #[tokio::test]
+    async fn recent_json_reader_does_not_load_large_history() {
+        let path = std::env::temp_dir().join(format!(
+            "nanobot-auto-compact-tail-{}.jsonl",
+            std::process::id()
+        ));
+        let old = format!("{{\"old\":\"{}\"}}\n", "x".repeat(2 * 1024 * 1024));
+        let content = format!("{old}{{\"id\":1}}\n{{\"id\":2}}\n");
+        tokio::fs::write(&path, content).await.unwrap();
+
+        let items = read_recent_json_lines(&path, 30, 256 * 1024).await.unwrap();
+        let _ = tokio::fs::remove_file(&path).await;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], 2);
+        assert_eq!(items[1]["id"], 1);
+    }
 }

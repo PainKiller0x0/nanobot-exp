@@ -24,6 +24,8 @@ class AutoCompact:
     _MIN_MESSAGE_CAP = 60
     _MAX_DEFER_HOURS = 12
     _EVENT_PREVIEW_CHARS = 4_000
+    _EVENT_FILE_MAX_BYTES = 2 * 1024 * 1024
+    _EVENT_FILE_RETAIN_BYTES = 512 * 1024
     _INTERNAL_SESSION_PREFIXES = ("dream:",)
 
     def __init__(self, sessions: SessionManager, consolidator: Consolidator,
@@ -75,6 +77,24 @@ class AutoCompact:
             })
         return preview
 
+    def _rotate_event_file_if_needed(self) -> None:
+        try:
+            size = self._event_file.stat().st_size
+            if size <= self._EVENT_FILE_MAX_BYTES:
+                return
+            start = max(0, size - self._EVENT_FILE_RETAIN_BYTES)
+            with self._event_file.open("rb") as source:
+                source.seek(start)
+                data = source.read()
+            if start:
+                newline = data.find(b"\n")
+                data = data[newline + 1:] if newline >= 0 else b""
+            tmp = self._event_file.with_name(self._event_file.name + ".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(self._event_file)
+        except (FileNotFoundError, OSError):
+            logger.debug("Auto-compact: failed to rotate event log", exc_info=True)
+
     def _write_event(self, action: str, key: str, **fields: Any) -> None:
         event = {
             "ts": datetime.now().isoformat(),
@@ -84,6 +104,7 @@ class AutoCompact:
         }
         try:
             self._event_file.parent.mkdir(parents=True, exist_ok=True)
+            self._rotate_event_file_if_needed()
             with self._event_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
         except Exception:
