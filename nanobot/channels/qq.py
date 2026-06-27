@@ -309,6 +309,8 @@ class QQChannel(BaseChannel):
         self._chat_type_cache: dict[str, str] = {}
         self._stream_states: dict[str, dict[str, Any]] = {}
         self._sent_generated_image_urls: deque[str] = deque(maxlen=100)
+        self._tts_enabled: dict[str, bool] = {}
+        self._tts_accumulated: dict[str, str] = {}
 
         self._media_root: Path = self._init_media_root()
 
@@ -476,6 +478,8 @@ class QQChannel(BaseChannel):
         queue_wait_ms = _elapsed_perf_ms(msg.metadata.get("_send_queued_perf"), send_started)
         status = "ok"
         content = msg.content or ""
+        logger.info("🔍 SEND called content_len={} chat_id={} tts_enabled={}",
+                     len(content), msg.chat_id, self._tts_enabled.get(msg.chat_id))
         auto_media: list[str] = []
         if content.strip():
             content, auto_media = _extract_generated_image_media(content)
@@ -594,6 +598,12 @@ class QQChannel(BaseChannel):
                             content=safe_content,
                         )
                         chunks_sent += 1
+                        logger.info("📢 TTS CHECK chat_id={} enabled={}",
+                                     msg.chat_id, self._tts_enabled.get(msg.chat_id))
+                        if self._tts_enabled.get(msg.chat_id):
+                            await self._send_tts_audio(
+                                chat_id=msg.chat_id, is_group=is_group, msg_id=msg_id, text=safe_content,
+                            )
                         return
                     except Exception as e:
                         logger.warning(
@@ -622,6 +632,15 @@ class QQChannel(BaseChannel):
                         return
                 if is_signed_payload:
                     self._schedule_delivery_ack(safe_content, wechat_ack, chat_id=msg.chat_id)
+
+            # 3) TTS: if enabled for this user, generate audio and send
+            if content and content.strip() and self._tts_enabled.get(msg.chat_id):
+                try:
+                    await self._send_tts_audio(
+                        chat_id=msg.chat_id, is_group=is_group, msg_id=msg_id, text=content,
+                    )
+                except Exception as e:
+                    logger.warning("QQ TTS send failed chat_id={} err={}", msg.chat_id, e)
         finally:
             finished_at = time.perf_counter()
             turn_done_ms = _elapsed_perf_ms(msg.metadata.get("_turn_started_perf"), finished_at)
@@ -843,6 +862,22 @@ class QQChannel(BaseChannel):
             logger=logger,
         )
 
+        # TTS: accumulate streamed content, trigger on stream end
+        if self._tts_enabled.get(chat_id):
+            meta = metadata or {}
+            stream_key = str(meta.get("_stream_id") or chat_id)
+            if delta:
+                self._tts_accumulated[stream_key] = (self._tts_accumulated.get(stream_key) or "") + delta
+            if meta.get("_stream_end"):
+                full_text = (self._tts_accumulated.pop(stream_key, None) or "").strip()
+                if full_text:
+                    is_group = self._chat_type_cache.get(str(chat_id), "c2c") == "group"
+                    msg_id = meta.get("message_id") or meta.get("msg_id")
+                    msg_id = str(msg_id) if msg_id else None
+                    asyncio.ensure_future(self._send_tts_audio(
+                        chat_id=chat_id, is_group=is_group, msg_id=msg_id, text=full_text,
+                    ))
+
     async def _send_text_streaming(
         self,
         chat_id: str,
@@ -997,6 +1032,71 @@ class QQChannel(BaseChannel):
             raise
         except Exception as e:
             logger.error("QQ send media failed filename={} err={}", filename, e)
+            return False
+
+    async def _send_tts_audio(
+        self,
+        chat_id: str,
+        is_group: bool,
+        msg_id: str | None,
+        text: str,
+    ) -> bool:
+        """Generate TTS audio from text and send as file via QQ."""
+        logger.info("🟢 TTS starting chat_id={} text_len={} enabled={}",
+                     chat_id, len(text or ""), self._tts_enabled.get(chat_id))
+        if not text or not text.strip():
+            return False
+        key = "sk-c2y7na6pu0q49sv14zwd3npsb3tmr3jgtr7c24ihs4y0n0p4"
+        tts_text = text.strip()[:500]
+        try:
+            if not self._http:
+                logger.error("🔴 TTS failed: _http session not initialized")
+                return False
+            async with self._http.post(
+                "https://api.xiaomimimo.com/v1/chat/completions",
+                json={
+                    "model": "mimo-v2.5-tts",
+                    "messages": [
+                        {"role": "user", "content": "用温暖亲切的中文女性声音朗读"},
+                        {"role": "assistant", "content": tts_text}
+                    ],
+                    "audio": {"format": "mp3", "voice": "冰糖"},
+                    "stream": False
+                },
+                headers={"api-key": key},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    err_body = await resp.text()
+                    logger.error("🔴 TTS API error: status={} body={}", resp.status, str(err_body)[:300])
+                    return False
+                d = await resp.json()
+                audio_b64 = d.get("choices", [{}])[0].get("message", {}).get("audio", {}).get("data", "")
+            if not audio_b64:
+                logger.warning("🟡 TTS empty audio chat_id={}", chat_id)
+                return False
+            logger.info("🟢 TTS audio generated {}B base64", len(audio_b64))
+            media_obj = await self._post_base64file(
+                chat_id=chat_id, is_group=is_group,
+                file_type=QQ_FILE_TYPE_FILE, file_data=audio_b64,
+                file_name="语音回复.mp3", srv_send_msg=False,
+            )
+            logger.info("🟢 TTS upload: {}", str(media_obj)[:200])
+            self._msg_seq += 1
+            if is_group:
+                await self._client.api.post_group_message(
+                    group_openid=chat_id, msg_type=7, msg_id=msg_id,
+                    msg_seq=self._msg_seq, media=media_obj,
+                )
+            else:
+                await self._client.api.post_c2c_message(
+                    openid=chat_id, msg_type=7, msg_id=msg_id,
+                    msg_seq=self._msg_seq, media=media_obj,
+                )
+            logger.info("✅ QQ TTS audio sent chat_id={} text_len={}", chat_id, len(tts_text))
+            return True
+        except Exception as e:
+            logger.error("🔴 TTS exception for chat_id={}: {} {}", chat_id, type(e).__name__, str(e)[:300])
             return False
 
     async def _read_media_bytes(self, media_ref: str) -> tuple[bytes | None, str | None]:
@@ -1185,6 +1285,24 @@ class QQChannel(BaseChannel):
                 logger.warning("QQ ack send failed message_id={} err={}", data.id, e)
 
         content = (getattr(data, "content", "") or "").strip()
+
+        # TTS toggle: "用语音回复我" to enable, "退出语音" to disable
+        if "用语音回复" in content or "语音回复我" in content:
+            self._tts_enabled[chat_id] = True
+            await self._send_text_only(
+                chat_id=chat_id, is_group=is_group, msg_id=data.id,
+                content="已开启语音回复模式 🔊 之后我会把回复念给你听。",
+            )
+            logger.info("QQ TTS enabled for chat_id={}", chat_id)
+            return
+        if "退出语音" in content or "关闭语音" in content or "不要语音" in content:
+            self._tts_enabled.pop(chat_id, None)
+            await self._send_text_only(
+                chat_id=chat_id, is_group=is_group, msg_id=data.id,
+                content="已关闭语音回复模式 ✅",
+            )
+            logger.info("QQ TTS disabled for chat_id={}", chat_id)
+            return
 
         # the data used by tests don't contain attachments property
         # so we use getattr with a default of [] to avoid AttributeError in tests
