@@ -275,7 +275,7 @@ class QQConfig(Base):
     tts_enabled: bool = True
     tts_voice: str = "茉莉"
     tts_timeout_sec: int = 120
-    tts_max_chars: int = 2000
+    tts_max_chars: int = 1500
     tts_api_url: str = 'https://api.xiaomimimo.com/v1/chat/completions'
 
 
@@ -1069,7 +1069,7 @@ class QQChannel(BaseChannel):
                         {"role": "user", "content": "用温暖亲切的中文女性声音朗读"},
                         {"role": "assistant", "content": tts_text}
                     ],
-                    "audio": {"format": "mp3", "voice": self.config.tts_voice},
+                    "audio": {"format": "aac", "voice": self.config.tts_voice},
                     "stream": False
                 },
                 headers={"api-key": api_key},
@@ -1088,7 +1088,7 @@ class QQChannel(BaseChannel):
             media_obj = await self._post_base64file(
                 chat_id=chat_id, is_group=is_group,
                 file_type=QQ_FILE_TYPE_FILE, file_data=audio_b64,
-                file_name="语音回复.mp3", srv_send_msg=False,
+                file_name="语音回复.aac", srv_send_msg=False,
             )
             logger.info("🟢 TTS upload: {}", str(media_obj)[:200])
             self._msg_seq += 1
