@@ -881,7 +881,7 @@ class QQChannel(BaseChannel):
                     is_group = self._chat_type_cache.get(str(chat_id), "c2c") == "group"
                     msg_id = meta.get("message_id") or meta.get("msg_id")
                     msg_id = str(msg_id) if msg_id else None
-                    task = asyncio.create_task(self._send_tts_audio(
+                    _ = asyncio.create_task(self._send_tts_audio(
                         chat_id=chat_id, is_group=is_group, msg_id=msg_id, text=full_text,
                     ))
 
