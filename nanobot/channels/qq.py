@@ -271,6 +271,13 @@ class QQConfig(Base):
     stream_delta_flush_chars: int = 120
     stream_delta_flush_interval_sec: float = 0.35
 
+    # TTS (Text-to-Speech) via MiMo API
+    tts_enabled: bool = True
+    tts_voice: str = "茉莉"
+    tts_timeout_sec: int = 120
+    tts_max_chars: int = 2000
+    tts_api_url: str = 'https://api.xiaomimimo.com/v1/chat/completions'
+
 
 
 def _elapsed_perf_ms(start: Any, end: float) -> int:
@@ -479,7 +486,7 @@ class QQChannel(BaseChannel):
         status = "ok"
         content = msg.content or ""
         logger.info("🔍 SEND called content_len={} chat_id={} tts_enabled={}",
-                     len(content), msg.chat_id, self._tts_enabled.get(msg.chat_id))
+                     len(content), msg.chat_id, self._tts_enabled.get(msg.chat_id, True))
         auto_media: list[str] = []
         if content.strip():
             content, auto_media = _extract_generated_image_media(content)
@@ -599,8 +606,8 @@ class QQChannel(BaseChannel):
                         )
                         chunks_sent += 1
                         logger.info("📢 TTS CHECK chat_id={} enabled={}",
-                                     msg.chat_id, self._tts_enabled.get(msg.chat_id))
-                        if self._tts_enabled.get(msg.chat_id):
+                                     msg.chat_id, self._tts_enabled.get(msg.chat_id, True))
+                        if self._tts_enabled.get(msg.chat_id, True):
                             await self._send_tts_audio(
                                 chat_id=msg.chat_id, is_group=is_group, msg_id=msg_id, text=safe_content,
                             )
@@ -634,7 +641,7 @@ class QQChannel(BaseChannel):
                     self._schedule_delivery_ack(safe_content, wechat_ack, chat_id=msg.chat_id)
 
             # 3) TTS: if enabled for this user, generate audio and send
-            if content and content.strip() and self._tts_enabled.get(msg.chat_id):
+            if content and content.strip() and self._tts_enabled.get(msg.chat_id, True):
                 try:
                     await self._send_tts_audio(
                         chat_id=msg.chat_id, is_group=is_group, msg_id=msg_id, text=content,
@@ -863,7 +870,7 @@ class QQChannel(BaseChannel):
         )
 
         # TTS: accumulate streamed content, trigger on stream end
-        if self._tts_enabled.get(chat_id):
+        if self._tts_enabled.get(chat_id, True):
             meta = metadata or {}
             stream_key = str(meta.get("_stream_id") or chat_id)
             if delta:
@@ -874,7 +881,7 @@ class QQChannel(BaseChannel):
                     is_group = self._chat_type_cache.get(str(chat_id), "c2c") == "group"
                     msg_id = meta.get("message_id") or meta.get("msg_id")
                     msg_id = str(msg_id) if msg_id else None
-                    asyncio.ensure_future(self._send_tts_audio(
+                    task = asyncio.create_task(self._send_tts_audio(
                         chat_id=chat_id, is_group=is_group, msg_id=msg_id, text=full_text,
                     ))
 
@@ -1043,28 +1050,30 @@ class QQChannel(BaseChannel):
     ) -> bool:
         """Generate TTS audio from text and send as file via QQ."""
         logger.info("🟢 TTS starting chat_id={} text_len={} enabled={}",
-                     chat_id, len(text or ""), self._tts_enabled.get(chat_id))
+                     chat_id, len(text or ""), self._tts_enabled.get(chat_id, True))
         if not text or not text.strip():
             return False
-        key = "sk-c2y7na6pu0q49sv14zwd3npsb3tmr3jgtr7c24ihs4y0n0p4"
-        tts_text = text.strip()[:500]
+        api_key = os.environ.get("MIMO_API_KEY", "")
+        tts_text = text.strip()[:self.config.tts_max_chars]
+        if len(text.strip()) > self.config.tts_max_chars:
+            logger.info('TTS text truncated from {} to {} chars', len(text.strip()), self.config.tts_max_chars)
         try:
             if not self._http:
                 logger.error("🔴 TTS failed: _http session not initialized")
                 return False
             async with self._http.post(
-                "https://api.xiaomimimo.com/v1/chat/completions",
+                self.config.tts_api_url,
                 json={
                     "model": "mimo-v2.5-tts",
                     "messages": [
                         {"role": "user", "content": "用温暖亲切的中文女性声音朗读"},
                         {"role": "assistant", "content": tts_text}
                     ],
-                    "audio": {"format": "mp3", "voice": "冰糖"},
+                    "audio": {"format": "mp3", "voice": self.config.tts_voice},
                     "stream": False
                 },
-                headers={"api-key": key},
-                timeout=aiohttp.ClientTimeout(total=30),
+                headers={"api-key": api_key},
+                timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
                 if resp.status != 200:
                     err_body = await resp.text()
@@ -1296,7 +1305,7 @@ class QQChannel(BaseChannel):
             logger.info("QQ TTS enabled for chat_id={}", chat_id)
             return
         if "退出语音" in content or "关闭语音" in content or "不要语音" in content:
-            self._tts_enabled.pop(chat_id, None)
+            self._tts_enabled[chat_id] = False
             await self._send_text_only(
                 chat_id=chat_id, is_group=is_group, msg_id=data.id,
                 content="已关闭语音回复模式 ✅",
