@@ -1048,65 +1048,79 @@ class QQChannel(BaseChannel):
         msg_id: str | None,
         text: str,
     ) -> bool:
-        """Generate TTS audio from text and send as file via QQ."""
-        logger.info("🟢 TTS starting chat_id={} text_len={} enabled={}",
-                     chat_id, len(text or ""), self._tts_enabled.get(chat_id, True))
+        """Generate TTS audio(s) from text, split into sentence chunks if needed."""
+        logger.info("TTS starting chat_id={} text_len={}", chat_id, len(text or ""))
         if not text or not text.strip():
             return False
         api_key = os.environ.get("MIMO_API_KEY", "")
-        tts_text = text.strip()[:self.config.tts_max_chars]
-        if len(text.strip()) > self.config.tts_max_chars:
-            logger.info('TTS text truncated from {} to {} chars', len(text.strip()), self.config.tts_max_chars)
-        try:
-            if not self._http:
-                logger.error("🔴 TTS failed: _http session not initialized")
-                return False
+        if not api_key:
+            logger.error("TTS failed: MIMO_API_KEY not set")
+            return False
+
+        # Split text at sentence boundaries
+        raw_text = text.strip()
+        sentences = re.split(r'(?<=[。！？\n])', raw_text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        if not sentences:
+            sentences = [raw_text[:500]]
+
+        chunks = []
+        cur = ""
+        mc = 500
+        for s in sentences:
+            if len(s) > mc:
+                if cur:
+                    chunks.append(cur)
+                    cur = ""
+                for i in range(0, len(s), mc):
+                    chunks.append(s[i:i+mc])
+            elif len(cur) + len(s) <= mc:
+                cur += s
+            else:
+                chunks.append(cur)
+                cur = s
+        if cur:
+            chunks.append(cur)
+
+        if len(chunks) > 3:
+            chunks = chunks[:3]
+        if len(chunks) > 1:
+            logger.info("TTS split into {} chunks", len(chunks))
+        logger.info("TTS chunks={}", len(chunks))
+
+        async def _send_one(chunk_text, idx):
+            logger.info("TTS chunk[{}]: {} chars", idx, len(chunk_text))
             async with self._http.post(
                 self.config.tts_api_url,
-                json={
-                    "model": "mimo-v2.5-tts",
-                    "messages": [
-                        {"role": "user", "content": "用温暖亲切的中文女性声音朗读"},
-                        {"role": "assistant", "content": tts_text}
-                    ],
-                    "audio": {"format": "mp3", "voice": self.config.tts_voice},
-                    "stream": False
-                },
+                json={"model": "mimo-v2.5-tts", "messages": [{"role": "user", "content": "用温暖亲切的中文女性声音朗读"}, {"role": "assistant", "content": chunk_text}], "audio": {"format": "mp3", "voice": self.config.tts_voice}, "stream": False},
                 headers={"api-key": api_key},
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
                 if resp.status != 200:
-                    err_body = await resp.text()
-                    logger.error("🔴 TTS API error: status={} body={}", resp.status, str(err_body)[:300])
+                    logger.error("TTS chunk[{}] API error: {}", idx, resp.status)
                     return False
                 d = await resp.json()
                 audio_b64 = d.get("choices", [{}])[0].get("message", {}).get("audio", {}).get("data", "")
             if not audio_b64:
-                logger.warning("🟡 TTS empty audio chat_id={}", chat_id)
                 return False
-            logger.info("🟢 TTS audio generated {}B base64", len(audio_b64))
+
             media_obj = await self._post_base64file(
                 chat_id=chat_id, is_group=is_group,
-                file_type=QQ_FILE_TYPE_FILE, file_data=audio_b64,
-                file_name="语音回复.mp3", srv_send_msg=False,
+                file_type=4, file_data=audio_b64,
+                file_name=f"voice_{idx}.mp3", srv_send_msg=False,
             )
-            logger.info("🟢 TTS upload: {}", str(media_obj)[:200])
-            self._msg_seq += 1
+            seq = self._msg_seq + idx
             if is_group:
-                await self._client.api.post_group_message(
-                    group_openid=chat_id, msg_type=7, msg_id=msg_id,
-                    msg_seq=self._msg_seq, media=media_obj,
-                )
+                await self._client.api.post_group_message(group_openid=chat_id, msg_type=7, msg_id=msg_id, msg_seq=seq, media=media_obj)
             else:
-                await self._client.api.post_c2c_message(
-                    openid=chat_id, msg_type=7, msg_id=msg_id,
-                    msg_seq=self._msg_seq, media=media_obj,
-                )
-            logger.info("✅ QQ TTS audio sent chat_id={} text_len={}", chat_id, len(tts_text))
+                await self._client.api.post_c2c_message(openid=chat_id, msg_type=7, msg_id=msg_id, msg_seq=seq, media=media_obj)
+            logger.info("TTS chunk[{}] sent ({} chars)", idx, len(chunk_text))
             return True
-        except Exception as e:
-            logger.error("🔴 TTS exception for chat_id={}: {} {}", chat_id, type(e).__name__, str(e)[:300])
-            return False
+
+        results = await asyncio.gather(*[_send_one(c, i) for i, c in enumerate(chunks)], return_exceptions=True)
+        ok = sum(1 for r in results if r is True)
+        logger.info("TTS done: {}/{} chat_id={}", ok, len(chunks), chat_id)
+        return ok > 0
 
     async def _read_media_bytes(self, media_ref: str) -> tuple[bytes | None, str | None]:
         """Read bytes from http(s) or local file path; return (data, filename)."""
