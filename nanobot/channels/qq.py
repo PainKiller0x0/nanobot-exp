@@ -1066,7 +1066,7 @@ class QQChannel(BaseChannel):
 
         chunks = []
         cur = ""
-        mc = 500
+        mc = 1500
         for s in sentences:
             if len(s) > mc:
                 if cur:
