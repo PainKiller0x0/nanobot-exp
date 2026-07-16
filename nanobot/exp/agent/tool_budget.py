@@ -8,6 +8,7 @@ contextual/task turns, but skip them for short standalone chat.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from nanobot.exp.agent.history_budget import (
@@ -57,6 +58,33 @@ _TOOL_MARKERS = (
 )
 
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
+
+# A vague word such as "look" is common in normal conversation. Advertising
+# every tool for it turns a chat reply into a full workbench request. Require a
+# clear instruction plus an operational verb, or a direct status question.
+_EXPLICIT_TOOL_ACTION_RE = re.compile(
+    "(?:\\u5e2e\\u6211|\\u8bf7\\u4f60|\\u9ebb\\u70e6|\\u7ed9\\u6211|"
+    "\\u80fd\\u4e0d\\u80fd|\\u53ef\\u4ee5).{0,16}(?:"
+    "\\u67e5|\\u68c0\\u67e5|\\u641c|\\u641c\\u7d22|\\u6253\\u5f00|"
+    "\\u8bfb\\u53d6|\\u5237\\u65b0|\\u90e8\\u7f72|\\u4fee\\u590d|\\u6539|"
+    "\\u6536\\u4e00\\u4e0b|\\u63a8\\u9001|\\u8fd0\\u884c|\\u6267\\u884c)",
+    re.I,
+)
+_DIRECT_STATUS_QUERY_RE = re.compile(
+    "(?:\\u5185\\u5b58|\\u670d\\u52a1|\\u72b6\\u6001|\\u65e5\\u5fd7|log|"
+    "\\u5929\\u6c14|\\u65b0\\u95fb|\\u70ed\\u641c|lof|etf|rss|cron).{0,16}"
+    "(?:\\u600e\\u4e48\\u6837|\\u600e\\u6837|\\u591a\\u5c11|\\u6709\\u6ca1\\u6709|"
+    "\\u662f\\u4ec0\\u4e48|\\u51fa\\u95ee\\u9898|\\u597d\\u4e86\\u5417)",
+    re.I,
+)
+_DIRECT_OPERATION_RE = re.compile(
+    "^\\s*(?:\\u67e5|\\u68c0\\u67e5|\\u641c\\u7d22|\\u6253\\u5f00|\\u8bfb\\u53d6|"
+    "\\u5237\\u65b0|\\u90e8\\u7f72|\\u4fee\\u590d|\\u8fd0\\u884c|\\u6267\\u884c)"
+    ".{0,24}(?:\\u65e5\\u5fd7|log|\\u670d\\u52a1|\\u5185\\u5b58|\\u5929\\u6c14|"
+    "\\u65b0\\u95fb|\\u7f51\\u9875|\\u94fe\\u63a5|\\u6587\\u4ef6|\\u4ee3\\u7801|"
+    "\\u4ed3\\u5e93|github|rss|lof|etf|cron)",
+    re.I,
+)
 
 
 def adaptive_tools_enabled() -> bool:
@@ -114,7 +142,13 @@ def _has_attachment(text: str) -> bool:
 
 def _has_tool_marker(text: str) -> bool:
     lowered = text.lower()
-    return any(marker in lowered or marker in text for marker in _TOOL_MARKERS)
+    if "http://" in lowered or "https://" in lowered:
+        return True
+    return bool(
+        _EXPLICIT_TOOL_ACTION_RE.search(text)
+        or _DIRECT_STATUS_QUERY_RE.search(text)
+        or _DIRECT_OPERATION_RE.search(text)
+    )
 
 
 def tool_definitions_for_turn(

@@ -30,7 +30,7 @@ def test_contextual_turn_keeps_tools() -> None:
     )
 
     assert tools == TOOLS
-    assert reason == "tool marker"
+    assert reason.startswith("task marker:")
 
 
 def test_active_tool_context_keeps_tools() -> None:
@@ -79,6 +79,36 @@ def test_current_user_hint_overrides_merged_history_text() -> None:
 
     assert tools is None
     assert reason == "short standalone turn"
+
+
+def test_vague_look_word_does_not_advertise_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": "\u4f60\u770b\u6211\u662f\u4e0d\u662f\u53c8\u628a\u8bdd\u8bf4\u91cd\u4e86"}],
+    )
+
+    assert tools is None
+    assert reason == "short standalone turn"
+
+
+def test_explicit_operational_request_advertises_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": "\u5e2e\u6211\u68c0\u67e5\u4e00\u4e0b\u670d\u52a1\u65e5\u5fd7"}],
+    )
+
+    assert tools == TOOLS
+    assert reason == "tool marker"
+
+
+def test_direct_memory_status_question_advertises_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": "\u5185\u5b58\u600e\u4e48\u6837"}],
+    )
+
+    assert tools == TOOLS
+    assert reason == "tool marker"
 
 def test_daily_report_life_update_omits_tools() -> None:
     tools, reason = tool_definitions_for_turn(

@@ -11,9 +11,17 @@ import re
 
 DEFAULT_LIGHT_REPLAY_TOKENS = 4_500
 DEFAULT_LIGHT_REPLAY_MESSAGES = 10
+LIGHT_CHAT_REASONS = frozenset(
+    {
+        "short standalone turn",
+        "empty short turn",
+        "contextual chat turn",
+        "structured chat turn",
+    }
+)
 SHORT_STANDALONE_REASONS = frozenset({"short standalone turn", "empty short turn"})
 DAILY_REPORT_TASK_REASON = "task marker: \u65e5\u62a5\u8bf7\u6c42"
-TOOL_OMIT_REASONS = SHORT_STANDALONE_REASONS | frozenset({DAILY_REPORT_TASK_REASON})
+TOOL_OMIT_REASONS = LIGHT_CHAT_REASONS | frozenset({DAILY_REPORT_TASK_REASON})
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 
 _CONTEXT_MARKERS = (
@@ -161,9 +169,14 @@ def is_short_standalone_reason(reason: str) -> bool:
     return reason in SHORT_STANDALONE_REASONS
 
 
+def is_light_chat_reason(reason: str) -> bool:
+    """Return True when the turn needs dialogue context, not the workbench."""
+    return reason in LIGHT_CHAT_REASONS
+
+
 def should_use_compact_system_prompt(reason: str) -> bool:
     """Return True when a lightweight chat turn should avoid large manuals."""
-    return is_short_standalone_reason(reason)
+    return is_light_chat_reason(reason)
 
 
 def should_skip_history_replay(reason: str) -> bool:
@@ -204,22 +217,24 @@ def replay_budget_for_message(
         return default_budget, "media turn"
     if not text:
         return budget, "empty short turn"
-    if len(text) > 220:
+    # Long prose can need the full task path, but short lists and follow-ups
+    # should preserve dialogue context without loading the whole workbench.
+    if len(text) > 1_200:
         return default_budget, "long user turn"
-    if text.count("\n") >= 2:
-        return default_budget, "structured user turn"
     if _URL_RE.search(text):
         return default_budget, "url turn"
     if _CODE_OR_PATH_RE.search(text):
         return default_budget, "code or path turn"
 
-    for marker in _CONTEXT_MARKERS:
-        if marker in text:
-            return default_budget, f"context marker: {marker}"
     if _REPORT_REQUEST_RE.search(text):
         return default_budget, "task marker: 日报请求"
     for marker in _TASK_MARKERS:
         if marker in lowered or marker in text:
             return default_budget, f"task marker: {marker}"
+
+    if any(marker in text for marker in _CONTEXT_MARKERS):
+        return budget, "contextual chat turn"
+    if text.count("\n") >= 2:
+        return budget, "structured chat turn"
 
     return budget, "short standalone turn"

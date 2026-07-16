@@ -1,4 +1,5 @@
 from nanobot.exp.agent.history_budget import (
+    is_light_chat_reason,
     light_replay_max_messages,
     light_system_prompt_enabled,
     replay_budget_for_message,
@@ -27,7 +28,7 @@ def test_contextual_turn_keeps_full_budget() -> None:
     )
 
     assert budget == 16_000
-    assert reason.startswith("context marker:")
+    assert reason.startswith("task marker:")
 
 
 def test_task_turn_keeps_full_budget() -> None:
@@ -168,6 +169,31 @@ def test_short_referential_chat_keeps_small_history_without_tools() -> None:
     assert should_skip_history_replay(reason) is False
     assert should_use_compact_system_prompt(reason) is True
     assert should_omit_tool_ads(reason) is True
+    assert is_light_chat_reason(reason) is True
+
+
+def test_multiline_life_update_stays_on_light_chat_path() -> None:
+    budget, reason = replay_budget_for_message(
+        "\u65e9\u4e0a\u4f1a\u8bae\n\u4e2d\u5348\u8981\u4ea4\u4e1c\u897f\n\u4e0b\u73ed\u540e\u60f3\u4f11\u606f",
+        default_budget=16_000,
+        light_budget=1_200,
+    )
+
+    assert budget == 1_200
+    assert reason == "structured chat turn"
+    assert should_use_compact_system_prompt(reason) is True
+    assert should_omit_tool_ads(reason) is True
+
+
+def test_explicit_operational_request_keeps_full_budget() -> None:
+    budget, reason = replay_budget_for_message(
+        "\u5e2e\u6211\u68c0\u67e5\u670d\u52a1\u65e5\u5fd7",
+        default_budget=16_000,
+        light_budget=1_200,
+    )
+
+    assert budget == 16_000
+    assert reason.startswith("task marker:")
 
 
 def test_lightweight_reason_policy_helpers() -> None:
