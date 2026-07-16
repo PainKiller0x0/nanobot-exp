@@ -649,7 +649,8 @@ async def test_send_propagates_network_error_no_fallback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_open_voice_reply_is_handled_locally_without_llm() -> None:
+async def test_open_voice_reply_is_handled_locally_without_llm(monkeypatch) -> None:
+    monkeypatch.setenv("MIMO_API_KEY", "test-key")
     channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["user1"]), MessageBus())
     channel._send_text_only = AsyncMock()
     channel._handle_message = AsyncMock()
@@ -666,3 +667,22 @@ async def test_open_voice_reply_is_handled_locally_without_llm() -> None:
     channel._handle_message.assert_not_awaited()
     channel._send_text_only.assert_awaited_once()
     assert channel._send_text_only.await_args.kwargs["content"].startswith("已开启语音回复模式")
+
+@pytest.mark.asyncio
+async def test_open_voice_reply_reports_missing_service_key_locally(monkeypatch) -> None:
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
+    channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["user1"]), MessageBus())
+    channel._send_text_only = AsyncMock()
+    channel._handle_message = AsyncMock()
+    data = SimpleNamespace(
+        id="msg-tts-unavailable",
+        content="打开语音回复",
+        author=SimpleNamespace(user_openid="user1"),
+        attachments=[],
+    )
+
+    await channel._on_message(data, is_group=False)
+
+    assert channel._tts_enabled["user1"] is False
+    channel._handle_message.assert_not_awaited()
+    assert "暂不可用" in channel._send_text_only.await_args.kwargs["content"]

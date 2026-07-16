@@ -1311,6 +1311,16 @@ class QQChannel(BaseChannel):
 
         # Handle voice-mode settings locally. They must never enter the LLM/tool path.
         if any(phrase in content for phrase in ("用语音回复", "语音回复我", "打开语音回复", "开启语音回复")):
+            if not os.environ.get("MIMO_API_KEY", "").strip():
+                self._tts_enabled[chat_id] = False
+                await self._send_text_only(
+                    chat_id=chat_id,
+                    is_group=is_group,
+                    msg_id=data.id,
+                    content="语音回复暂不可用：服务器还没有配置语音服务密钥。",
+                )
+                logger.warning("QQ TTS enable requested but MIMO_API_KEY is not configured chat_id={}", chat_id)
+                return
             self._tts_enabled[chat_id] = True
             await self._send_text_only(
                 chat_id=chat_id, is_group=is_group, msg_id=data.id,
