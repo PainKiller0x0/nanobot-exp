@@ -1309,8 +1309,8 @@ class QQChannel(BaseChannel):
 
         content = (getattr(data, "content", "") or "").strip()
 
-        # TTS toggle: "用语音回复我" to enable, "退出语音" to disable
-        if "用语音回复" in content or "语音回复我" in content:
+        # Handle voice-mode settings locally. They must never enter the LLM/tool path.
+        if any(phrase in content for phrase in ("用语音回复", "语音回复我", "打开语音回复", "开启语音回复")):
             self._tts_enabled[chat_id] = True
             await self._send_text_only(
                 chat_id=chat_id, is_group=is_group, msg_id=data.id,

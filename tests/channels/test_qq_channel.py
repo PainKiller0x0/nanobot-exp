@@ -646,3 +646,23 @@ async def test_send_propagates_network_error_no_fallback() -> None:
 
     # No fallback text should have been sent
     assert len(channel._client.api.c2c_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_open_voice_reply_is_handled_locally_without_llm() -> None:
+    channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["user1"]), MessageBus())
+    channel._send_text_only = AsyncMock()
+    channel._handle_message = AsyncMock()
+    data = SimpleNamespace(
+        id="msg-tts",
+        content="打开语音回复",
+        author=SimpleNamespace(user_openid="user1"),
+        attachments=[],
+    )
+
+    await channel._on_message(data, is_group=False)
+
+    assert channel._tts_enabled["user1"] is True
+    channel._handle_message.assert_not_awaited()
+    channel._send_text_only.assert_awaited_once()
+    assert channel._send_text_only.await_args.kwargs["content"].startswith("已开启语音回复模式")

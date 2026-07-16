@@ -152,3 +152,13 @@ def test_no_registered_tools_keeps_empty_tool_list_marker() -> None:
 
     assert tools == []
     assert reason == "no tools registered"
+
+
+def test_open_voice_reply_does_not_advertise_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": "打开语音回复"}],
+    )
+
+    assert tools is None
+    assert reason == "short standalone turn"

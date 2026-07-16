@@ -206,3 +206,14 @@ def test_lightweight_reason_policy_helpers() -> None:
     assert should_omit_tool_ads("short standalone turn") is True
     assert should_omit_tool_ads("task marker: \u65e5\u62a5\u8bf7\u6c42") is True
     assert should_omit_tool_ads("task marker: \u5185\u5b58") is False
+
+def test_open_voice_reply_stays_on_light_chat_path() -> None:
+    budget, reason = replay_budget_for_message(
+        "打开语音回复",
+        default_budget=16_000,
+        light_budget=3_000,
+    )
+
+    assert budget == 3_000
+    assert reason == "short standalone turn"
+    assert should_omit_tool_ads(reason) is True

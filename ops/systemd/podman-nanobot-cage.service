@@ -16,6 +16,7 @@ TimeoutStopSec=90
 ExecStartPre=/usr/bin/podman network exists nanobot-net
 ExecStartPre=/bin/rm -f %t/%n.ctr-id
 ExecStartPre=-/usr/bin/podman rm -f nanobot-cage
+ExecStartPre=/usr/bin/install -m 0600 /root/nanobot/nanobot/channels/qq.py /root/.nanobot/overrides/qq.py
 ExecStart=/usr/bin/podman run \
   --cidfile=%t/%n.ctr-id \
   --cgroups=no-conmon \
