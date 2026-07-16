@@ -403,10 +403,22 @@ def rendered_text_to_markdown(text: str, source_url: str) -> tuple[str, str]:
     return title, markdown
 
 
-def fetch_with_rendered_browser(url: str) -> FetchedPage | None:
+def remember_render_failure(failures: list[str] | None, reason: str) -> None:
+    if failures is None:
+        return
+    reason = clean_ws(reason)
+    if reason and reason not in failures:
+        failures.append(reason[:240])
+
+
+def fetch_with_rendered_browser(
+    url: str, failures: list[str] | None = None
+) -> FetchedPage | None:
     if os.environ.get("NANOBOT_INBOX_RENDER_ENABLED", "1").strip().lower() in {"0", "false", "off", "no"}:
+        remember_render_failure(failures, "browser rendering is disabled")
         return None
     if not BROWSER_OPERATOR_PATH.exists():
+        remember_render_failure(failures, "browser operator script is missing")
         return None
 
     payload: dict[str, Any] = {}
@@ -456,9 +468,20 @@ def fetch_with_rendered_browser(url: str) -> FetchedPage | None:
                 check=False,
             )
             payload = json.loads(completed.stdout or "{}")
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        except subprocess.TimeoutExpired:
+            remember_render_failure(failures, "browser renderer timed out")
+            continue
+        except OSError as exc:
+            remember_render_failure(failures, f"browser renderer could not start: {exc}")
+            continue
+        except json.JSONDecodeError:
+            remember_render_failure(failures, "browser renderer returned invalid JSON")
             continue
         if completed.returncode != 0 or not payload.get("ok"):
+            remember_render_failure(
+                failures,
+                str(payload.get("error") or completed.stderr or f"browser renderer exit {completed.returncode}"),
+            )
             continue
         result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
         rendered_text = result.get("stdout") if isinstance(result, dict) else ""
@@ -506,12 +529,19 @@ def render_gateway_urls() -> list[str]:
     return urls
 
 
-def fetch_with_render_gateway(url: str) -> FetchedPage | None:
+def fetch_with_render_gateway(
+    url: str, failures: list[str] | None = None
+) -> FetchedPage | None:
     if os.environ.get("NANOBOT_INBOX_RENDER_ENABLED", "1").strip().lower() in {"0", "false", "off", "no"}:
+        remember_render_failure(failures, "gateway rendering is disabled")
         return None
     token = read_render_token()
     gateway_urls = render_gateway_urls()
-    if not token or not gateway_urls:
+    if not token:
+        remember_render_failure(failures, "render gateway token is missing")
+        return None
+    if not gateway_urls:
+        remember_render_failure(failures, "no render gateway URL is configured")
         return None
     payload = {
         "url": url,
@@ -528,12 +558,24 @@ def fetch_with_render_gateway(url: str) -> FetchedPage | None:
         try:
             with urlopen(req, timeout=RENDER_TIMEOUT_SECS + 25) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+        except HTTPError as exc:
+            remember_render_failure(failures, f"render gateway HTTP {exc.code}")
             continue
-        if not isinstance(data, dict) or not data.get("ok"):
+        except (URLError, TimeoutError, OSError) as exc:
+            remember_render_failure(failures, f"render gateway unavailable: {type(exc).__name__}")
+            continue
+        except json.JSONDecodeError:
+            remember_render_failure(failures, "render gateway returned invalid JSON")
+            continue
+        if not isinstance(data, dict):
+            remember_render_failure(failures, "render gateway returned an invalid payload")
+            continue
+        if not data.get("ok"):
+            remember_render_failure(failures, str(data.get("error") or "render gateway rejected request"))
             continue
         rendered_text = clean_ws(str(data.get("text") or ""))
         if len(rendered_text) < 80:
+            remember_render_failure(failures, "render gateway returned too little text")
             continue
         title, markdown = rendered_text_to_markdown(rendered_text, url)
         if not title:
@@ -552,22 +594,52 @@ def fetch_with_render_gateway(url: str) -> FetchedPage | None:
     return None
 
 
-def fetch_with_rendering(url: str) -> FetchedPage | None:
-    rendered = fetch_with_render_gateway(url)
+def fetch_with_rendering(
+    url: str, failures: list[str] | None = None
+) -> FetchedPage | None:
+    rendered = fetch_with_render_gateway(url, failures)
     if rendered is not None:
         return rendered
-    return fetch_with_rendered_browser(url)
+    return fetch_with_rendered_browser(url, failures)
 
-def redirect_loop_fallback(url: str, exc: HTTPError) -> FetchedPage | None:
+def redirect_loop_fallback(
+    url: str,
+    exc: HTTPError,
+    render_failures: list[str] | None = None,
+) -> FetchedPage | None:
     if exc.code not in {301, 302, 303, 307, 308}:
         return None
     message = str(exc)
     if "infinite loop" not in message.lower():
         return None
-    rendered = fetch_with_rendering(url)
-    if rendered is not None:
-        return rendered
+    failures = render_failures if render_failures is not None else []
+    if render_failures is None:
+        rendered = fetch_with_rendering(url, failures)
+        if rendered is not None:
+            return rendered
     host = urlparse(url).netloc or "目标网页"
+    if is_feishu_docx_url(url):
+        description = "飞书公开文档的浏览器渲染服务暂时不可用，已保存链接；这不代表文档需要登录。"
+        diagnostics = short("；".join(failures) or "no renderer diagnostic was returned", 360)
+        markdown = "\n".join([
+            f"> {description}",
+            "",
+            f"- 原始链接：{url}",
+            "- 抓取状态：browser render unavailable",
+            f"- 渲染诊断：{diagnostics}",
+            "",
+            f"[打开原文]({url})",
+        ])
+        return FetchedPage(
+            url=url,
+            final_url=url,
+            title=f"飞书公开文档暂时无法渲染：{host}",
+            description=description,
+            markdown=markdown,
+            content_type="text/plain; status=render-unavailable",
+            source_status="render_unavailable",
+            source_message=description,
+        )
     title = f"需要登录或权限的网页：{host}"
     description = "目标网页反复跳转到登录/验证页，已保存链接，正文需要手动打开。"
     markdown = "\n".join([
@@ -593,8 +665,10 @@ def redirect_loop_fallback(url: str, exc: HTTPError) -> FetchedPage | None:
 
 def fetch_url(url: str) -> FetchedPage:
     url = valid_url(url)
+    render_failures: list[str] | None = None
     if is_feishu_docx_url(url):
-        rendered = fetch_with_rendering(url)
+        render_failures = []
+        rendered = fetch_with_rendering(url, render_failures)
         if rendered is not None:
             return rendered
     req = Request(url, headers=request_headers_for_url(url))
@@ -604,7 +678,7 @@ def fetch_url(url: str) -> FetchedPage:
             raw = resp.read(MAX_FETCH_BYTES + 1)
             final_url = resp.geturl()
     except HTTPError as exc:
-        fallback = redirect_loop_fallback(url, exc)
+        fallback = redirect_loop_fallback(url, exc, render_failures)
         if fallback is not None:
             return fallback
         raise RuntimeError(f"抓取失败：{exc}") from exc

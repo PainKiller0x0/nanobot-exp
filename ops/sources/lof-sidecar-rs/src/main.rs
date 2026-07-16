@@ -344,6 +344,26 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("bind failed");
+    if let Ok(internal_host) = std::env::var("LOF_SIDECAR_INTERNAL_HOST") {
+        let internal_host = internal_host.trim();
+        if !internal_host.is_empty() {
+            let internal_addr: SocketAddr = format!("{}:{}", internal_host, port)
+                .parse()
+                .expect("invalid LOF_SIDECAR_INTERNAL_HOST/LOF_SIDECAR_PORT");
+            if internal_addr != addr {
+                let internal_listener = tokio::net::TcpListener::bind(internal_addr)
+                    .await
+                    .expect("bind internal sidecar address failed");
+                let internal_app = app.clone();
+                println!("lof-sidecar-rs internal listener on http://{}", internal_addr);
+                tokio::spawn(async move {
+                    if let Err(error) = axum::serve(internal_listener, internal_app).await {
+                        eprintln!("lof-sidecar-rs internal listener failed: {}", error);
+                    }
+                });
+            }
+        }
+    }
     axum::serve(listener, app).await.expect("server failed");
 }
 

@@ -4,9 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/.nanobot/workspace/skills/qdii-monitor/lof-sidecar-rs
+WorkingDirectory=/root/nanobot-ops/sources/lof-sidecar-rs
 Environment=LOF_SIDECAR_PORT=8093
 Environment=LOF_SIDECAR_HOST=127.0.0.1
+Environment=LOF_SIDECAR_INTERNAL_HOST=172.17.0.1
 Environment=LOF_SIDECAR_TIMEOUT_SECS=240
 Environment=LOF_SCRIPT_DIR=/root/.nanobot/workspace/skills/qdii-monitor
 Environment=LOF_SIDECAR_STATE_FILE=/root/.nanobot/workspace/skills/qdii-monitor/lof-sidecar-rs/data/state.json
