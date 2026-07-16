@@ -315,6 +315,9 @@ async fn main() {
         .route("/reflexio", any(proxy_reflexio_root))
         .route("/reflexio/", any(proxy_reflexio_root))
         .route("/reflexio/*path", any(proxy_reflexio_path))
+        .route("/memory", any(proxy_memory_root))
+        .route("/memory/", any(proxy_memory_root))
+        .route("/memory/*path", any(proxy_memory_path))
         .route("/obp-login", get(obp_login_page))
         .route("/obp-auth/status", get(obp_auth_status))
         .route("/obp-auth/login", post(obp_auth_login))
@@ -1005,6 +1008,12 @@ proxy_pair!(
     proxy_reflexio_path,
     "http://127.0.0.1:8081",
     "/reflexio"
+);
+proxy_pair!(
+    proxy_memory_root,
+    proxy_memory_path,
+    "http://127.0.0.1:8105",
+    "/memory"
 );
 proxy_pair!(
     proxy_trends_root,

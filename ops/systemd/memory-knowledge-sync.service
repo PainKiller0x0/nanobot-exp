@@ -1,0 +1,10 @@
+[Unit]
+Description=Index Nanobot knowledge inbox metadata in Memory-RS
+After=memory-rs.service
+Requires=memory-rs.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /root/nanobot/ops/scripts/sync-memory-knowledge.py
+User=root
+UMask=0077

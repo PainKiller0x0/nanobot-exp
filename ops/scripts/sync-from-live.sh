@@ -6,7 +6,7 @@ install -m 0755 /usr/local/bin/sidecarctl "$repo/bin/sidecarctl"
 install -m 0755 /usr/local/sbin/rust-sidecar-maintain "$repo/sbin/rust-sidecar-maintain"
 if [ -f /usr/local/sbin/podman-port-forward-allow.sh ]; then install -m 0755 /usr/local/sbin/podman-port-forward-allow.sh "$repo/sbin/podman-port-forward-allow.sh"; fi
 install -m 0644 /root/.nanobot/sidecars.json "$repo/config/sidecars.json"
-for unit in podman-nanobot-cage.service podman-wechat-rss-sidecar.service podman-port-forward-allow.service lof-sidecar.service notify-sidecar-rs.service qq-sidecar-rs.service nanobot-reflexio-rs.service obp-rs.service; do
+for unit in podman-nanobot-cage.service podman-wechat-rss-sidecar.service podman-port-forward-allow.service lof-sidecar.service notify-sidecar-rs.service qq-sidecar-rs.service memory-rs.service obp-rs.service; do
   install -m 0644 "/etc/systemd/system/$unit" "$repo/systemd/$unit"
   if [ -d "/etc/systemd/system/$unit.d" ]; then
     mkdir -p "$repo/systemd/drop-ins/$unit.d"

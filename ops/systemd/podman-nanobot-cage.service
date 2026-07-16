@@ -33,14 +33,14 @@ ExecStart=/usr/bin/podman run \
   -p 127.0.0.1:8080:18790 \
   -e PYTHONMALLOC=malloc \
   -e TZ=Asia/Shanghai \
-  -e REFLEXIO_URL=http://172.17.0.1:8093/reflexio \
+  -e MEMORY_RS_URL=http://172.17.0.1:8105 \
   -e PYTHONPATH=/app \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e MALLOC_ARENA_MAX=2 \
   -e MALLOC_TRIM_THRESHOLD_=131072 \
   -e NANOBOT_CONFIG=/root/.nanobot/config.json \
   -e NANOBOT_CHANNEL_ALLOWLIST=qq,weixin \
-  -e NANOBOT_REFLEXIO_ENABLED=true \
+  -e MEMORY_RS_SCOPE=default-nanobot \
   -e NANOBOT_FAILOVER_SETTINGS_URL=http://172.17.0.1:8093/obp/admin/failover \
   -e NANOBOT_LLM_TIMEOUT_S=35 \
   -e NANOBOT_OBP_FALLBACK_BASE=http://172.17.0.1:8093/obp/v1 \

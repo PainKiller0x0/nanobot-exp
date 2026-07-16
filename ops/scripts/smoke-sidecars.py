@@ -26,7 +26,7 @@ def main() -> int:
         ("rss.cleaner", "http://127.0.0.1:8091/rss/cleaner"),
         ("notify.health", "http://127.0.0.1:8094/health"),
         ("trend.health", "http://127.0.0.1:8095/health"),
-        ("reflexio.health", "http://127.0.0.1:8081/health"),
+        ("memory.health", "http://127.0.0.1:8105/health"),
         ("obp.root", "http://127.0.0.1:8000/"),
         ("qq.health", "http://172.17.0.1:8092/health"),
     ]
@@ -98,7 +98,7 @@ def main() -> int:
     print("Nanobot sidecar smoke")
     failed = 0
     optional_failed = 0
-    optional = {"reflexio.health", "qq.health"}
+    optional = {"qq.health"}
     for item in results:
         marker = "OK" if item.ok else "FAIL"
         print(f"[{marker}] {item.name}: {item.detail}")

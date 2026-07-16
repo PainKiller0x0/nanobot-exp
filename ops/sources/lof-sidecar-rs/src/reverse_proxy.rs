@@ -150,6 +150,7 @@ fn inject_sidecar_shell(mut text: String, prefix: &str) -> String {
         "/obp" => "OBP 模型网关",
         "/trends" => "热点雷达",
         "/reflexio" => "Reflexio",
+        "/memory" => "Nanobot 记忆",
         _ => "Sidecar",
     };
     let script = format!(

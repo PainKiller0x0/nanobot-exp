@@ -21,6 +21,7 @@ Targets:
   notify     Build/install/restart Notify cron bridge
   qq         Build/install/restart QQ bridge
   reflexio   Build/install/restart Reflexio dashboard
+  memory     Build/install/restart Memory-RS service
   obp        Build/install/restart OBP bridge
   trend     Build/install/restart Trend Radar sidecar
   rss        Build/restart RSS container sidecar with Podman
@@ -74,6 +75,7 @@ rust_source() {
     notify) echo "$REPO/sources/notify-sidecar-rs|notify-sidecar-rs|notify-sidecar-rs.service|http://127.0.0.1:8094/health" ;;
     qq) echo "$REPO/sources/qq-sidecar-rs|qq-sidecar-rs|qq-sidecar-rs.service|http://172.17.0.1:8092/health" ;;
     reflexio) echo "$REPO/sources/nanobot-reflexio-rs|nanobot-reflexio-rs|nanobot-reflexio-rs.service|http://127.0.0.1:8081/health" ;;
+    memory) echo "$REPO/sources/memory-rs|memory-rs|memory-rs.service|http://127.0.0.1:8105/health" ;;
     obp) echo "$REPO/sources/obp-rs|obp-rs|obp-rs.service|http://127.0.0.1:8000/" ;;
     trend) echo "$REPO/sources/trend-sidecar-rs|trend-sidecar-rs|trend-sidecar-rs.service|http://127.0.0.1:8095/health" ;;
     *) return 1 ;;
@@ -173,7 +175,7 @@ EOF
 
 deploy_one() {
   case "$1" in
-    lof|notify|qq|reflexio|obp|trend) deploy_rust "$1" ;;
+    lof|notify|qq|reflexio|memory|obp|trend) deploy_rust "$1" ;;
     rss) deploy_rss ;;
     *) die "unknown target: $1" ;;
   esac
@@ -187,8 +189,8 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1 ;;
     --skip-sync-check) SKIP_SYNC_CHECK=1 ;;
     -h|--help) usage; exit 0 ;;
-    all) TARGETS=(lof notify qq reflexio obp trend rss) ;;
-    lof|notify|qq|reflexio|obp|trend|rss) TARGETS+=("$1") ;;
+    all) TARGETS=(lof notify qq memory obp trend rss) ;;
+    lof|notify|qq|reflexio|memory|obp|trend|rss) TARGETS+=("$1") ;;
     *) die "unknown argument: $1" ;;
   esac
   shift

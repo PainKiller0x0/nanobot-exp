@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Memory-RS knowledge metadata index
+
+[Timer]
+OnBootSec=3m
+OnUnitActiveSec=15m
+Persistent=true
+Unit=memory-knowledge-sync.service
+
+[Install]
+WantedBy=timers.target

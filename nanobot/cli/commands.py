@@ -842,6 +842,7 @@ def _run_gateway(
     from nanobot.session.manager import SessionManager
     from nanobot.session.webui_turns import WebuiTurnCoordinator
     from nanobot.webui.token_usage import TokenUsageHook
+    from nanobot.exp.agent.memory_bridge import build_memory_hook
 
     port = port if port is not None else config.gateway.port
 
@@ -876,7 +877,7 @@ def _run_gateway(
         provider_snapshot_loader=load_provider_snapshot,
         runtime_events=runtime_events,
         provider_signature=provider_snapshot.signature,
-        hooks=[TokenUsageHook(timezone_name=config.agents.defaults.timezone)],
+        hooks=[TokenUsageHook(timezone_name=config.agents.defaults.timezone), build_memory_hook()],
     )
     WebuiTurnCoordinator(
         bus=bus,

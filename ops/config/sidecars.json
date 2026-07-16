@@ -78,17 +78,17 @@
     "restart_command": "systemctl restart trend-sidecar-rs.service"
   },
   {
-    "id": "reflexio",
-    "name": "Reflexio 记忆看板",
-    "description": "记忆与反思看板服务，经 8093/reflexio 统一对外访问。",
-    "port": 8081,
-    "unit": "nanobot-reflexio-rs.service",
-    "homepage_url": "/reflexio/",
-    "check_url": "http://127.0.0.1:8081/health",
+    "id": "memory",
+    "name": "Memory-RS 记忆中枢",
+    "description": "受控热记忆、可审核候选与本地检索，经 8093/memory 统一访问。",
+    "port": 8105,
+    "unit": "memory-rs.service",
+    "homepage_url": "/memory/",
+    "check_url": "http://127.0.0.1:8105/health",
     "check_kind": "http",
     "public": false,
-    "logs_command": "journalctl -u nanobot-reflexio-rs.service -f",
-    "restart_command": "systemctl restart nanobot-reflexio-rs.service"
+    "logs_command": "journalctl -u memory-rs.service -f",
+    "restart_command": "systemctl restart memory-rs.service"
   },
   {
     "id": "obp",

@@ -359,13 +359,13 @@
     "notes": "与 nanobot QQ channel 配合，生产消息出口要有独立观测。"
   },
   {
-    "id": "reflexio-memory",
-    "name": "Reflexio 记忆看板",
-    "description": "本地记忆看板：手动保存偏好/项目事实，支持本地 SQLite 快速检索。",
+    "id": "memory-rs",
+    "name": "Memory-RS 记忆中枢",
+    "description": "本地受控记忆：明确记住立即生效，普通对话候选进入审核箱，按需检索历史与知识摘要。",
     "category": "记忆",
     "kind": "sidecar",
-    "service_id": "reflexio",
-    "entry_url": "/reflexio/",
+    "service_id": "memory",
+    "entry_url": "/memory/",
     "enabled": true,
     "trigger_phrases": [
       "记忆状态",
@@ -375,12 +375,12 @@
     ],
     "commands": [
       {
-        "label": "Reflexio 日志",
-        "command": "journalctl -u nanobot-reflexio-rs.service -f"
+        "label": "Memory-RS 日志",
+        "command": "journalctl -u memory-rs.service -f"
       }
     ],
     "data_paths": [
-      "/root/.nanobot/data/reflexio"
+      "/root/.nanobot/data/memory-rs"
     ],
     "tags": [
       "memory",
@@ -392,7 +392,7 @@
       "memory.local_search",
       "memory.summary"
     ],
-    "notes": "先做本地优先的显式记忆：只有用户说“记住”才写入，默认不自动外传聊天内容。"
+    "notes": "检索内容以不可信参考资料形式注入当前用户消息；网页、工具输出与文章正文不会自动写入人格记忆。"
   },
   {
     "id": "weather-expert",

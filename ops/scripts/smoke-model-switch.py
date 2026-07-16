@@ -86,9 +86,9 @@ def main() -> int:
     status, headers, mcp, dt = post("http://127.0.0.1:8095/api/mcp/call", {"name": "get_system_status", "arguments": {}}, timeout=20)
     add(results, "trend.mcp_call", status == 200 and isinstance(mcp, dict), f"http={status} {dt:.2f}s {short(mcp)}")
 
-    # Reflexio
-    status, headers, reflex, dt = get("http://127.0.0.1:8081/api/stats")
-    add(results, "reflexio.stats", status == 200 and isinstance(reflex, dict), f"http={status} {short(reflex)}")
+    # Memory-RS
+    status, headers, memory, dt = get("http://127.0.0.1:8105/api/stats")
+    add(results, "memory.stats", status == 200 and isinstance(memory, dict), f"http={status} {short(memory)}")
 
     # QQ sidecar health
     status, headers, qq, dt = get("http://172.17.0.1:8092/health")

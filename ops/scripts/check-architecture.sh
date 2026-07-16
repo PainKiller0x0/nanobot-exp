@@ -125,6 +125,7 @@ required_sources = {
     "notify-sidecar-rs": "Cargo.toml",
     "qq-sidecar-rs": "Cargo.toml",
     "nanobot-reflexio-rs": "Cargo.toml",
+    "memory-rs": "Cargo.toml",
     "obp-rs": "Cargo.toml",
     "trend-sidecar-rs": "Cargo.toml",
     "wechat-rss-rs": "Cargo.toml",
