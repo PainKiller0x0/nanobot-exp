@@ -186,6 +186,7 @@ async def test_send_media_then_text() -> None:
 async def test_send_delta_generated_image_markdown_as_media_not_link() -> None:
     channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["*"]), MessageBus())
     channel._client = _FakeClient()
+    channel._generated_image_delivery_allowed["user1"] = True
     url = "http://150.158.121.88:8093/gemini-images/images/generated_x.png?token=abc"
 
     with (
@@ -208,6 +209,7 @@ async def test_send_delta_generated_image_markdown_as_media_not_link() -> None:
 async def test_generated_image_media_is_deduped_between_delta_and_final_send() -> None:
     channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["*"]), MessageBus())
     channel._client = _FakeClient()
+    channel._generated_image_delivery_allowed["user1"] = True
     url = "http://150.158.121.88:8093/gemini-images/images/generated_x.png?token=abc"
     content = f"Image generated.\n\n![generated_x.png]({url})\n\n[Open image]({url})"
 
@@ -222,6 +224,7 @@ async def test_generated_image_media_is_deduped_between_delta_and_final_send() -
 async def test_send_generated_image_markdown_as_media_not_link() -> None:
     channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["*"]), MessageBus())
     channel._client = _FakeClient()
+    channel._generated_image_delivery_allowed["user1"] = True
     url = "http://150.158.121.88:8093/gemini-images/images/generated_x.png?token=abc"
 
     with (
@@ -241,6 +244,27 @@ async def test_send_generated_image_markdown_as_media_not_link() -> None:
     assert media.await_args.kwargs["media_ref"] == url
     text_send.assert_awaited_once()
     assert text_send.await_args.kwargs["content"] == "\u56fe\u7247\u751f\u6210\u597d\u4e86\u3002"
+
+
+@pytest.mark.asyncio
+async def test_plain_turn_suppresses_generated_image_link() -> None:
+    channel = QQChannel(QQConfig(app_id="app", secret="secret", allow_from=["*"]), MessageBus())
+    channel._client = _FakeClient()
+    url = "http://150.158.121.88:8093/gemini-images/images/generated_x.png?token=abc"
+
+    with (
+        patch.object(channel, "_send_media", new_callable=AsyncMock, return_value=True) as media,
+        patch.object(qq.qq_stream_runtime, "send_delta", new_callable=AsyncMock) as stream_send,
+    ):
+        await channel.send_delta(
+            "user1",
+            f"\u666e\u901a\u804a\u5929\u3002\n\n![generated_x.png]({url})\n\n[Open image]({url})",
+            metadata={"message_id": "m1"},
+        )
+
+    media.assert_not_awaited()
+    stream_send.assert_awaited_once()
+    assert stream_send.await_args.kwargs["delta"] == "\u666e\u901a\u804a\u5929\u3002"
 
 
 @pytest.mark.asyncio

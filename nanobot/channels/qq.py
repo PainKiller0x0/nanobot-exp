@@ -147,6 +147,27 @@ _GEMINI_IMAGE_LINK_RE = re.compile(
 )
 
 
+_IMAGE_REQUEST_NEGATIVE_MARKERS = (
+    "do not generate image", "don't generate image", "not generate image", "just describe",
+    "\u753b\u56fe\u5d29", "\u751f\u56fe\u5931\u8d25", "\u751f\u6210\u56fe\u7247\u5931\u8d25",
+    "\u5e2e\u6211\u770b\u4e0b\u65e5\u5fd7", "\u770b\u4e0b\u65e5\u5fd7", "\u62a5\u9519",
+)
+_IMAGE_REQUEST_MARKERS = (
+    "generate an image", "create an image", "draw an image", "make an image",
+    "generate a picture", "create a picture", "draw a picture",
+    "\u7ed9\u6211\u753b", "\u5e2e\u6211\u753b", "\u753b\u4e00\u5f20", "\u753b\u5f20",
+    "\u751f\u6210\u4e00\u5f20\u56fe", "\u751f\u6210\u56fe\u7247", "\u521b\u5efa\u56fe\u7247", "\u51fa\u4e00\u5f20\u56fe",
+)
+
+
+def _has_explicit_image_generation_request(text: str) -> bool:
+    """Allow automatic Gemini image delivery only for an explicit image request."""
+    lowered = (text or "").strip().lower()
+    if not lowered or any(marker in lowered for marker in _IMAGE_REQUEST_NEGATIVE_MARKERS):
+        return False
+    return any(marker in lowered for marker in _IMAGE_REQUEST_MARKERS)
+
+
 def _is_gemini_image_url(url: str) -> bool:
     try:
         parsed = urlparse(url.strip().strip("<>"))
@@ -316,6 +337,8 @@ class QQChannel(BaseChannel):
         self._chat_type_cache: dict[str, str] = {}
         self._stream_states: dict[str, dict[str, Any]] = {}
         self._sent_generated_image_urls: deque[str] = deque(maxlen=100)
+        # Set only while the current inbound turn explicitly asks for an image.
+        self._generated_image_delivery_allowed: dict[str, bool] = {}
         self._tts_enabled: dict[str, bool] = {}
         self._tts_accumulated: dict[str, str] = {}
 
@@ -488,8 +511,12 @@ class QQChannel(BaseChannel):
         logger.info("🔍 SEND called content_len={} chat_id={} tts_enabled={}",
                      len(content), msg.chat_id, self._tts_enabled.get(msg.chat_id, True))
         auto_media: list[str] = []
+        allow_generated_images = self._generated_image_delivery_allowed.get(msg.chat_id, False)
         if content.strip():
-            content, auto_media = _extract_generated_image_media(content)
+            content, detected_media = _extract_generated_image_media(content)
+            if detected_media and not allow_generated_images:
+                logger.warning("QQ generated image suppressed for non-image turn chat_id={} urls={}", msg.chat_id, len(detected_media))
+            auto_media = detected_media if allow_generated_images else []
         auto_media = [url for url in auto_media if url not in self._sent_generated_image_urls]
         media_refs = [*(msg.media or []), *auto_media]
 
@@ -649,6 +676,8 @@ class QQChannel(BaseChannel):
                 except Exception as e:
                     logger.warning("QQ TTS send failed chat_id={} err={}", msg.chat_id, e)
         finally:
+            # Never let an explicit image request authorize a later chat turn.
+            self._generated_image_delivery_allowed.pop(msg.chat_id, None)
             finished_at = time.perf_counter()
             turn_done_ms = _elapsed_perf_ms(msg.metadata.get("_turn_started_perf"), finished_at)
             logger.info(
@@ -820,7 +849,11 @@ class QQChannel(BaseChannel):
         delta: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        content, auto_media = _extract_generated_image_media(delta or "")
+        allow_generated_images = self._generated_image_delivery_allowed.get(chat_id, False)
+        content, detected_media = _extract_generated_image_media(delta or "")
+        if detected_media and not allow_generated_images:
+            logger.warning("QQ streamed generated image suppressed for non-image turn chat_id={} urls={}", chat_id, len(detected_media))
+        auto_media = detected_media if allow_generated_images else []
         if auto_media:
             auto_media = [url for url in auto_media if url not in self._sent_generated_image_urls]
             if not auto_media:
@@ -856,6 +889,12 @@ class QQChannel(BaseChannel):
                     content=content,
                 )
             return
+
+        if detected_media:
+            # The image markdown/link was removed above; keep only safe text.
+            if not content.strip():
+                return
+            delta = content
 
         await qq_stream_runtime.send_delta(
             config=self.config,
@@ -1308,6 +1347,7 @@ class QQChannel(BaseChannel):
                 logger.warning("QQ ack send failed message_id={} err={}", data.id, e)
 
         content = (getattr(data, "content", "") or "").strip()
+        self._generated_image_delivery_allowed[chat_id] = _has_explicit_image_generation_request(content)
 
         # Handle voice-mode settings locally. They must never enter the LLM/tool path.
         if any(phrase in content for phrase in ("用语音回复", "语音回复我", "打开语音回复", "开启语音回复")):
