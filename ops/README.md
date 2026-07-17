@@ -1,64 +1,47 @@
-# nanobot-ops
+# nanobot-ops — 线上部署清单
 
-This is the lightweight operations snapshot for the live Nanobot server.
+本文档记录线上服务器 150.158.121.88 中哪些是**生产必需文件**。
 
-It tracks only service wiring and helper scripts. Secrets and runtime data stay outside this repo.
+## 生产服务一览（共 13 个）
 
-Architecture notes live in [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
+| 端口 | 服务 | 类型 | 源码位置 |
+|-----|------|------|---------|
+| 8080 | nanobot-cage | Podman 容器 | `nanobot/` |
+| 8091 | wechat-rss-sidecar | Podman 容器 | `ops/sources/wechat-rss-rs/` |
+| 8093 | lof-sidecar | Rust 二进制 | `ops/sources/lof-sidecar-rs/` |
+| 8096 | session-mgr-rs | Rust 二进制 | `ops/sources/session-mgr-rs/` |
+| 8098 | dsa-webui | Python FastAPI | `/root/daily_stock_analysis/`（独立项目）|
+| 8000 | obp-rs | Rust 二进制 | `ops/sources/obp-rs/` |
+| — | memory-rs | Rust 二进制 | `ops/sources/memory-rs/` |
+| — | notify-sidecar-rs | Rust 二进制 | `ops/sources/notify-sidecar-rs/` |
+| — | trend-sidecar-rs | Rust 二进制 | `ops/sources/trend-sidecar-rs/` |
+| — | qq-sidecar-rs | Rust 二进制 | `ops/sources/qq-sidecar-rs/` |
+| — | gemini-fastapi-tunnel | SSH 隧道 | `/root/Gemini-FastAPI/`（独立项目）|
+| 443 | caddy | 反向代理 | `/etc/caddy/Caddyfile` |
 
-## Useful commands
+## 磁盘分布（/dev/vda1 共 50G）
 
-```bash
-sidecarctl status
-sidecarctl url rss
-sidecarctl logs lof
-sidecarctl restart notify
-systemctl status nanobot-llm-warmup.service
+| 路径 | 大小 | 说明 |
+|-----|------|------|
+| `/root/nanobot/` | 3.1GB | 完整 Git 仓库 |
+| `ops/sources/*/target/` | ~2.4GB | Rust 编译缓存 — **线上必需，保留** |
+| `.venv/` | 230MB | Python venv |
+| `.git/` | 158MB | Git 历史 |
+| `/root/.nanobot/` | 637MB | 运行时数据 + session 日志 |
+| Podman 镜像 | 3.72GB | 3 个 nanobot 镜像 |
+
+## 重要对照
+
+```
+版本控制的源码          → 线上运行的文件
+─────────────────────────────────────────
+nanobot/channels/qq.py  → 容器 /app/nanobot/channels/qq.py（volume mount）
+/root/.nanobot/overrides/qq.py  → 容器启动时覆盖上述文件
+ops/config/*            → sidecar 配置（复制到 /root/.nanobot 或对应路径）
+ops/systemd/*           → /etc/systemd/system/ 中对应的 .service
+ops/bin/*               → 部署辅助脚本
 ```
 
-```bash
-/usr/local/sbin/rust-sidecar-maintain status
-/usr/local/sbin/rust-sidecar-maintain build-install
-/usr/local/sbin/rust-sidecar-maintain clean-targets
-```
+## 本地 vs 线上
 
-## Layout
-
-- `config/sidecars.json`: Sidecar registry consumed by the manager page.
-- `config/notify-sidecar-rs/config.example.json`: sanitized notify bridge example; keep the real `config.json` on the server only.
-- `bin/sidecarctl`: CLI for checking URLs, status, logs, and restarts.
-- `sbin/rust-sidecar-maintain`: Build/install/cache cleanup helper for Rust sidecars.
-- `systemd/`: systemd units for Nanobot, Podman, sidecars, and the post-start LLM warmup oneshot.
-- `scripts/sync-from-live.sh`: refresh this repo from the current server state.
-- `scripts/install-to-live.sh`: install the tracked files back to the server.
-
-## Web
-
-- Sidecar manager: http://150.158.121.88:8093/sidecars
-- LOF board: http://150.158.121.88:8093/
-
-
-## Source snapshots
-
-Rust sidecar source snapshots live under `sources/`.
-They intentionally exclude `.env`, databases, logs, `target/`, and runtime data.
-
-Refresh scripts and source snapshots from the live server:
-
-```bash
-/root/nanobot-ops/scripts/sync-from-live.sh
-```
-
-
-## Stack target
-
-The live server has a systemd group target:
-
-```bash
-systemctl status nanobot-stack.target
-sidecarctl stack
-sidecarctl doctor
-sidecarctl restart all --dry-run
-```
-
-Services have lightweight `PartOf=nanobot-stack.target` drop-ins so the stack can be started and grouped consistently without adding memory overhead.
+本地 `D:\files\nanobot_test\` 下的 `archive/`、`smoke/`、`patches/`、`fixes/`、`inspect/`、`tools/`、`rust-src/` 目录以及各种测试脚本（`test_*.py`、`fix_*.py` 等）均为**开发调试产物**，不在线上，不进入 Git main 分支。
