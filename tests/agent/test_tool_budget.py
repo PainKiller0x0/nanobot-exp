@@ -1,12 +1,25 @@
 from nanobot.exp.agent.tool_budget import tool_definitions_for_turn
 
 TOOLS = [{"type": "function", "function": {"name": "exec", "parameters": {}}}]
+TOOLS_WITH_IMAGE = TOOLS + [
+    {"type": "function", "function": {"name": "generate_image", "parameters": {}}}
+]
 
 
 def test_short_standalone_chat_omits_tools() -> None:
     tools, reason = tool_definitions_for_turn(
         TOOLS,
         [{"role": "user", "content": "天气好热，咋办"}],
+    )
+
+    assert tools is None
+    assert reason == "short standalone turn"
+
+
+def test_life_update_with_status_word_omits_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS_WITH_IMAGE,
+        [{"role": "user", "content": "\u6905\u5b50\u8fd9\u4e00\u7247\u5df2\u7ecf\u53ef\u4ee5\u524d\u540e\u5de6\u53f3\u6643\u52a8\u7684\u72b6\u6001\u4e86"}],
     )
 
     assert tools is None
@@ -21,6 +34,26 @@ def test_explicit_tool_marker_keeps_tools() -> None:
 
     assert tools == TOOLS
     assert reason == "tool marker"
+
+
+def test_non_explicit_task_turn_hides_image_generation_tool() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS_WITH_IMAGE,
+        [{"role": "user", "content": "\u5e2e\u6211\u67e5\u4e00\u4e0b\u4eca\u5929\u6709\u4ec0\u4e48\u65b0\u95fb"}],
+    )
+
+    assert tools == TOOLS
+    assert reason == "tool marker"
+
+
+def test_explicit_image_request_keeps_image_generation_tool() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS_WITH_IMAGE,
+        [{"role": "user", "content": "\u7ed9\u6211\u753b\u4e00\u5f20\u591c\u665a\u7684\u57ce\u5e02"}],
+    )
+
+    assert tools == TOOLS_WITH_IMAGE
+    assert reason == "short standalone turn"
 
 
 def test_contextual_turn_keeps_tools() -> None:
@@ -162,3 +195,16 @@ def test_open_voice_reply_does_not_advertise_tools() -> None:
 
     assert tools is None
     assert reason == "short standalone turn"
+
+def test_active_tool_context_hides_image_tool_without_explicit_request() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS_WITH_IMAGE,
+        [
+            {"role": "user", "content": "continue current task"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "content": "result", "tool_call_id": "1"},
+        ],
+    )
+
+    assert tools == TOOLS
+    assert reason == "active tool context"

@@ -59,6 +59,64 @@ _TOOL_MARKERS = (
 
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 
+_IMAGE_TOOL_NAMES = frozenset({"generate_image"})
+_IMAGE_REQUEST_NEGATIVE_MARKERS = (
+    "do not generate image",
+    "don't generate image",
+    "not generate image",
+    "just describe",
+    "\u753b\u56fe\u5d29",
+    "\u751f\u56fe\u5931\u8d25",
+    "\u751f\u6210\u56fe\u7247\u5931\u8d25",
+    "\u5e2e\u6211\u770b\u4e0b\u65e5\u5fd7",
+    "\u770b\u4e0b\u65e5\u5fd7",
+    "\u62a5\u9519",
+)
+_IMAGE_REQUEST_MARKERS = (
+    "generate an image",
+    "create an image",
+    "draw an image",
+    "make an image",
+    "generate a picture",
+    "create a picture",
+    "draw a picture",
+    "\u7ed9\u6211\u753b",
+    "\u5e2e\u6211\u753b",
+    "\u753b\u4e00\u5f20",
+    "\u753b\u5f20",
+    "\u751f\u6210\u4e00\u5f20\u56fe",
+    "\u751f\u6210\u56fe\u7247",
+    "\u521b\u5efa\u56fe\u7247",
+    "\u51fa\u4e00\u5f20\u56fe",
+)
+
+
+def _explicit_image_generation_request(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    if not lowered or any(marker in lowered for marker in _IMAGE_REQUEST_NEGATIVE_MARKERS):
+        return False
+    return any(marker in lowered for marker in _IMAGE_REQUEST_MARKERS)
+
+
+def _tool_name(definition: dict[str, Any]) -> str:
+    function = definition.get("function")
+    if isinstance(function, dict):
+        return str(function.get("name") or "").strip().lower()
+    return str(definition.get("name") or "").strip().lower()
+
+
+def _hide_non_explicit_image_tools(
+    tool_definitions: list[dict[str, Any]], text: str
+) -> list[dict[str, Any]]:
+    if _explicit_image_generation_request(text):
+        return tool_definitions
+    return [
+        definition
+        for definition in tool_definitions
+        if _tool_name(definition) not in _IMAGE_TOOL_NAMES
+    ]
+
+
 # A vague word such as "look" is common in normal conversation. Advertising
 # every tool for it turns a chat reply into a full workbench request. Require a
 # clear instruction plus an operational verb, or a direct status question.
@@ -162,19 +220,18 @@ def tool_definitions_for_turn(
         return [], "no tools registered"
     if not adaptive_tools_enabled():
         return tool_definitions, "adaptive tool ads disabled"
-    if _has_active_tool_context(messages):
-        return tool_definitions, "active tool context"
-
     text = current_user_text if current_user_text is not None else _latest_user_text(messages)
+    if _has_active_tool_context(messages):
+        return _hide_non_explicit_image_tools(tool_definitions, text), "active tool context"
     if _has_attachment(text):
-        return tool_definitions, "attachment turn"
+        return _hide_non_explicit_image_tools(tool_definitions, text), "attachment turn"
     if _has_tool_marker(text):
-        return tool_definitions, "tool marker"
+        return _hide_non_explicit_image_tools(tool_definitions, text), "tool marker"
 
     _, reason = replay_budget_for_message(text, default_budget=16000, light_budget=4500)
-    if should_omit_tool_ads(reason):
+    if should_omit_tool_ads(reason) and not _explicit_image_generation_request(text):
         return None, reason
-    return tool_definitions, reason
+    return _hide_non_explicit_image_tools(tool_definitions, text), reason
 
 
 def latest_user_text_for_observability(messages: list[dict[str, Any]]) -> str:
