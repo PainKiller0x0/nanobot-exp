@@ -170,6 +170,8 @@ async def send_delta(
         return
     stream_key = str(metadata.get("_stream_id") or chat_id)
     is_end = bool(metadata.get("_stream_end"))
+    resuming = bool(metadata.get("_resuming"))
+    merge_next = bool(metadata.get("_merge_next"))
     msg_id = metadata.get("message_id") or metadata.get("msg_id")
     msg_id = str(msg_id) if msg_id else None
     is_group = chat_type_cache.get(str(chat_id)) == "group"
@@ -215,6 +217,14 @@ async def send_delta(
         return
 
     try:
+        # The upstream manager uses resumable stream-end events as segment
+        # boundaries. Keep the accumulated QQ state only when the next segment
+        # will merge into the same logical reply.
+        if is_end and resuming:
+            if not merge_next:
+                stream_states.pop(stream_key, None)
+            return
+
         if not is_end:
             if state.get("disabled"):
                 return

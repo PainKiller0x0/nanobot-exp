@@ -686,3 +686,81 @@ async def test_open_voice_reply_reports_missing_service_key_locally(monkeypatch)
     assert channel._tts_enabled["user1"] is False
     channel._handle_message.assert_not_awaited()
     assert "暂不可用" in channel._send_text_only.await_args.kwargs["content"]
+
+
+
+@pytest.mark.asyncio
+async def test_send_delta_accepts_upstream_stream_contract() -> None:
+    channel = QQChannel(
+        QQConfig(
+            app_id="app",
+            secret="secret",
+            allow_from=["*"],
+            msg_format="markdown",
+            stream_enabled=True,
+            stream_min_chars=1,
+            stream_first_flush_chars=1,
+            stream_defer_first_frame_until_end=False,
+            stream_delta_flush_chars=20,
+            stream_delta_flush_interval_sec=0,
+        ),
+        MessageBus(),
+    )
+    channel._client = _FakeClient()
+    metadata = {"message_id": "msg-upstream"}
+
+    await channel.send_delta("user123", "hello.", metadata, stream_id="upstream-s")
+    await channel.send_delta(
+        "user123",
+        "",
+        metadata,
+        stream_id="upstream-s",
+        stream_end=True,
+    )
+
+    assert "upstream-s" not in channel._stream_states
+    assert channel._client.api._http.calls
+
+
+@pytest.mark.asyncio
+async def test_send_delta_resuming_merge_next_keeps_stream_state() -> None:
+    channel = QQChannel(
+        QQConfig(
+            app_id="app",
+            secret="secret",
+            allow_from=["*"],
+            msg_format="markdown",
+            stream_enabled=True,
+            stream_min_chars=1,
+            stream_first_flush_chars=1,
+            stream_defer_first_frame_until_end=False,
+            stream_delta_flush_chars=20,
+            stream_delta_flush_interval_sec=0,
+        ),
+        MessageBus(),
+    )
+    channel._client = _FakeClient()
+    metadata = {"message_id": "msg-resume"}
+
+    await channel.send_delta("user123", "first", metadata, stream_id="resume-s")
+    await channel.send_delta(
+        "user123",
+        " boundary",
+        metadata,
+        stream_id="resume-s",
+        stream_end=True,
+        resuming=True,
+        merge_next=True,
+    )
+    assert "resume-s" in channel._stream_states
+
+    await channel.send_delta("user123", " second", metadata, stream_id="resume-s")
+    await channel.send_delta(
+        "user123",
+        "",
+        metadata,
+        stream_id="resume-s",
+        stream_end=True,
+    )
+
+    assert "resume-s" not in channel._stream_states

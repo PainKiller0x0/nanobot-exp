@@ -889,7 +889,24 @@ class QQChannel(BaseChannel):
         chat_id: str,
         delta: str,
         metadata: dict[str, Any] | None = None,
+        *,
+        stream_id: str | None = None,
+        stream_end: bool = False,
+        resuming: bool = False,
+        merge_next: bool = False,
     ) -> None:
+        # Translate the upstream channel contract into the existing QQ state
+        # machine without mutating the manager-owned metadata dictionary.
+        metadata = dict(metadata or {})
+        if stream_id is not None:
+            metadata['_stream_id'] = stream_id
+        if stream_end:
+            metadata['_stream_end'] = True
+        if resuming:
+            metadata['_resuming'] = True
+        if merge_next:
+            metadata['_merge_next'] = True
+
         allow_generated_images = self._generated_image_delivery_allowed.get(chat_id, False)
         content, detected_media = _extract_generated_image_media(delta or "")
         if detected_media and not allow_generated_images:
