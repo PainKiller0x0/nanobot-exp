@@ -29,11 +29,9 @@ _GOAL_CONTINUATION_SENDER = "system:continuation"
 _GOAL_CONTINUATION_ROUNDS_KEY = "_sustained_goal_continuation_rounds"
 _MAX_GOAL_CONTINUATION_ROUNDS = 12
 _STRIPPED_INBOUND_META_KEYS = {
-    "_stream_id",
-    "_stream_delta",
-    "_stream_end",
-    "_resuming",
     INTERNAL_CONTINUATION_PENDING_META,
+    "goal_requested",
+    "original_command",
 }
 
 
@@ -150,7 +148,7 @@ def prepare_save_boundary(ctx: Any) -> None:
         message_metadata=ctx.msg.metadata,
         initial_message_count=len(ctx.initial_messages),
         history_count=len(ctx.history),
-        user_persisted_early=ctx.user_persisted_early,
+        input_persisted_early=ctx.input_persisted_early,
     )
 
 
@@ -172,7 +170,12 @@ def _continuation_available(
 def clear_internal_continuation_state(metadata: MutableMapping[str, Any]) -> None:
     """Reset policy bookkeeping once its owning runtime mode is inactive."""
     if not sustained_goal_active(metadata):
-        metadata.pop(_GOAL_CONTINUATION_ROUNDS_KEY, None)
+        reset_goal_continuation_rounds(metadata)
+
+
+def reset_goal_continuation_rounds(metadata: MutableMapping[str, Any]) -> None:
+    """Start a newly created or replaced goal with a fresh continuation budget."""
+    metadata.pop(_GOAL_CONTINUATION_ROUNDS_KEY, None)
 
 
 def _save_skip_for_turn(
@@ -180,7 +183,7 @@ def _save_skip_for_turn(
     message_metadata: Mapping[str, Any] | None,
     initial_message_count: int,
     history_count: int,
-    user_persisted_early: bool,
+    input_persisted_early: bool,
 ) -> int:
     """Return the persisted-message append boundary for this turn."""
     if message_metadata and message_metadata.get(SKIP_USER_PERSIST_META) is True:
@@ -190,7 +193,7 @@ def _save_skip_for_turn(
     # build_messages may merge the current message into a same-role history tail.
     # Runner-appended messages start at initial_message_count in either shape.
     has_standalone_current = initial_message_count > 1 + history_count
-    if has_standalone_current and not user_persisted_early:
+    if has_standalone_current and not input_persisted_early:
         return initial_message_count - 1
     return initial_message_count
 
@@ -244,14 +247,14 @@ def _goal_continuation_prompt(metadata: Mapping[str, Any] | None) -> str:
             "its tool-call budget.\n\n"
             f"{goal}\n\n"
             "Continue from the saved context. Do not mention the continuation "
-            "boundary to the user. Use tools as needed, and call complete_goal "
-            "when the objective is truly finished."
+            "boundary to the user. Use tools as needed, and call update_goal "
+            "with action='complete' when the objective is truly finished."
         )
     return (
         "Continue the active sustained goal after the previous turn reached "
         "its tool-call budget. Continue from the saved context. Do not mention "
         "the continuation boundary to the user. Use tools as needed, and call "
-        "complete_goal when the objective is truly finished."
+        "update_goal with action='complete' when the objective is truly finished."
     )
 
 
