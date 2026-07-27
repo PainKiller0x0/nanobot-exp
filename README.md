@@ -1,282 +1,349 @@
-# nanobot-exp
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./images/readme-cover-dark.svg">
+  <img alt="nanobot README cover" src="./images/readme-cover-light.svg">
+</picture>
 
-`nanobot-exp` is a personal production fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot).
+<div align="center">
+  <p>
+    <a href="https://nanobot.wiki/docs/latest/getting-started/nanobot-overview">English</a> |
+    <a href="https://nanobot.wiki/cn/docs/latest/getting-started/nanobot-overview">简体中文</a> |
+    <a href="https://nanobot.wiki/zh-Hant/docs/latest/getting-started/nanobot-overview">繁體中文</a> |
+    <a href="https://nanobot.wiki/es/docs/latest/getting-started/nanobot-overview">Español</a> |
+    <a href="https://nanobot.wiki/fr/docs/latest/getting-started/nanobot-overview">Français</a> |
+    <a href="https://nanobot.wiki/id/docs/latest/getting-started/nanobot-overview">Bahasa Indonesia</a> |
+    <a href="https://nanobot.wiki/ja/docs/latest/getting-started/nanobot-overview">日本語</a> |
+    <a href="https://nanobot.wiki/ko/docs/latest/getting-started/nanobot-overview">한국어</a> |
+    <a href="https://nanobot.wiki/ru/docs/latest/getting-started/nanobot-overview">Русский</a> |
+    <a href="https://nanobot.wiki/vi/docs/latest/getting-started/nanobot-overview">Tiếng Việt</a>
+  </p>
+  <p>
+    <a href="https://pypi.org/project/nanobot-ai/"><img src="https://img.shields.io/pypi/v/nanobot-ai" alt="PyPI"></a>
+    <a href="https://pepy.tech/project/nanobot-ai"><img src="https://static.pepy.tech/badge/nanobot-ai" alt="Downloads"></a>
+    <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
+    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+    <a href="https://github.com/HKUDS/nanobot/graphs/commit-activity" target="_blank">
+        <img alt="Commits last month" src="https://img.shields.io/github/commit-activity/m/HKUDS/nanobot?labelColor=%20%2332b583&color=%20%2312b76a"></a>
+    <a href="https://github.com/HKUDS/nanobot/issues?q=is%3Aissue%20is%3Aclosed" target="_blank">
+        <img alt="Issues closed" src="https://img.shields.io/github/issues-search?query=repo%3AHKUDS%2Fnanobot%20is%3Aissue%20is%3Aclosed&label=issues%20closed&labelColor=%20%237d89b0&color=%20%235d6b98"></a>
+    <a href="https://twitter.com/intent/follow?screen_name=nanobot_project" target="_blank">
+        <img src="https://img.shields.io/twitter/follow/nanobot_project?logo=X&color=%20%23f5f5f5" alt="follow on X(Twitter)"></a>
+    <a href="https://nanobot.wiki/docs/latest/getting-started/nanobot-overview"><img src="https://img.shields.io/badge/Docs-nanobot.wiki-blue?style=flat&logo=readthedocs&logoColor=white" alt="Docs"></a>
+    <a href="./COMMUNICATION.md"><img src="https://img.shields.io/badge/Feishu-Group-E9DBFC?style=flat&logo=feishu&logoColor=white" alt="Feishu"></a>
+    <a href="./COMMUNICATION.md"><img src="https://img.shields.io/badge/WeChat-Group-C5EAB4?style=flat&logo=wechat&logoColor=white" alt="WeChat"></a>
+    <a href="https://discord.gg/MnCvHqpUGB"><img src="https://img.shields.io/badge/Discord-Community-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
+  </p>
+</div>
 
-This repository keeps the Nanobot core close to upstream while adding the production glue I actually use every day: QQ/WeChat channels, sidecars, model routing, content workflows, operations guardrails, and dashboards.
+🐈 **nanobot** is an open-source, ultra-lightweight personal AI agent you can truly own. It keeps the agent core small and readable while giving you the practical pieces for real long-running work: WebUI, chat channels, tools, memory, MCP, model routing, automation, and deployment.
 
-> Current baseline: Nanobot `0.2.2` plus the `ops/` sidecar layer. Runtime secrets, databases, logs and live target IDs are intentionally kept out of git.
+## Start Here
 
-## 中文说明
+| You want to... | Go to |
+|---|---|
+| Install nanobot with no terminal/config background | [Start Without Technical Background](./docs/start-without-technical-background.md) |
+| Install quickly and get one CLI reply | [Install](#-install) and [Quick Start](#-quick-start) |
+| Open the bundled browser UI | [WebUI](#-webui) |
+| Connect Telegram, Discord, WeChat, Slack, Email, Mattermost, or another chat app | [Chat Apps](./docs/chat-apps.md) |
+| Configure providers, fallback models, Langfuse, MCP, web tools, or security | [Docs](./docs/README.md) and [Configuration](./docs/configuration.md) |
+| Understand or extend the internals | [Architecture](./docs/architecture.md) and [Development](./docs/development.md) |
+| Deploy to the cloud or keep nanobot running as a service | [Deployment](./docs/deployment.md), including [one-click Render setup](./docs/deployment.md#render) |
 
-### 这个仓库是什么
+## What can nanobot do?
 
-这是一个“上游 Nanobot + 个人生产胶水”的仓库，不是重新发明一个全新的 agent 框架。
+nanobot is a self-hosted personal AI agent runtime. It can:
 
-核心思路：
+- run in a browser WebUI or terminal
+- connect to Telegram, Discord, Slack, WeChat, Email, Mattermost, and other chat apps
+- use tools such as files, shell, web search, web fetch, MCP, cron, image generation, and subagents
+- keep session history and long-term memory through Dream
+- run long-horizon goals and scheduled automations
+- expose a Python SDK and OpenAI-compatible API for integrations
+- deploy as a long-running local or server-side agent gateway
 
-- `nanobot/` 尽量跟随上游，只保留必要的下游兼容、QQ/微信体验和安全修复。
-- `ops/` 承载线上服务编排、sidecar 源码快照、systemd 单元、部署脚本和运维工具。
-- 各类重功能尽量放到 sidecar 或 skill，不把 Nanobot 主进程拖成一个越来越重的常驻巨兽。
-- 默认 nanobot 先更新、回测、跑 GitHub Actions，再同步给广州 nanobot 等其他实例。
+## Releases
 
-### 设计原则
+**Latest release: [v0.3.0 - The Agency Release](https://github.com/HKUDS/nanobot/releases/tag/v0.3.0)**
 
-| 原则 | 说明 |
-| --- | --- |
-| 跟上游而不是吞上游 | 上游有的核心能力尽量复用；下游差异放在胶水层、配置层和 sidecar。 |
-| 少常驻，多按需 | 浏览器、抓取、清洗、趋势分析等重活尽量按需或独立服务运行。 |
-| 真实数据优先 | 系统状态、LOF、成本、cron、sidecar health 走真实脚本和 API，不让 LLM 乱猜。 |
-| 成本可见 | OBP 记录来源、模型、免费/付费 token 和成本，方便控制 API 钱包。 |
-| 安全默认收口 | 业务端口不公网直连；公网只走 Caddy/域名反代和认证策略。 |
+The Agency Release turns nanobot from a durable workbench into an agent runtime that can coordinate helpers, switch models per session, and carry authorized work through to completion.
 
-## 当前架构
+- Consult inline subagents without leaving the current task
+- Switch model presets per session directly from the composer
+- Start from a guided WebUI setup with clearer execution controls
+- Apply configuration changes live across a more reliable provider, channel, and tool runtime
 
-```text
-QQ / WeChat / API clients
-        |
-        v
-Nanobot core 0.2.x
-  - chat loop / tools / memory / cron
-  - QQ streaming output
-  - direct ops replies for health/status questions
-        |
-        +---------------- internal tools / callbacks ----------------+
-                                                                     |
-Public web entry                                                     |
-  Caddy :80/:443                                                     |
-  auth / noindex / reverse proxy                                     |
-        |                                                            |
-        v                                                            |
-127.0.0.1:8093 dashboard gateway                                     |
-  /                 今日驾驶舱 / 能力总控台                           |
-  /rss/             RSS、微信文章、Markdown 预览、付费文章清洗器       |
-  /inbox            知识收件箱                                        |
-  /lof              LOF / QDII 套利监控                               |
-  /trends/          Trend Radar Lite                                  |
-  /reflexio/        记忆与反思看板                                    |
-  /obp/             OBP 管理页面                                      |
-  /obp/v1           OpenAI-compatible API                             |
-  /obp/anthropic/v1 Anthropic-compatible API                          |
-        |
-        +--> Rust / Python sidecars on loopback or container network
-```
+[Read the v0.3.0 release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.3.0)
 
-公网入口不要写死裸 IP。线上业务端口 `8000/8080/8081/8091/8092/8093/8094/8095` 默认不直接暴露，统一经 Caddy 反代和认证策略访问。
+## Open Source Partners
 
-## 能力地图
+<p align="center">
+  <a href="https://platform.kimi.com?aff=nanobot"><picture><source media="(prefers-color-scheme: dark)" srcset="https://kimi-file.moonshot.cn/prod-chat-kimi/kfs/4/1/2026-06-05/1d8h69mt3v89kkekg24gg"><img alt="Kimi Open Source Friends" height="44" src="https://kimi-file.moonshot.cn/prod-chat-kimi/kfs/4/1/2026-06-05/1d8h69fudcmosb3pipls0"></picture></a>
+  <a href="https://platform.minimaxi.com/subscribe/token-plan?code=GILTJpMTqZ&source=link"><img alt="MiniMax" height="40" src="https://mintcdn.com/minimax-zh/1UjvBcdoC6r0UeyA/logo/light.svg?fit=max&auto=format&n=1UjvBcdoC6r0UeyA&q=85&s=672d724b639b2d88d0702fae329ea4f8"></a>
+</p>
 
-| 层 | 组件 | 当前用途 |
-| --- | --- | --- |
-| 聊天入口 | QQ、微信、OpenAI-compatible API | 日常对话、图片理解、运维快捷问答、定时推送出口。 |
-| 内容工作台 | RSS sidecar、知识收件箱、付费文章清洗器 | 微信/RSS 文章抓取、广告过滤、Markdown 预览、手动评分、删除、补读。 |
-| 趋势雷达 | Trend Radar Lite | 多源热点采集、历史热搜、每日新闻简报、MCP 风格工具接口。 |
-| 投资看板 | LOF sidecar | QDII/LOF 实时刷新、溢价连续统计、申赎门槛过滤、QQ 报告推送。 |
-| 模型网关 | OBP | 模型组、fallback、emergency、OpenAI/Anthropic 兼容入口、来源和成本账本。 |
-| 记忆系统 | Nanobot memory、Reflexio | 对话记忆、延迟压缩、记忆看板、反思数据保留。 |
-| 运维守卫 | sidecarctl、ops guard、systemd timers | 服务自愈、备份、上游版本通知、OBP 预算告警、健康日报。 |
-| 驾驶舱 | dashboard gateway | 今日重点、服务健康、任务状态、模型成本、能力矩阵、快速入口。 |
+## Recent Updates
 
-## 和上游有什么不同
+- **2026-07-24** Guided first-run setup, inline subagents, and model switching from the composer.
+- **2026-07-23** Grok OAuth with hosted X Search, live image settings, and clearer fallback models.
+- **2026-07-22** Parallel Search, live configuration reloads, richer app discovery, and a smoother mobile WebUI.
+- **2026-07-21** Codex fast mode, visible skill references, safer configuration saves, and sturdier task cleanup.
+- **2026-07-20** Cleaner code blocks and copy actions, self-contained channels, and steadier QQ reconnects.
 
-这个 fork 的目标不是改掉 Nanobot，而是把它变成一个可长期运行的个人系统。
+For older updates, see the [release archive](./docs/release-archive.md) or [GitHub releases](https://github.com/HKUDS/nanobot/releases).
 
-主要差异：
+## 💡 Why nanobot
 
-- QQ 渠道体验：流式输出、ack、媒体发送、图片/文本组合、超时和重复输出保护。
-- WeChat/RSS/知识工作流：微信文章、RSS、飞书/普通链接收纳、文章评分、清洗和补读。
-- Sidecar 化：LOF、OBP、Trend Radar、Notify、Reflexio、QQ bridge 等服务从主进程拆出。
-- OBP 模型路由：按来源、任务类型、成本、fallback 和 emergency 做统一路由与审计。
-- 运维闭环：`sidecarctl`、ops guard、备份 timer、自愈 timer、上游版本提醒和预算提醒。
-- 生产安全：业务端口收口到 loopback/Caddy，secrets 不进 git，公开页面避免裸 IP 暴露。
+- **Persistent workflows**: goals, memory, tools, and chat context survive long-running work.
+- **Chat-native reach**: WebUI, API, Telegram, Feishu, Slack, Discord, Teams, email, and Mattermost.
+- **Model freedom**: OpenAI-compatible APIs, local LLMs, image generation, search, and fallbacks.
+- **Small core**: readable internals with MCP, memory, deployment, and automation built in.
+- **Own your stack**: inspect, customize, self-host, and extend without a giant platform.
 
-## 本地快速开始
+## 📦 Install
 
-```bash
-uv sync
-uv run nanobot --config ~/.nanobot/config.json
-uv run pytest tests/
-```
+> [!IMPORTANT]
+> If you want the newest features and experiments, install from source.
+>
+> If you want the most stable day-to-day experience, install from PyPI or with `uv`.
 
-只开发上游核心功能时，直接跑 Nanobot 测试即可。涉及 sidecar、真实推送、OBP、RSS、LOF 或线上定时任务时，需要在生产服务器或等价的本地服务环境中回测。
+Pick **one** install method:
 
-常用检查：
+Prerequisites: Python 3.11 or newer. Git is only needed for a source install. Published packages already include the WebUI; a current-source install needs `bun` or `npm` to build it.
 
-```bash
-uv run ruff check nanobot tests --select F
-uv run pytest tests/
-```
+If terminals, API keys, or config files are new to you, use the guided zero-background walkthrough in [Start Without Technical Background](./docs/start-without-technical-background.md) instead of this compact README path.
 
-## 生产部署形态
+**One-command setup**
 
-线上默认是 Podman + systemd + Caddy：
-
-| 服务 | 说明 |
-| --- | --- |
-| `podman-nanobot-cage.service` | Nanobot 主容器。 |
-| `lof-sidecar.service` | 8093 loopback 网关和 LOF 看板。 |
-| `obp-rs.service` | OBP 模型网关。 |
-| `podman-wechat-rss-sidecar.service` | RSS / 微信文章 sidecar。 |
-| `notify-sidecar-rs.service` | 定时任务桥和推送调度。 |
-| `qq-sidecar-rs.service` | QQ 消息出口桥。 |
-| `trend-sidecar-rs.service` | Trend Radar Lite。 |
-| `nanobot-reflexio-rs.service` | Reflexio 记忆看板。 |
-| `nanobot-ops-heal.timer` | 低层自愈巡检。 |
-| `nanobot-data-backup.timer` | 数据备份。 |
-
-服务 registry 位于 `ops/config/sidecars.json`，驾驶舱和 `sidecarctl` 都从这里读取。
-
-## 运维命令
+macOS / Linux:
 
 ```bash
-sidecarctl status
-sidecarctl doctor
-sidecarctl stack
-sidecarctl url rss
-sidecarctl logs lof
-sidecarctl restart notify
+curl -fsSL https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.sh | sh
 ```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.ps1 | iex
+```
+
+The default command installs or upgrades `nanobot-ai` from PyPI. On a fresh local desktop, it then starts `nanobot webui` so you can configure the first provider and model in **Settings → Models**. SSH, headless, existing-config, and older-release paths keep the terminal setup wizard. The installer avoids system-wide pip installs by using an active virtual environment, `uv`, `pipx`, or a managed venv under `~/.nanobot/venv`. It also prints the exact command it used to run nanobot; reuse that full command below if `nanobot` is not on `PATH`.
+
+To preview the plan without changing your environment, pass `--dry-run`; combine it with `--dev` when you want to preview the main-branch install.
 
 ```bash
-python3 ops/scripts/nanobot-ops-guard.py --mode heal --force-report
-python3 ops/scripts/nanobot-ops-guard.py --mode backup --dry-run
-python3 ops/scripts/nanobot-ops-guard.py --mode upstream --force-report
-python3 ops/scripts/nanobot-ops-guard.py --mode obp-budget --force-report
+curl -fsSL https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.sh | sh -s -- --dry-run
 ```
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.ps1))) --dry-run
+```
+
+To install the current `main` branch instead, pass `--dev`:
 
 ```bash
-/usr/local/sbin/rust-sidecar-maintain status
-/usr/local/sbin/rust-sidecar-maintain build-install
-/usr/local/sbin/rust-sidecar-maintain clean-targets
+curl -fsSL https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.sh | sh -s -- --dev
 ```
 
-## OBP API
-
-OBP 是统一模型入口，既服务默认 nanobot，也可以服务广州 nanobot 等其他实例。
-
-OpenAI-compatible：
-
-```text
-POST https://<public-domain>/obp/v1/chat/completions
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/HKUDS/nanobot/main/scripts/install.ps1))) --dev
 ```
 
-Anthropic-compatible：
+If you prefer to inspect the script first, open [`scripts/install.sh`](./scripts/install.sh) or [`scripts/install.ps1`](./scripts/install.ps1).
 
-```text
-POST https://<public-domain>/obp/anthropic/v1/messages
-```
-
-认证方式由线上配置决定，支持 Basic Auth / Bearer Token。公开 README 不记录真实账号、密码、token、base URL 或 provider key。
-
-OBP 记录：
-
-- 请求来源，例如 `default-nanobot`、`guangzhou-nanobot`。
-- 请求模型、实际模型、渠道、fallback 原因。
-- token、缓存命中、免费/付费分类和成本。
-- 月预算、熔断、backup 和 emergency 路径。
-
-## 内容与信息工作流
-
-| 功能 | 入口 | 说明 |
-| --- | --- | --- |
-| RSS 文章 | `/rss/` | 微信文章、鸭哥 AI 要闻、Markdown 预览、明暗模式。 |
-| 付费文章清洗器 | `/rss/cleaner` | 面向手动复制的长文，规则清洗为 Markdown，可按需 LLM 精修。 |
-| 知识收件箱 | `/inbox` | 链接收纳、抓取、摘要、评分、删除、手动校正。 |
-| Trend Radar | `/trends/` | 热榜采集、历史榜、每日简报、过滤八卦噪声。 |
-| 补读 | Nanobot 指令 | 对已抓取文章按原推送格式重新发送全文。 |
-
-原则是：能规则处理就不调用模型；需要摘要/判断时优先走免费或低成本模型；真正复杂问题再升级。
-
-## 上游同步流程
-
-默认链路：
+**Install with `uv`**
 
 ```bash
-git fetch official --tags
-git merge official/main
-uv run ruff check nanobot tests --select F
-uv run pytest tests/
-git push exp HEAD:main
+uv tool install nanobot-ai
 ```
 
-同步策略：
-
-- 先在默认 nanobot 更新和回测。
-- GitHub Actions 通过后再给其他实例升级。
-- 不把线上 secrets、数据库、日志、真实 cron target、浏览器 cookie 放进 git。
-- 如果上游改动和下游胶水冲突，优先保持上游核心结构，下游差异挪到 `ops/`、skill 或 sidecar。
-
-## Secrets 和线上数据
-
-不要提交：
-
-- `/root/.nanobot/config.json` 中的真实密钥值。
-- `/root/.nanobot/secrets/*.env`。
-- runtime database、history、日志、cookie、真实 QQ/微信目标 ID。
-- Rust `target/`、Podman image layer、临时备份和缓存。
-
-建议配置方式：
-
-```json
-{
-  "providers": {
-    "custom": {
-      "apiKey": "${NANOBOT_PROVIDER_API_KEY}"
-    }
-  }
-}
-```
-
-真实值放在受限权限的 env 文件里，由 systemd / Podman 注入。
-
-## 目录速览
-
-```text
-nanobot/                 Nanobot core and downstream compatibility patches
-tests/                   Core regression tests
-ops/                     Live-server sidecars, scripts, units and registry
-ops/sources/             Source snapshots for Rust/Python sidecars
-ops/systemd/             Systemd units and timers
-ops/config/              Sidecar and capability registries
-scripts/                 Local smoke/deploy/helper scripts
-docs/                    Architecture notes and implementation docs
-```
-
-## 相关文档
-
-- `docs/ARCHITECTURE.md`: 当前架构设计和边界。
-- `docs/adr/`: 架构决策记录。
-- `ops/README.md`: 线上 ops 层说明。
-- `ops/docs/restore.md`: 恢复与备份说明。
-
-## Upstream Credit
-
-Nanobot is originally developed by [HKUDS](https://github.com/HKUDS). This fork exists because I use Nanobot as a real personal assistant and need a production-shaped layer around it.
-
-## English Brief
-
-`nanobot-exp` keeps Nanobot close to upstream while adding a private production layer for daily use.
-
-### What This Fork Adds
-
-- QQ/WeChat production channel fixes, including QQ streaming and media handling.
-- Sidecar-based services for RSS, LOF/QDII monitoring, Trend Radar, Reflexio, Notify and OBP.
-- A unified dashboard gateway served behind Caddy instead of exposing raw service ports.
-- OBP model routing with OpenAI-compatible and Anthropic-compatible APIs, source tracking, fallback paths and cost accounting.
-- Knowledge Inbox, article cleaning, RSS previews, daily briefs and full-article replay.
-- Ops guardrails: backups, self-healing, upstream release checks, budget alerts and service registry tooling.
-
-### Local Development
+**Install from PyPI with pip**
 
 ```bash
-uv sync
-uv run nanobot --config ~/.nanobot/config.json
-uv run ruff check nanobot tests --select F
-uv run pytest tests/
+python -m pip install nanobot-ai
 ```
 
-### Production Notes
+If pip reports `externally-managed-environment` on macOS or Linux, use the one-command installer, `uv tool install nanobot-ai`, `pipx install nanobot-ai`, or install inside a virtual environment.
 
-- Public access should go through Caddy and a domain, not raw IP plus service port.
-- Runtime secrets and data are excluded from git.
-- Sidecars are tracked as reproducible source snapshots under `ops/sources/`.
-- The default Nanobot instance is the staging ground before changes are pushed and rolled out to other instances.
+**Install from source**
+
+`bun` or `npm` must be available. From an activated virtual environment:
+
+```bash
+git clone https://github.com/HKUDS/nanobot.git
+cd nanobot
+python -m pip install .
+```
+
+On Windows, if pip reports that it cannot launch `npm`, run `cd webui`, `npm.cmd install --package-lock=false`, `npm.cmd run build`, and `cd ..` in order, then retry the install. Contributors who need an editable checkout should follow [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`webui/README.md`](./webui/README.md).
+
+Verify the install:
+
+```bash
+nanobot --version
+```
+
+If `nanobot` is not on `PATH`, invoke it through the method that installed it: reuse the recommended installer's command, use `uv tool run --from nanobot-ai nanobot ...` or `pipx run --spec nanobot-ai nanobot ...`, or use the Python executable from the environment where pip installed the package.
+
+## 🚀 Quick Start
+
+**Open nanobot in your browser**
+
+```bash
+nanobot webui
+```
+
+This is the recommended first run. The launcher creates the config and workspace when needed, safely enables the local WebSocket channel after confirmation, starts the gateway, and opens [`http://127.0.0.1:8765`](http://127.0.0.1:8765). A fresh install can open before a model is configured, so setup continues in the browser instead of beginning in a JSON file. The first-run WebUI binds to localhost by default and is not exposed to your LAN.
+
+**Your first three steps**
+
+1. Open **Settings → Models** and choose a provider, credential, and model.
+2. Start a new topic and send `Hello!` to verify the connection.
+3. Before project work, choose the intended workspace and access mode from the composer.
+
+Any normal reply means the provider, model, workspace, and browser gateway are working together.
+
+**Keep nanobot running after you close the terminal**
+
+```bash
+nanobot webui --background
+```
+
+This starts the same full gateway as `nanobot webui`, opens the browser, and leaves channels and automations running after the launcher exits. Complete first-time model setup with foreground `nanobot webui` before switching to background mode.
+
+```bash
+nanobot gateway status
+nanobot gateway logs
+nanobot gateway restart
+nanobot gateway stop
+```
+
+**Prefer a gateway-first workflow?**
+
+```bash
+nanobot gateway
+```
+
+This skips WebUI setup and browser opening, then runs the same complete gateway in the current terminal. It is the familiar entry point if you are coming from OpenClaw or already operate agents as long-lived services. The WebUI remains available when its channel is configured; open it manually when needed.
+
+Use `nanobot gateway --background` for the same direct entry point without keeping the terminal attached. For automatic startup and supervision by the operating system, see [Deployment](./docs/deployment.md).
+
+**Prefer to work entirely in the terminal?**
+
+```bash
+nanobot agent
+```
+
+This opens an interactive terminal chat with the same configured model, workspace, and tools while keeping its own CLI session history. It does not open a browser or keep chat channels and automations running after you exit. Type `exit` or press `Ctrl+C` when you are done.
+
+For one request and an immediate exit, use:
+
+```bash
+nanobot agent -m "Hello!"
+```
+
+The one-shot form is useful for a quick provider check, shell scripts, and local automation. If you have not configured a model yet, run `nanobot webui` and open **Settings → Models** first.
+
+Need manual JSON, another device on your LAN, or help with provider/model matching? Continue with [Install and Quick Start](./docs/quick-start.md), [WebUI](./docs/webui.md), or [Troubleshooting](./docs/troubleshooting.md).
+
+- Want a pasteable provider setup? See [Provider Cookbook](./docs/provider-cookbook.md)
+- Want to understand provider/model matching? See [Providers and Models](./docs/providers.md)
+- Want web search, MCP, security settings, or more config options? See [Configuration](./docs/configuration.md)
+- Want to run locally? See [Ollama](./docs/providers.md#ollama), [vLLM or another local OpenAI-compatible server](./docs/providers.md#vllm-or-other-local-openai-compatible-server), and the full [provider reference](./docs/configuration.md#providers).
+- Want to run nanobot in chat apps like Telegram, Discord, WeChat or Feishu? See [Chat Apps](./docs/chat-apps.md)
+- Want Docker or Linux service deployment? See [Deployment](./docs/deployment.md)
+
+## 🌐 WebUI
+
+The WebUI ships **inside the published wheel** with no separate frontend build. It is the browser workbench for persistent topics, visible agent activity, workspace controls, Apps, Skills, Automations, and settings.
+
+<p align="center">
+  <img src="images/nanobot_webui.png" alt="nanobot webui preview" width="900">
+</p>
+
+Use it to:
+
+- keep separate topics for different tasks and projects;
+- inspect reasoning, tool calls, file edits, diffs, command output, and generated artifacts;
+- switch models and workspaces without leaving the conversation;
+- configure providers, chat channels, Apps, Skills, and Automations from one place.
+
+See the [WebUI guide](./docs/webui.md) for LAN access, background operation, workspace controls, and the full feature tour. Working on the frontend itself? Use [`webui/README.md`](./webui/README.md).
+
+## 🏗️ Architecture
+
+<p align="center">
+  <img src="images/nanobot_arch.png" alt="nanobot architecture" width="800">
+</p>
+
+🐈 nanobot stays lightweight by centering everything around a small agent loop: messages come in from chat apps, the LLM decides when tools are needed, and memory or skills are pulled in only as context instead of becoming a heavy orchestration layer. That keeps the core path readable and easy to extend, while still letting you add channels, tools, memory, and deployment options without turning the system into a monolith.
+
+## ✨ Features
+
+<table align="center">
+  <tr align="center">
+    <th><p align="center">📈 24/7 Real-Time Market Analysis</p></th>
+    <th><p align="center">🚀 Full-Stack Software Engineer</p></th>
+    <th><p align="center">📅 Smart Daily Routine Manager</p></th>
+    <th><p align="center">📚 Personal Knowledge Assistant</p></th>
+  </tr>
+  <tr>
+    <td align="center"><p align="center"><img src="case/search.gif" width="180" height="400"></p></td>
+    <td align="center"><p align="center"><img src="case/code.gif" width="180" height="400"></p></td>
+    <td align="center"><p align="center"><img src="case/schedule.gif" width="180" height="400"></p></td>
+    <td align="center"><p align="center"><img src="case/memory.gif" width="180" height="400"></p></td>
+  </tr>
+  <tr>
+    <td align="center">Discovery • Insights • Trends</td>
+    <td align="center">Develop • Deploy • Scale</td>
+    <td align="center">Schedule • Automate • Organize</td>
+    <td align="center">Learn • Memory • Reasoning</td>
+  </tr>
+</table>
+
+## 📚 Docs
+
+Browse the [repo docs](./docs/README.md) for the latest features and GitHub development version, or visit [nanobot.wiki](https://nanobot.wiki/docs/latest/getting-started/nanobot-overview) for the stable release documentation.
+
+- Use task-oriented guides: [Guides](./docs/guides/README.md)
+- Start with no technical background: [Start Without Technical Background](./docs/start-without-technical-background.md)
+- Start from zero with developer basics: [Install and Quick Start](./docs/quick-start.md)
+- Understand the runtime model: [Concepts](./docs/concepts.md)
+- Read the source-level map: [Architecture](./docs/architecture.md)
+- Choose a provider/model: [Providers and Models](./docs/providers.md)
+- Copy provider setup recipes: [Provider Cookbook](./docs/provider-cookbook.md)
+- Debug setup and runtime failures: [Troubleshooting](./docs/troubleshooting.md)
+- Talk to your nanobot with familiar chat apps: [Chat App AI Agent](./docs/guides/chat-app-ai-agent.md) · [Chat Apps](./docs/chat-apps.md)
+- Schedule or trigger agent work: [Automations](./docs/automations.md)
+- Configure providers, web search, MCP, and runtime behavior: [Configuration](./docs/configuration.md)
+- Integrate nanobot with local tools and automations: [OpenAI-Compatible API](./docs/openai-api.md) · [Python SDK](./docs/python-sdk.md)
+- Run nanobot with Docker or as a Linux service: [Deployment](./docs/deployment.md)
+
+## 🤝 Contribute & Roadmap
+
+PRs welcome! The codebase is intentionally small and readable. 🤗
+
+### Contribution Flow
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, review, and contribution guidelines.
+
+**Roadmap** — Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
+
+- **Multi-modal** — See and hear (images, voice, video)
+- **Long-term memory** — Never forget important context
+- **Better reasoning** — Multi-step planning and reflection
+- **More integrations** — Calendar and more
+- **Self-improvement** — Learn from feedback and mistakes
+
+## Contact
+
+Nanobot was started by [Xubin Ren](https://github.com/re-bin) as a personal open-source project and is now maintained collaboratively with contributors from the open-source community. Feel free to contact [xubinrencs@gmail.com](mailto:xubinrencs@gmail.com) for questions, ideas, or collaboration.
+
+### Contributors
+
+<a href="https://github.com/HKUDS/nanobot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=HKUDS/nanobot&max=100&columns=12&updated=20260210" alt="Contributors" />
+</a>
+
+<p align="center">
+  <em> Thanks for visiting ✨ nanobot!</em><br><br>
+  <img src="https://visitor-badge.laobi.icu/badge?page_id=HKUDS.nanobot&style=for-the-badge&color=00d4ff" alt="Views">
+</p>

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import types
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal, NamedTuple, get_args, get_origin
@@ -14,6 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in environments with
 from loguru import logger
 from pydantic import BaseModel
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -22,7 +24,7 @@ from nanobot.cli.models import (
     get_model_context_limit,
     get_model_suggestions,
 )
-from nanobot.config.loader import get_config_path, load_config
+from nanobot.config.loader import get_config_path, load_config, resolve_config_env_vars
 from nanobot.config.schema import Config, ModelPresetConfig
 
 console = Console()
@@ -44,6 +46,8 @@ class _QuickStartProviderInfo(NamedTuple):
     default_api_base: str
     backend: str
     is_direct: bool
+    is_oauth: bool
+    default_model: str
 
 
 class _QuickStartEndpointChoice(NamedTuple):
@@ -73,6 +77,7 @@ _BACK_PRESSED = object()  # Sentinel value for back navigation
 _MODEL_PRESET_CACHE: set[str] = set()
 
 _QUICK_START_CUSTOM_PROVIDER_CHOICE = "Other OpenAI-compatible"
+_QUICK_START_OAUTH_PROVIDERS = {"openai_codex"}
 
 _CLEAR_CHOICE = "Clear value"
 _QUICK_START_MENU_CHOICE = "[Q] Quick Start"
@@ -762,18 +767,25 @@ def _handle_model_preset_field(
         setattr(working_model, field_name, new_value)
 
 
-def _handle_provider_field(
-    working_model: BaseModel, field_name: str, field_display: str, current_value: Any
+def _set_field_from_choices(
+    working_model: BaseModel, field_name: str, field_display: str,
+    choices: list[str], default_choice: str
 ) -> None:
-    """Handle the 'provider' field with a list of registered providers."""
-    provider_names = sorted(_get_provider_names().keys())
-    choices = ["auto"] + provider_names
-    default_choice = str(current_value) if current_value else "auto"
+    """Prompt to pick one of ``choices`` and set the field (no-op on back/cancel)."""
     new_value = _select_with_back(field_display, choices, default=default_choice)
     if new_value is _BACK_PRESSED:
         return
     if new_value is not None:
         setattr(working_model, field_name, new_value)
+
+
+def _handle_provider_field(
+    working_model: BaseModel, field_name: str, field_display: str, current_value: Any
+) -> None:
+    """Handle the 'provider' field with a list of registered LLM providers."""
+    choices = ["auto"] + sorted(_get_provider_names().keys())
+    default_choice = str(current_value) if current_value else "auto"
+    _set_field_from_choices(working_model, field_name, field_display, choices, default_choice)
 
 
 def _handle_fallback_models_field(
@@ -836,6 +848,17 @@ def _handle_fallback_models_field(
             items.clear()
 
 
+def _handle_search_provider_field(
+    working_model: BaseModel, field_name: str, field_display: str, current_value: Any
+) -> None:
+    """Handle the web-search 'provider' field with the search-engine list."""
+    from nanobot.agent.tools.web import SEARCH_PROVIDER_OPTIONS
+
+    choices = [opt["name"] for opt in SEARCH_PROVIDER_OPTIONS]
+    default_choice = current_value if current_value in choices else choices[0]
+    _set_field_from_choices(working_model, field_name, field_display, choices, default_choice)
+
+
 _FIELD_HANDLERS: dict[str, Any] = {
     "model": _handle_model_field,
     "context_window_tokens": _handle_context_window_field,
@@ -843,6 +866,16 @@ _FIELD_HANDLERS: dict[str, Any] = {
     "provider": _handle_provider_field,
     "fallback_models": _handle_fallback_models_field,
 }
+
+
+def _resolve_field_handler(model: BaseModel, field_name: str) -> Any:
+    """Resolve the handler for a field. WebSearchConfig shares the bare "provider"
+    name with LLM configs but needs the search-engine picker, not the LLM list."""
+    if field_name == "provider":
+        from nanobot.agent.tools.web import WebSearchConfig
+        if isinstance(model, WebSearchConfig):
+            return _handle_search_provider_field
+    return _FIELD_HANDLERS.get(field_name)
 
 
 def _is_str_or_none(annotation: Any) -> bool:
@@ -934,7 +967,7 @@ def _configure_pydantic_model(
             continue
 
         # Registered special-field handlers
-        handler = _FIELD_HANDLERS.get(field_name)
+        handler = _resolve_field_handler(working_model, field_name)
         if handler:
             handler(working_model, field_name, field_display, current_value)
             continue
@@ -1244,7 +1277,7 @@ def _get_channel_info() -> dict[str, tuple[str, type[BaseModel]]]:
     result: dict[str, tuple[str, type[BaseModel]]] = {}
     for name, channel_cls in discover_all().items():
         try:
-            mod = importlib.import_module(f"nanobot.channels.{name}")
+            mod = importlib.import_module(channel_cls.__module__)
             config_name = channel_cls.__name__.replace("Channel", "Config")
             config_cls = getattr(mod, config_name, None)
             if config_cls and isinstance(config_cls, type) and issubclass(config_cls, BaseModel):
@@ -1548,7 +1581,11 @@ def _get_quick_start_provider_info() -> dict[str, _QuickStartProviderInfo]:
 
     result: dict[str, _QuickStartProviderInfo] = {}
     for spec in PROVIDERS:
-        if spec.name == "custom" or spec.is_oauth or spec.is_transcription_only:
+        if (
+            spec.name == "custom"
+            or spec.is_transcription_only
+            or (spec.is_oauth and spec.name not in _QUICK_START_OAUTH_PROVIDERS)
+        ):
             continue
         result[spec.name] = _QuickStartProviderInfo(
             display_name=spec.display_name or spec.name,
@@ -1556,23 +1593,88 @@ def _get_quick_start_provider_info() -> dict[str, _QuickStartProviderInfo]:
             default_api_base=spec.default_api_base,
             backend=spec.backend,
             is_direct=spec.is_direct,
+            is_oauth=spec.is_oauth,
+            default_model=spec.builtin_models[0].id if spec.builtin_models else "",
         )
     return result
 
 
 def _get_quick_start_provider_choices() -> dict[str, str]:
     """Return Quick Start provider display choices."""
-    choices = {
-        info.display_name: provider_name
-        for provider_name, info in _get_quick_start_provider_info().items()
-    }
+    choices: dict[str, str] = {}
+    for provider_name, info in _get_quick_start_provider_info().items():
+        choices.setdefault(info.display_name, provider_name)
     choices[_QUICK_START_CUSTOM_PROVIDER_CHOICE] = "custom"
     return choices
 
 
 def _quick_start_requires_api_key(provider_name: str, info: _QuickStartProviderInfo | None) -> bool:
     """Return whether Quick Start should ask for an API key."""
-    return provider_name == "custom" or not (info and info.is_local)
+    return provider_name == "custom" or not (info and (info.is_local or info.is_oauth))
+
+
+def _quick_start_codex_proxy(config: Config) -> str | None:
+    """Resolve only the Codex proxy without validating unrelated provider secrets."""
+    proxy_config = Config()
+    proxy_config.providers.openai_codex.proxy = config.providers.openai_codex.proxy
+    return resolve_config_env_vars(proxy_config).providers.openai_codex.proxy or None
+
+
+def _quick_start_oauth_login(config: Config, provider_name: str) -> bool:
+    """Authenticate an OAuth provider supported by Quick Start."""
+    if provider_name != "openai_codex":
+        console.print(f"[red]OAuth login is not supported for {provider_name}[/red]")
+        return False
+
+    try:
+        from oauth_cli_kit import get_token, login_oauth_interactive
+    except ImportError:
+        console.print("[red]oauth_cli_kit not installed. Run: pip install oauth-cli-kit[/red]")
+        return False
+
+    try:
+        proxy = _quick_start_codex_proxy(config)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        return False
+
+    token = None
+    with suppress(Exception):
+        token = get_token(proxy=proxy)
+    if not getattr(token, "access", None):
+        console.print("[cyan]Starting interactive OAuth login...[/cyan]\n")
+        try:
+            token = login_oauth_interactive(
+                print_fn=lambda message: console.print(message, markup=False),
+                prompt_fn=lambda prompt: _get_questionary().text(prompt).ask() or "",
+                proxy=proxy,
+            )
+        except Exception as exc:
+            console.print(f"[red]OAuth login failed: {escape(str(exc))}[/red]")
+            return False
+
+    if not getattr(token, "access", None):
+        console.print("[red]OAuth login failed[/red]")
+        return False
+
+    account = getattr(token, "account_id", None)
+    suffix = f"  [dim]{escape(str(account))}[/dim]" if account else ""
+    console.print(f"[green]Authenticated with OpenAI Codex[/green]{suffix}")
+    return True
+
+
+def _quick_start_oauth_is_authenticated(config: Config, provider_name: str) -> bool:
+    """Return whether Quick Start can load a usable OAuth token."""
+    if provider_name != "openai_codex":
+        return False
+    try:
+        from oauth_cli_kit import get_token
+
+        proxy = _quick_start_codex_proxy(config)
+        token = get_token(proxy=proxy)
+    except Exception:
+        return False
+    return bool(getattr(token, "access", None))
 
 
 def _quick_start_requires_base_url(provider_name: str, info: _QuickStartProviderInfo | None) -> bool:
@@ -1683,13 +1785,21 @@ def _configure_quick_start_provider(config: Config) -> bool | object:
             console.print(f"[red]Unknown provider: {provider_name}[/red]")
             return False
 
-        model = _input_model_with_autocomplete("Model ID", "", provider_name)
+        model = _input_model_with_autocomplete(
+            "Model ID",
+            provider_info.default_model if provider_info else "",
+            provider_name,
+        )
         if model is _BACK_PRESSED:
             continue
         model = (model or "").strip()
         if not model:
             console.print("[yellow]! Model ID is required for Quick Start[/yellow]")
             return False
+
+        if provider_info and provider_info.is_oauth:
+            if not _quick_start_oauth_login(config, provider_name):
+                return False
 
         if api_key is not None:
             provider_config.api_key = api_key
@@ -1757,26 +1867,31 @@ def _show_quick_start_summary(config: Config) -> None:
     _show_quick_start_progress(3)
     preset = config.model_presets.get("primary")
     provider_label = "AI provider"
-    has_api_key = True
+    credentials_ready = True
+    credential_name = "API key"
     if preset:
         provider_config = getattr(config.providers, preset.provider, None)
-        provider_label, _is_gateway, is_local, _api_base = _get_provider_info().get(
-            preset.provider, (preset.provider, False, False, "")
-        )
-        has_api_key = is_local or bool(provider_config and provider_config.api_key)
+        provider_info = _get_quick_start_provider_info().get(preset.provider)
+        if provider_info:
+            provider_label = provider_info.display_name
+            if provider_info.is_oauth:
+                credential_name = "OAuth login"
+                credentials_ready = _quick_start_oauth_is_authenticated(config, preset.provider)
+            else:
+                credentials_ready = provider_info.is_local or bool(
+                    provider_config and provider_config.api_key
+                )
+        else:
+            provider_label = _get_provider_names().get(preset.provider, preset.provider)
+            credentials_ready = bool(provider_config and provider_config.api_key)
 
-    start_command = "`nanobot gateway`"
-    next_step = f"Run {start_command}"
     status = "Ready"
-    if not has_api_key:
-        status = f"{provider_label} API key missing"
-        next_step = f"Add your {provider_label} API key, then run {start_command}"
+    if not credentials_ready:
+        status = f"{provider_label} {credential_name} missing"
 
     rows = [
         ("Status", status),
-        ("Next", next_step),
         ("WebSocket channel", "enabled"),
-        ("Open", "http://127.0.0.1:8765"),
     ]
     _print_summary_panel(rows, "Quick Start")
 
@@ -1952,3 +2067,12 @@ def run_onboard(initial_config: Config | None = None) -> OnboardResult:
             return OnboardResult(config=original_config, should_save=False)
         if answer == "[A] Advanced Settings":
             _configure_advanced_settings(config)
+
+
+def run_quick_start_onboard(initial_config: Config) -> OnboardResult:
+    """Run the compact provider + local WebUI setup path directly."""
+    _get_questionary()
+    draft = initial_config.model_copy(deep=True)
+    if _configure_quick_start(draft):
+        return OnboardResult(config=draft, should_save=True)
+    return OnboardResult(config=initial_config, should_save=False)

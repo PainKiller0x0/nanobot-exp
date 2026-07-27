@@ -1,12 +1,11 @@
 """Tests for ContextBuilder — system prompt and message assembly."""
 
-import base64
 from pathlib import Path
 
 import pytest
 
 from nanobot.agent.context import ContextBuilder
-from nanobot.session.goal_state import GOAL_STATE_KEY
+from nanobot.runtime_context import RuntimeContextBlock
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -14,48 +13,6 @@ from nanobot.session.goal_state import GOAL_STATE_KEY
 
 def _builder(tmp_path: Path, **kw) -> ContextBuilder:
     return ContextBuilder(workspace=tmp_path, **kw)
-
-
-# ---------------------------------------------------------------------------
-# _build_runtime_context (static)
-# ---------------------------------------------------------------------------
-
-
-class TestBuildRuntimeContext:
-    def test_time_only(self):
-        ctx = ContextBuilder._build_runtime_context(None, None)
-        assert "[Runtime Context" in ctx
-        assert "[/Runtime Context]" in ctx
-        assert "Current Time:" in ctx
-        assert "Channel:" not in ctx
-
-    def test_with_channel_and_chat_id(self):
-        ctx = ContextBuilder._build_runtime_context("telegram", "chat123")
-        assert "Channel: telegram" in ctx
-        assert "Chat ID: chat123" in ctx
-
-    def test_with_sender_id(self):
-        ctx = ContextBuilder._build_runtime_context("cli", "direct", sender_id="user1")
-        assert "Sender ID: user1" in ctx
-
-    def test_with_timezone(self):
-        ctx = ContextBuilder._build_runtime_context(None, None, timezone="Asia/Shanghai")
-        assert "Current Time:" in ctx
-        assert "Asia/Shanghai" in ctx
-
-    def test_runtime_context_includes_time_anchor(self):
-        ctx = ContextBuilder._build_runtime_context(None, None, timezone="Asia/Shanghai")
-        assert "Time Anchor:" in ctx
-        assert "today, tonight, tomorrow" in ctx
-
-    def test_no_channel_no_chat_id_omits_both(self):
-        ctx = ContextBuilder._build_runtime_context(None, None)
-        assert "Channel:" not in ctx
-        assert "Chat ID:" not in ctx
-
-    def test_no_sender_id_omits(self):
-        ctx = ContextBuilder._build_runtime_context("cli", "direct")
-        assert "Sender ID:" not in ctx
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +78,11 @@ class TestLoadBootstrapFiles:
         builder = _builder(tmp_path)
         assert builder._load_bootstrap_files() == ""
 
+    def test_empty_bootstrap_files(self, tmp_path):
+        (tmp_path / "AGENTS.md").write_text("\n", encoding="utf-8")
+        builder = _builder(tmp_path)
+        assert builder._load_bootstrap_files() == ""
+
     def test_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Be helpful.", encoding="utf-8")
         builder = _builder(tmp_path)
@@ -158,6 +120,66 @@ class TestLoadBootstrapFiles:
         builder = _builder(tmp_path)
         result = builder._load_bootstrap_files()
         assert "用中文回复" in result
+
+    def test_selected_project_supplies_only_agents_file(self, tmp_path):
+        agent_home = tmp_path / "agent-home"
+        project = tmp_path / "project"
+        agent_home.mkdir()
+        project.mkdir()
+        (agent_home / "AGENTS.md").write_text("global project rules", encoding="utf-8")
+        (agent_home / "SOUL.md").write_text("global soul", encoding="utf-8")
+        (agent_home / "USER.md").write_text("global user", encoding="utf-8")
+        (project / "AGENTS.md").write_text("selected project rules", encoding="utf-8")
+        (project / "SOUL.md").write_text("project soul collision", encoding="utf-8")
+        (project / "USER.md").write_text("project user collision", encoding="utf-8")
+
+        result = ContextBuilder(agent_home).build_system_prompt(
+            workspace=project,
+            include_memory_recent_history=False,
+        )
+
+        assert "selected project rules" in result
+        assert "global project rules" not in result
+        assert "global soul" in result
+        assert "global user" in result
+        assert "project soul collision" not in result
+        assert "project user collision" not in result
+
+    def test_selected_project_without_agents_does_not_fall_back(self, tmp_path):
+        agent_home = tmp_path / "agent-home"
+        project = tmp_path / "project"
+        agent_home.mkdir()
+        project.mkdir()
+        (agent_home / "AGENTS.md").write_text("default workspace rules", encoding="utf-8")
+
+        result = ContextBuilder(agent_home).build_system_prompt(
+            workspace=project,
+            include_memory_recent_history=False,
+        )
+
+        assert "default workspace rules" not in result
+
+    def test_unmodified_agents_and_user_templates_are_skipped(self, tmp_path):
+        from nanobot.utils.helpers import sync_workspace_templates
+
+        sync_workspace_templates(tmp_path, silent=True)
+
+        result = ContextBuilder(tmp_path)._load_bootstrap_files()
+
+        assert "## AGENTS.md" not in result
+        assert "## USER.md" not in result
+        assert "## SOUL.md" in result
+
+    def test_customized_user_template_is_loaded(self, tmp_path):
+        from nanobot.utils.helpers import sync_workspace_templates
+
+        sync_workspace_templates(tmp_path, silent=True)
+        (tmp_path / "USER.md").write_text("User prefers Chinese.", encoding="utf-8")
+
+        result = ContextBuilder(tmp_path)._load_bootstrap_files()
+
+        assert "## USER.md" in result
+        assert "User prefers Chinese." in result
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +224,11 @@ class TestBundledToolContract:
         assert "Do not use `exec` as a universal workaround" in content
         assert "## File and Coding Workflows" in content
         assert "apply_patch" in content
+        assert "acceptance criteria into concrete checks" in content
+        assert "visual evidence reaches the model" in content
+        assert "clear user request as authorization" in content
+        assert "Never invent missing records or measurements" in content
+        assert "scientific fitting" not in content
         assert "## Web and External Information" in content
         assert "## Messaging and Media" in content
         assert "## Scheduling and Background Work" in content
@@ -256,24 +283,6 @@ class TestBuildUserContent:
         assert result[1]["type"] == "text"
         assert result[1]["text"] == "hello"
 
-    def test_large_image_is_compressed_before_prompt_embedding(self, tmp_path):
-        image_module = pytest.importorskip("PIL.Image")
-
-        png = tmp_path / "large.png"
-        image_module.effect_noise((1400, 1400), 100).convert("RGB").save(png)
-        builder = _builder(tmp_path)
-
-        result = builder._build_user_content("hello", [str(png)])
-
-        assert isinstance(result, list)
-        url = result[0]["image_url"]["url"]
-        assert url.startswith("data:image/jpeg;base64,")
-        encoded = url.split(",", 1)[1]
-        compressed = base64.b64decode(encoded)
-        assert len(compressed) <= ContextBuilder._CONTEXT_IMAGE_MAX_BYTES
-        assert result[0]["_meta"]["prompt_bytes"] == len(compressed)
-        assert result[0]["_meta"]["prompt_mime"] == "image/jpeg"
-
     def test_image_meta_includes_path(self, tmp_path):
         png = tmp_path / "test.png"
         png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
@@ -281,30 +290,6 @@ class TestBuildUserContent:
         result = builder._build_user_content("hello", [str(png)])
         assert "_meta" in result[0]
         assert "path" in result[0]["_meta"]
-
-    def test_ocr_image_mode_returns_text_instead_of_image_blocks(self, tmp_path, monkeypatch):
-        png = tmp_path / "test.png"
-        png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
-        monkeypatch.setenv("NANOBOT_CONTEXT_IMAGE_MODE", "ocr")
-        monkeypatch.setattr(ContextBuilder, "_extract_image_text", classmethod(lambda cls, path: "OCR text"))
-        builder = _builder(tmp_path)
-
-        result = builder._build_user_content("hello", [str(png)])
-
-        assert isinstance(result, str)
-        assert "hello" in result
-        assert "OCR text" in result
-        assert "image_url" not in result
-
-    def test_empty_ocr_lang_env_uses_default(self, monkeypatch):
-        monkeypatch.setenv("NANOBOT_CONTEXT_IMAGE_OCR_LANG", "")
-
-        assert ContextBuilder._image_ocr_lang() == "chi_sim+eng"
-
-    def test_custom_ocr_lang_env_is_trimmed(self, monkeypatch):
-        monkeypatch.setenv("NANOBOT_CONTEXT_IMAGE_OCR_LANG", " eng ")
-
-        assert ContextBuilder._image_ocr_lang() == "eng"
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +308,19 @@ class TestBuildSystemPrompt:
         builder = _builder(tmp_path)
         result = builder.build_system_prompt()
         assert "workspace" in result.lower() or "python" in result.lower()
+
+    def test_selected_project_identity_keeps_agent_data_in_agent_workspace(self, tmp_path):
+        agent_home = tmp_path / "agent-home"
+        project = tmp_path / "project"
+        agent_home.mkdir()
+        project.mkdir()
+
+        result = ContextBuilder(agent_home)._get_identity(workspace=project)
+
+        assert f"current project workspace is at: {project.resolve()}" in result
+        assert f"agent workspace is at: {agent_home.resolve()}" in result
+        assert f"{agent_home.resolve()}/SOUL.md" in result
+        assert f"{project.resolve()}/SOUL.md" not in result
 
     def test_includes_bootstrap_files(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Be helpful and concise.", encoding="utf-8")
@@ -363,68 +361,32 @@ class TestBuildMessages:
         assert messages[1]["role"] == "user"
         assert "hello" in str(messages[1]["content"])
 
-    def test_runtime_context_injected(self, tmp_path):
+    def test_runtime_context_is_not_injected_by_default(self, tmp_path):
         builder = _builder(tmp_path)
         messages = builder.build_messages([], "hello", channel="cli", chat_id="direct")
         user_msg = str(messages[-1]["content"])
-        assert "[Runtime Context" in user_msg
-        assert "hello" in user_msg
+        assert user_msg == "hello"
 
-    def test_session_metadata_injects_active_goal_state(self, tmp_path):
-        builder = _builder(tmp_path)
-        meta = {
-            GOAL_STATE_KEY: {"status": "active", "objective": "Finish docs migration."},
-        }
-        messages = builder.build_messages(
-            [],
-            "hi",
-            channel="cli",
-            chat_id="x",
-            session_metadata=meta,
-        )
-        user_msg = str(messages[-1]["content"])
-        assert "Goal (active):" in user_msg
-        assert "Finish docs migration." in user_msg
-
-    def test_goal_state_does_not_leak_without_session_metadata(self, tmp_path):
-        builder = _builder(tmp_path)
-        other_session_meta = {
-            GOAL_STATE_KEY: {"status": "active", "objective": "Other chat goal."},
-        }
-
-        with_goal = builder.build_messages(
-            [],
-            "hi",
-            channel="websocket",
-            chat_id="chat-a",
-            session_metadata=other_session_meta,
-        )
-        without_goal = builder.build_messages(
-            [],
-            "hi",
-            channel="websocket",
-            chat_id="chat-b",
-            session_metadata={},
-        )
-
-        assert "Other chat goal." in str(with_goal[-1]["content"])
-        assert "Other chat goal." not in str(without_goal[-1]["content"])
-        assert "Goal (active):" not in str(without_goal[-1]["content"])
-
-    def test_current_runtime_lines_are_injected(self, tmp_path):
+    def test_explicit_runtime_context_blocks_are_appended(self, tmp_path):
         builder = _builder(tmp_path)
         messages = builder.build_messages(
             [],
             "please use @zoom tonight",
-            current_runtime_lines=[
-                "CLI App Attachment: @zoom (installed; tool=run_cli_app; entry_point=cli-anything-zoom).",
+            runtime_context_blocks=[
+                RuntimeContextBlock(
+                    source="cli_apps",
+                    content="CLI App Attachment: @zoom (installed; tool=run_cli_app).",
+                ),
             ],
         )
         user_msg = str(messages[-1]["content"])
 
         assert "CLI App Attachment: @zoom" in user_msg
         assert "tool=run_cli_app" in user_msg
-        assert "entry_point=cli-anything-zoom" in user_msg
+        assert user_msg.index("please use @zoom tonight") < user_msg.index(
+            "CLI App Attachment: @zoom"
+        )
+        assert messages[-1]["_meta"]["runtime_context"]["sources"] == ["cli_apps"]
 
     def test_consecutive_same_role_merged(self, tmp_path):
         builder = _builder(tmp_path)

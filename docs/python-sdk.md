@@ -1,4 +1,4 @@
-# Python SDK
+# Nanobot Python SDK: Run an AI Agent from Python
 
 Use nanobot as a Python library. The SDK gives you the same agent runtime used
 by the CLI, but from code: model routing, tools, workspace access, conversation
@@ -494,8 +494,10 @@ Run the agent once and return a `RunResult`.
 | `model` | `str \| None` | `None` | Override the model for this run only. |
 | `model_preset` | `str \| None` | `None` | Override the model preset for this run only. |
 
-`model` and `model_preset` are per-run overrides and do not change
-`bot.runtime.model` after the run completes. They are mutually exclusive.
+Without an override, a run uses the preset saved in its session, or the configured
+default when that session has no saved selection. `model` and `model_preset` are
+mutually exclusive per-run overrides; they do not change the saved session selection
+or `bot.runtime.model` after the run completes.
 
 ### `await bot.run_streamed(...)`
 
@@ -531,9 +533,9 @@ async for event in bot.stream("Generate a long answer"):
 | `await cancel()` | Cancel the run and release stream resources. |
 | `await aclose()` | Close the stream; equivalent cleanup primitive for `async with` / manual lifecycle code. |
 
-Normal SDK runs with different session keys may overlap. Runs that use per-run
-`model` or `model_preset` overrides are exclusive while the override is active,
-because the current `AgentLoop` provider/model state is mutable.
+SDK runs with different session keys may overlap, including runs with per-run
+`model` or `model_preset` overrides. Each run receives an immutable runtime without
+mutating the instance default. Runs sharing one session key remain serialized.
 
 ### `StreamEvent`
 
@@ -599,7 +601,8 @@ async with Nanobot.from_config() as bot:
 | `await ingest(session_key, messages, metadata=None, source=None, save=True)` | Import existing transcript messages without running the model. |
 | `get(session_key)` | Return a `SessionSnapshot`, or `None` if missing. |
 | `list()` | Return compact `SessionInfo` rows. |
-| `export(session_key)` | Return a full `SessionSnapshot` suitable for JSON serialization. |
+| `export(session_key)` | Return a trusted full `SessionSnapshot`, including model-only runtime context, suitable for JSON serialization. |
+| `await restore(snapshot, session_key=None, save=True)` | Restore a trusted exported snapshot into an empty session; the returned snapshot is display-safe. |
 | `clear(session_key)` | Clear and persist one session. |
 | `delete(session_key)` | Delete one session from disk and cache. |
 | `flush()` | Flush cached sessions to durable storage. |
@@ -607,6 +610,11 @@ async with Nanobot.from_config() as bot:
 Ingested messages must include `role` and `content`. Roles may be `user`,
 `assistant`, `tool`, or `system`. Other fields, such as `timestamp`,
 `source_session_id`, or `source_date`, are persisted as message metadata.
+
+`get()` and snapshots returned by ordinary SDK operations are display-safe and omit
+model-only runtime context. `export()` is an explicit backup boundary and includes
+that internal context so `restore()` can preserve the exact model-visible history.
+Do not expose exported snapshots directly to chat users.
 
 ### `bot.memory`
 

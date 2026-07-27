@@ -117,3 +117,4 @@ ops/config/notify-sidecar-rs/config.json
 exp/
 .playwright-mcp/
 bridge/node_modules/
+webui/.verify-*
