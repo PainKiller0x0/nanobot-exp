@@ -2676,6 +2676,154 @@ def plugins_disable(
 
 
 # ============================================================================
+# Doctor Commands
+# ============================================================================
+
+
+def _render_doctor_report(report) -> None:
+    """Render a compact doctor report."""
+    status_style = {
+        "ok": "green",
+        "fixed": "cyan",
+        "warn": "yellow",
+        "fail": "red",
+        "info": "dim",
+    }
+    counts = report.summary
+    console.print(f"{__logo__} nanobot Doctor")
+    console.print(
+        "  "
+        f"[green]ok {counts.get('ok', 0)}[/green] ? "
+        f"[cyan]fixed {counts.get('fixed', 0)}[/cyan] ? "
+        f"[yellow]warn {counts.get('warn', 0)}[/yellow] ? "
+        f"[red]fail {counts.get('fail', 0)}[/red] ? "
+        f"[dim]info {counts.get('info', 0)}[/dim]"
+    )
+    console.print()
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Area", no_wrap=True)
+    table.add_column("Check", no_wrap=True)
+    table.add_column("Detail")
+    table.add_column("Hint")
+    for check in report.checks:
+        style = status_style.get(check.status, "white")
+        table.add_row(
+            f"[{style}]{check.status.upper()}[/{style}]",
+            check.area,
+            check.name,
+            check.detail,
+            check.hint or "",
+        )
+    console.print(table)
+
+    if report.repairs:
+        console.print("\n[bold cyan]Repairs applied[/bold cyan]")
+        for item in report.repairs:
+            console.print(f"  [cyan]?[/cyan] {item}")
+    if report.stable_point:
+        console.print(f"\n[dim]Ark Lite stable point: {report.stable_point}[/dim]")
+
+
+@app.command()
+def doctor(
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    repair: bool = typer.Option(False, "--repair", "--fix", help="Apply low-risk repairs"),
+    deep: bool = typer.Option(False, "--deep", help="Use deeper/slower runtime probes"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """Run health checks and low-risk repairs."""
+    import json
+
+    from nanobot.doctor import run_doctor
+
+    report = run_doctor(
+        config_path=config,
+        workspace=workspace,
+        repair=repair,
+        deep=deep,
+    )
+    if json_output:
+        sys.stdout.write(json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n")
+    else:
+        _render_doctor_report(report)
+    if report.has_failures:
+        raise typer.Exit(1)
+
+
+def _render_upgrade_report(report) -> None:
+    """Render a compact doctor-upgrade report."""
+    status_style = {
+        "ok": "green",
+        "fixed": "cyan",
+        "warn": "yellow",
+        "fail": "red",
+        "info": "dim",
+    }
+    console.print(f"{__logo__} nanobot Doctor Upgrade")
+    if report.latest_ref:
+        console.print(f"  upstream: [bold]{report.latest_ref}[/bold]")
+    if report.current_commit:
+        console.print(f"  current:  [dim]{report.current_commit}[/dim]")
+    if report.worktree:
+        console.print(f"  worktree: [dim]{report.worktree}[/dim]")
+    console.print()
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Step", no_wrap=True)
+    table.add_column("Detail")
+    for step in report.steps:
+        style = status_style.get(step.status, "white")
+        table.add_row(f"[{style}]{step.status.upper()}[/{style}]", step.name, step.detail)
+    console.print(table)
+
+    if report.has_failures:
+        console.print("\n[red]Upgrade stopped before touching the live service.[/red]")
+    elif not report.deployed:
+        console.print("\n[dim]Review-only mode. Re-run with --deploy after reviewing the worktree.[/dim]")
+
+
+@app.command("doctor-upgrade")
+def doctor_upgrade(
+    repo: str | None = typer.Option(None, "--repo", help="Nanobot git repo path"),
+    remote: str = typer.Option("official", "--remote", help="Upstream remote name or URL"),
+    ref: str = typer.Option("latest", "--ref", help="Upstream ref/tag, or 'latest' for newest v* tag"),
+    worktree_root: str | None = typer.Option(None, "--worktree-root", help="Directory for review worktrees"),
+    skip_tests: bool = typer.Option(False, "--skip-tests", help="Skip lint and pytest checks"),
+    deploy: bool = typer.Option(False, "--deploy", help="Fast-forward live repo and restart service after checks pass"),
+    service: str = typer.Option("podman-nanobot-cage.service", "--service", help="systemd service to restart when deploying"),
+    push_remote: str | None = typer.Option(None, "--push", help="Optional git remote to push after deploy"),
+    push_branch: str = typer.Option("main", "--push-branch", help="Remote branch name when --push is used"),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+):
+    """Prepare or deploy a safe upstream upgrade in an isolated worktree."""
+    import json
+
+    from nanobot.doctor_upgrade import run_doctor_upgrade
+
+    report = run_doctor_upgrade(
+        repo_path=repo,
+        upstream_remote=remote,
+        upstream_ref=ref,
+        worktree_root=worktree_root,
+        run_tests=not skip_tests,
+        deploy=deploy,
+        service=service,
+        push_remote=push_remote,
+        push_branch=push_branch,
+    )
+    if json_output:
+        sys.stdout.write(json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n")
+    else:
+        _render_upgrade_report(report)
+    if report.has_failures:
+        raise typer.Exit(1)
+
+
+# ============================================================================
 # Status Commands
 # ============================================================================
 

@@ -14,7 +14,7 @@ from nanobot.agent.capability_reply import (
 )
 from nanobot.agent.direct_reply_common import compact_text as _compact_text
 from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.command.help_panel import is_capability_menu_query
+from nanobot.command.help_panel import HELP_ALIASES, build_help_text, is_capability_menu_query
 
 
 def build_direct_reply(
@@ -40,6 +40,8 @@ def build_direct_reply(
         return _outbound(msg, memory_reply.search_memory(memory_query))
     if intents.is_memory_query(text):
         return _outbound(msg, system_reply.format_memory_report(model, start_time, last_usage or {}))
+    if _compact_text(text) in HELP_ALIASES:
+        return _outbound(msg, build_help_text())
     if is_capability_menu_query(_compact_text(text)):
         return _outbound(msg, format_capability_menu())
     if intents.is_capability_status_query(text):

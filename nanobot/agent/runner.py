@@ -807,6 +807,7 @@ class AgentRunner:
             "model": spec.runtime.model,
             "retry_mode": spec.provider_retry_mode,
             "on_retry_wait": spec.retry_wait_callback,
+            "current_user_text": spec.current_user_text,
         }
         generation = spec.runtime.generation
         kwargs["temperature"] = generation.temperature

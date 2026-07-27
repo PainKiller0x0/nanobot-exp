@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextvars import ContextVar
 import os
 import re
 from abc import ABC, abstractmethod
@@ -21,6 +22,15 @@ STREAM_IDLE_TIMEOUT_ENV = "NANOBOT_STREAM_IDLE_TIMEOUT_S"
 DEFAULT_STREAM_IDLE_TIMEOUT_S = 90.0
 MAX_STREAM_IDLE_TIMEOUT_S = 3600.0
 RETRY_AFTER_BUFFER = 1
+
+_CURRENT_USER_TEXT: ContextVar[str | None] = ContextVar(
+    "nanobot_current_user_text", default=None
+)
+
+
+def current_request_user_text() -> str | None:
+    """Return the user text for the current model request, if known."""
+    return _CURRENT_USER_TEXT.get()
 
 
 def resolve_stream_idle_timeout_s(
@@ -625,13 +635,17 @@ class LLMProvider(ABC):
         return found
 
     async def _safe_chat(self, **kwargs: Any) -> LLMResponse:
-        """Call chat() and convert unexpected exceptions to error responses."""
+        """Call chat() with request-local context and normalize errors."""
+        current_user_text = kwargs.pop("_nanobot_current_user_text", None)
+        token = _CURRENT_USER_TEXT.set(current_user_text)
         try:
             return await self.chat(**kwargs)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+        finally:
+            _CURRENT_USER_TEXT.reset(token)
 
     async def chat_stream(
         self,
@@ -669,13 +683,17 @@ class LLMProvider(ABC):
         return response
 
     async def _safe_chat_stream(self, **kwargs: Any) -> LLMResponse:
-        """Call chat_stream() and convert unexpected exceptions to error responses."""
+        """Call chat_stream() with request-local context and normalize errors."""
+        current_user_text = kwargs.pop("_nanobot_current_user_text", None)
+        token = _CURRENT_USER_TEXT.set(current_user_text)
         try:
             return await self.chat_stream(**kwargs)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+        finally:
+            _CURRENT_USER_TEXT.reset(token)
 
     async def chat_stream_with_retry(
         self,
@@ -690,6 +708,7 @@ class LLMProvider(ABC):
         on_thinking_delta: Callable[[str], Awaitable[None]] | None = None,
         on_tool_call_delta: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         on_stream_recover: Callable[[], Awaitable[None]] | None = None,
+        current_user_text: str | None = None,
         retry_mode: str = "standard",
         on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
@@ -723,6 +742,7 @@ class LLMProvider(ABC):
             on_content_delta=_tracking_delta if on_content_delta is not None else None,
             on_thinking_delta=on_thinking_delta,
             on_tool_call_delta=on_tool_call_delta,
+            _nanobot_current_user_text=current_user_text,
         )
         if on_stream_recover and getattr(self, "supports_stream_recover_callback", False):
             kw["on_stream_recover"] = _recover_stream
@@ -745,6 +765,7 @@ class LLMProvider(ABC):
         temperature: object = _SENTINEL,
         reasoning_effort: object = _SENTINEL,
         tool_choice: str | dict[str, Any] | None = None,
+        current_user_text: str | None = None,
         retry_mode: str = "standard",
         on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
@@ -768,6 +789,7 @@ class LLMProvider(ABC):
             messages=messages, tools=tools, model=model,
             max_tokens=max_tokens, temperature=temperature,
             reasoning_effort=reasoning_effort, tool_choice=tool_choice,
+            _nanobot_current_user_text=current_user_text,
         )
         return await self._run_with_retry(
             self._safe_chat,

@@ -19,10 +19,13 @@ from nanobot.runtime_context import (
     RUNTIME_CONTEXT_TAG,
     RuntimeContextBlock,
     append_runtime_context,
+    wrap_runtime_context_lines,
 )
 from nanobot.utils.helpers import (
+    current_time_str,
     detect_image_mime,
     load_bundled_template,
+    truncate_text,
     truncate_text_to_tokens,
 )
 from nanobot.utils.prompt_templates import render_template
@@ -59,6 +62,9 @@ class ContextBuilder:
     _RUNTIME_CONTEXT_TAG = RUNTIME_CONTEXT_TAG
     _MAX_RECENT_HISTORY = 50
     _MAX_HISTORY_TOKENS = 8_000  # hard cap on recent history section size (tokens)
+    _LIGHT_USER_MAX_CHARS = 1_400
+    _LIGHT_MEMORY_MAX_CHARS = 1_600
+    _LIGHT_SESSION_SUMMARY_MAX_CHARS = 1_200
     _RUNTIME_CONTEXT_END = RUNTIME_CONTEXT_END
 
     def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
@@ -72,6 +78,10 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         channel: str | None = None,
         session_summary: str | None = None,
+        compact_always_skills: bool = False,
+        include_skills_index: bool = True,
+        include_recent_history: bool = True,
+        lightweight: bool = False,
         workspace: Path | None = None,
         include_memory_recent_history: bool = True,
         session_key: str | None = None,
@@ -79,6 +89,11 @@ class ContextBuilder:
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         root = workspace or self.workspace
+        if lightweight:
+            return self._build_light_system_prompt(
+                channel=channel,
+                session_summary=session_summary,
+            )
         parts = [self._get_identity(channel=channel, workspace=root)]
 
         bootstrap = self._load_bootstrap_files(root)
@@ -93,15 +108,31 @@ class ContextBuilder:
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
-            always_content = self.skills.load_skills_for_context(always_skills)
-            if always_content:
-                parts.append(f"# Active Skills\n\n{always_content}")
+            if compact_always_skills:
+                all_skill_names = {
+                    item["name"]
+                    for item in self.skills.list_skills(filter_unavailable=False)
+                }
+                always_summary = self.skills.build_skills_summary(
+                    exclude=all_skill_names - set(always_skills)
+                )
+                if always_summary:
+                    parts.append(
+                        "# Active Skills Quick Reference\n\n"
+                        + always_summary
+                        + "\n\nLoad the full skill file only when the current user request needs it."
+                    )
+            else:
+                always_content = self.skills.load_skills_for_context(always_skills)
+                if always_content:
+                    parts.append(f"# Active Skills\n\n{always_content}")
 
-        skills_summary = self.skills.build_skills_summary(exclude=set(always_skills))
-        if skills_summary:
-            parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
+        if include_skills_index:
+            skills_summary = self.skills.build_skills_summary(exclude=set(always_skills))
+            if skills_summary:
+                parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
 
-        if include_memory_recent_history:
+        if include_recent_history and include_memory_recent_history:
             entries = self.memory.read_recent_history_for_prompt(
                 since_cursor=self.memory.get_last_dream_cursor(),
                 session_key=session_key,
@@ -117,6 +148,60 @@ class ContextBuilder:
 
         if session_summary:
             parts.append(f"[Archived Context Summary]\n\n{session_summary}")
+
+        return "\n\n---\n\n".join(parts)
+
+    def _build_light_system_prompt(
+        self,
+        *,
+        channel: str | None = None,
+        session_summary: str | None = None,
+    ) -> str:
+        """Build a compact prompt for short standalone chat turns.
+
+        Lightweight turns deliberately omit tool manuals and workspace files,
+        while retaining the user's stable profile and explicitly saved memory.
+        """
+        channel_hint = "Reply directly with short, natural paragraphs."
+        if channel in {"telegram", "qq", "discord"}:
+            channel_hint = (
+                "This conversation is on a messaging app. Reply directly with short, "
+                "natural paragraphs. Avoid large headings and tables."
+            )
+        elif channel in {"whatsapp", "sms"}:
+            channel_hint = "This conversation is on a text messaging platform. Use plain text only."
+        elif channel in {"cli", "mochat"}:
+            channel_hint = "Output is rendered in a terminal. Keep formatting minimal."
+
+        parts = [
+            "# Lightweight Chat Mode\n\n"
+            "You are Nanobot, the user's warm, concise assistant. "
+            "This prompt is used only for short standalone chat turns where tools are not advertised.\n"
+            f"- {channel_hint}\n"
+            "- Prefer Chinese when the user writes Chinese.\n"
+            "- Be relaxed but not verbose; match the user's casual tone.\n"
+            "- Treat the latest user message as authoritative. Do not drag in older topics "
+            "unless the user explicitly asks about them.\n"
+            "- Use Runtime Context / Current Time as the user's current local time for "
+            "relative-date advice; do not ask the user what time it is unless it is missing.\n"
+            "- Do not claim you checked live data, changed files, or used tools in this lightweight turn.\n"
+            "- If the message actually needs external data, code changes, scheduling, files, or logs, "
+            "say briefly that it needs the full task path instead of guessing."
+        ]
+
+        user = self.memory.read_user().strip()
+        if user and not self._is_template_content(user, "USER.md"):
+            parts.append("# User Snapshot\n\n" + truncate_text(user, self._LIGHT_USER_MAX_CHARS))
+
+        memory = self.memory.read_memory().strip()
+        if memory and not self._is_template_content(memory, "memory/MEMORY.md"):
+            parts.append("# Memory Snapshot\n\n" + truncate_text(memory, self._LIGHT_MEMORY_MAX_CHARS))
+
+        if session_summary:
+            parts.append(
+                "[Archived Context Summary]\n\n"
+                + truncate_text(session_summary, self._LIGHT_SESSION_SUMMARY_MAX_CHARS)
+            )
 
         return "\n\n---\n\n".join(parts)
 
@@ -205,6 +290,8 @@ class ContextBuilder:
         session_summary: str | None = None,
         session_metadata: Mapping[str, Any] | None = None,
         runtime_context_blocks: Sequence[RuntimeContextBlock] | None = None,
+        compact_system_prompt: bool = False,
+        lightweight_system_prompt: bool = False,
         workspace: Path | None = None,
         include_memory_recent_history: bool = True,
         session_key: str | None = None,
@@ -214,6 +301,25 @@ class ContextBuilder:
         root = workspace or self.workspace
         user_content = self._build_user_content(current_message, media)
         blocks = list(runtime_context_blocks or ()) if current_role == "user" else []
+        if current_role == "user" and lightweight_system_prompt and not blocks:
+            blocks = [
+                RuntimeContextBlock(
+                    source="nanobot.default-time",
+                    content=wrap_runtime_context_lines(
+                        [
+                            f"Current Time: {current_time_str(self.timezone)}",
+                            (
+                                "Time Anchor: Treat Current Time as the user's current local time "
+                                "for interpreting today, tonight, tomorrow, this week, deadlines, "
+                                "reminders, and time-sensitive advice."
+                            ),
+                            f"Channel: {channel}" if channel else "",
+                            f"Chat ID: {chat_id}" if chat_id else "",
+                            f"Sender ID: {sender_id}" if sender_id else "",
+                        ]
+                    ),
+                )
+            ]
         merged, runtime_context_meta = append_runtime_context(user_content, blocks)
         messages = [
             {
@@ -222,6 +328,8 @@ class ContextBuilder:
                     skill_names,
                     channel=channel,
                     session_summary=session_summary,
+                    compact_always_skills=compact_system_prompt,
+                    lightweight=lightweight_system_prompt,
                     workspace=root,
                     include_memory_recent_history=include_memory_recent_history,
                     session_key=session_key,

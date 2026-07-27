@@ -26,6 +26,7 @@ from nanobot.providers.base import (
     LLMProvider,
     LLMResponse,
     ToolCallRequest,
+    current_request_user_text,
     parse_tool_arguments,
     resolve_stream_idle_timeout_s,
     tool_arguments_json_for_replay,
@@ -192,8 +193,8 @@ def _last_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _explicit_image_generation_prompt(messages: list[dict[str, Any]]) -> bool:
-    text = _last_user_text(messages).strip()
+def _explicit_image_generation_text(text: str) -> bool:
+    text = (text or "").strip()
     if not text:
         return False
     lowered = text.lower()
@@ -208,31 +209,53 @@ def _explicit_image_generation_prompt(messages: list[dict[str, Any]]) -> bool:
         "帮我看下日志",
         "看下日志",
         "报错",
+        "画饼",
+        "画一张饼",
+        "画张饼",
+        "画个饼",
     )
     if any(marker in lowered for marker in negative_markers):
         return False
-    english_markers = (
-        "generate an image",
-        "create an image",
-        "draw an image",
-        "make an image",
-        "generate a picture",
-        "create a picture",
-        "draw a picture",
-    )
+    if re.search(
+        r"\b(?:generate|create|make|draw)\s+(?:an?\s+)?"
+        r"(?:image|picture|illustration|poster|avatar|wallpaper|cover)\b",
+        lowered,
+    ):
+        return True
     chinese_markers = (
-        "给我画",
-        "帮我画",
-        "画一张",
-        "画张",
+        "给我画一张",
+        "帮我画一张",
+        "给我画张",
+        "帮我画张",
+        "给我画个",
+        "帮我画个",
+        "画一张图",
+        "画张图",
         "生成一张图",
         "生成图片",
         "创建图片",
+        "制作图片",
         "出一张图",
+        "生成图像",
+        "生成插画",
+        "生成海报",
+        "生成头像",
+        "生成壁纸",
     )
-    return any(marker in lowered for marker in english_markers) or any(
-        marker in text for marker in chinese_markers
-    )
+    for marker in chinese_markers:
+        index = text.find(marker)
+        if index < 0:
+            continue
+        rest = text[index + len(marker):].lstrip()
+        if not rest.startswith("饼"):
+            return True
+    return False
+
+
+def _explicit_image_generation_prompt(messages: list[dict[str, Any]]) -> bool:
+    current_user_text = current_request_user_text()
+    text = current_user_text if current_user_text is not None else _last_user_text(messages)
+    return _explicit_image_generation_text(text)
 
 
 def _stream_idle_timeout_s(messages: list[dict[str, Any]]) -> float:

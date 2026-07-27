@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pkgutil
+import os
 from functools import cache
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING
@@ -35,13 +36,23 @@ def _warn_legacy_channel_entry_points() -> None:
     )
 
 
+def _channel_allowlist() -> set[str] | None:
+    raw = os.environ.get("NANOBOT_CHANNEL_ALLOWLIST", "").strip()
+    if not raw:
+        return None
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
 def _channel_package_names() -> list[str]:
     import nanobot.channels as package
 
+    allowed = _channel_allowlist()
     return [
         name
         for _, name, is_package in pkgutil.iter_modules(package.__path__)
-        if is_package and has_channel_package(name)
+        if is_package
+        and has_channel_package(name)
+        and (allowed is None or name in allowed)
     ]
 
 

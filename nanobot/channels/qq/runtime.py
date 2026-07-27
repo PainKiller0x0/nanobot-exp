@@ -56,12 +56,14 @@ except Exception:  # pragma: no cover
 
 try:
     import botpy
+    from botpy.gateway import BotWebSocket
     from botpy.http import Route
 
     QQ_AVAILABLE = True
 except ImportError:  # pragma: no cover
     QQ_AVAILABLE = False
     botpy = None
+    BotWebSocket = None
     Route = None
 
 if TYPE_CHECKING:
@@ -73,6 +75,13 @@ if TYPE_CHECKING:
 # (2=voice, 3=video are restricted; we only use image vs file)
 QQ_FILE_TYPE_IMAGE = 1
 QQ_FILE_TYPE_FILE = 4
+
+_RECONNECT_BACKOFF_START = 5
+_RECONNECT_BACKOFF_MAX = 300
+
+
+def _is_network_error(exc: BaseException) -> bool:
+    return isinstance(exc, (aiohttp.ClientConnectorError, OSError))
 
 _IMAGE_EXTS = {
     ".png",
@@ -231,6 +240,38 @@ def _make_bot_class(channel: QQChannel) -> type[botpy.Client]:
         def __init__(self):
             # Disable botpy's file log — nanobot uses loguru; default "botpy.log" fails on read-only fs
             super().__init__(intents=intents, ext_handlers=False)
+            self._ws_backoff: dict[int, int] = {}
+            self._ws_retry_at: dict[int, float] = {}
+
+        async def bot_connect(self, session):
+            """Connect one gateway session with per-session exponential backoff."""
+            session_id = id(session)
+            retry_at = self._ws_retry_at.pop(session_id, None)
+            if retry_at is not None:
+                remaining = retry_at - time.monotonic()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+
+            client = BotWebSocket(session, self._connection)
+            backoff = self._ws_backoff.get(session_id, _RECONNECT_BACKOFF_START)
+            try:
+                await client.ws_connect()
+                self._ws_backoff.pop(session_id, None)
+            except (Exception, KeyboardInterrupt, SystemExit) as exc:
+                if _is_network_error(exc):
+                    channel.logger.warning(
+                        "QQ bot network error (retry in {}s): {}",
+                        backoff,
+                        exc,
+                    )
+                    self._ws_retry_at[session_id] = time.monotonic() + backoff
+                    self._ws_backoff[session_id] = min(
+                        backoff * 2,
+                        _RECONNECT_BACKOFF_MAX,
+                    )
+                else:
+                    channel.logger.exception("QQ bot WebSocket error: {}", exc)
+                self._connection.add(session)
 
         async def on_ready(self):
             logger.info("QQ bot ready: {}", self.robot.name)

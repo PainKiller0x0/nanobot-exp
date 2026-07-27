@@ -75,6 +75,14 @@ def test_stream_idle_timeout_uses_image_timeout_for_explicit_image_prompt(monkey
     ]) == 180
 
 
+def test_image_intent_rejects_metaphorical_draw_requests() -> None:
+    from nanobot.providers.openai_compat_provider import _explicit_image_generation_text
+
+    assert not _explicit_image_generation_text("我给你画饼")
+    assert not _explicit_image_generation_text("画一张饼充饥")
+    assert _explicit_image_generation_text("给我画一张城市夜景")
+
+
 def test_stream_idle_timeout_keeps_default_for_normal_chat(monkeypatch) -> None:
     from nanobot.providers.openai_compat_provider import _stream_idle_timeout_s
 
@@ -160,6 +168,27 @@ async def test_chat_stream_runs_explicit_image_prompt_in_background() -> None:
     assert deltas[0].startswith("??????????")
     assert deltas[-1] == "![generated](http://150.158.121.88:8093/gemini-images/test.png)"
     provider._create_chat_completion_with_route_log.assert_awaited_once()
+
+
+def test_current_turn_text_overrides_historical_image_prompt() -> None:
+    from nanobot.providers.base import _CURRENT_USER_TEXT
+    from nanobot.providers.openai_compat_provider import _explicit_image_generation_prompt
+
+    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+        provider = OpenAICompatProvider(api_key="test-key", api_base="https://example.com/obp/v1")
+
+    messages = [
+        {"role": "user", "content": "给我画一张旧图片"},
+        {"role": "assistant", "content": "旧回复"},
+    ]
+    token = _CURRENT_USER_TEXT.set("今晚吃什么？")
+    try:
+        assert not _explicit_image_generation_prompt(messages)
+        kwargs = provider._with_obp_request_headers({"messages": messages})
+    finally:
+        _CURRENT_USER_TEXT.reset(token)
+
+    assert "X-OBP-Image-Generation" not in kwargs["extra_headers"]
 
 
 def test_obp_headers_mark_explicit_image_generation() -> None:

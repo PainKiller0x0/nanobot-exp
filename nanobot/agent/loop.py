@@ -23,6 +23,7 @@ from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.automation_turns import publish_next_deferred_turn
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.cron_turns import CronTurnCoordinator
+from nanobot.agent.direct_reply import build_direct_reply
 from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
@@ -50,6 +51,13 @@ from nanobot.bus.runtime_events import (
 )
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
+from nanobot.exp.agent.history_budget import (
+    light_replay_max_messages,
+    light_system_prompt_enabled,
+    replay_budget_for_message,
+    should_skip_history_replay,
+    should_use_compact_system_prompt,
+)
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.runtime_context import (
@@ -166,6 +174,9 @@ class TurnContext:
 
     pending_queue: asyncio.Queue | None = None
     pending_summary: str | None = None
+    compact_system_prompt: bool = False
+    lightweight_system_prompt: bool = False
+    skip_history_replay: bool = False
 
     ephemeral: bool = False
     run_extra_hooks_for_ephemeral: bool = False
@@ -196,6 +207,13 @@ class AgentLoop:
     @property
     def current_iteration(self) -> int:
         return self._current_iteration
+
+    @property
+    def _max_messages(self) -> int:
+        """Derive the replay cap from the current runtime, not a stale mirror."""
+        return replay_max_messages_for_context(
+            self.runtime_resolver.runtime.context_window_tokens
+        )
 
     @property
     def tool_names(self) -> list[str]:
@@ -266,6 +284,7 @@ class AgentLoop:
         max_iterations: int | None = None,
         max_concurrent_subagents: int | None = None,
         context_window_tokens: int | None = None,
+        history_replay_tokens: int | None = None,
         context_block_limit: int | None = None,
         max_tool_result_chars: int | None = None,
         fail_on_tool_error: bool | None = None,
@@ -298,6 +317,7 @@ class AgentLoop:
         restart_mode: str = "auto",
         local_trigger_store: Any | None = None,
         idle_compact_check_interval_seconds: int = 0,
+        max_messages: int = 120,
     ):
         from nanobot.config.schema import ToolsConfig
 
@@ -330,6 +350,11 @@ class AgentLoop:
             context_window_tokens
             if context_window_tokens is not None
             else defaults.context_window_tokens
+        )
+        self.history_replay_tokens = (
+            history_replay_tokens
+            if history_replay_tokens is not None
+            else defaults.history_replay_tokens
         )
         configured_presets = model_presets or {}
         self.runtime_resolver = ModelRuntimeResolver(
@@ -491,6 +516,7 @@ class AgentLoop:
             max_iterations=defaults.max_tool_iterations,
             max_concurrent_subagents=defaults.max_concurrent_subagents,
             context_window_tokens=context_window_tokens,
+            history_replay_tokens=defaults.history_replay_tokens,
             context_block_limit=defaults.context_block_limit,
             max_tool_result_chars=defaults.max_tool_result_chars,
             fail_on_tool_error=defaults.fail_on_tool_error,
@@ -721,6 +747,8 @@ class AgentLoop:
             session_metadata=ctx.session.metadata,
             workspace=scope.project_path,
             runtime_context_blocks=ctx.runtime_context_blocks,
+            compact_system_prompt=ctx.compact_system_prompt,
+            lightweight_system_prompt=ctx.lightweight_system_prompt,
             include_memory_recent_history=not ctx.ephemeral,
             session_key=ctx.session.key,
             unified_session=self._unified_session,
@@ -824,9 +852,11 @@ class AgentLoop:
             return
         remember_last_channel(session.metadata, msg.channel, msg.chat_id)
 
-    @staticmethod
-    def _replay_token_budget(runtime: LLMRuntime) -> int:
+    def _replay_token_budget(self, runtime: LLMRuntime | None = None) -> int:
         """Derive a token budget for session history replay from the context window."""
+        if self.history_replay_tokens > 0:
+            return self.history_replay_tokens
+        runtime = runtime or self.runtime_resolver.runtime
         if runtime.context_window_tokens <= 0:
             return 0
         max_output = runtime.generation.max_tokens
@@ -1611,6 +1641,19 @@ class AgentLoop:
             turn_scopes=ctx.turn_scopes,
         )
         result = await self.commands.dispatch(cmd_ctx)
+        if result is None and is_user_turn:
+            direct = build_direct_reply(
+                ctx.msg,
+                model=self.model,
+                start_time=self._start_time,
+                last_usage=self._last_usage,
+                history=self._recent_direct_history(ctx.session),
+            )
+            if direct is not None:
+                ctx.outbound = direct
+                self._save_direct_turn(ctx.session, ctx.msg, direct)
+                self._clear_pending_user_turn(ctx.session)
+                return "shortcut"
         if result is not None:
             ctx.outbound = result
             # Shortcut commands skip BUILD and SAVE, so we must persist the
@@ -1637,27 +1680,71 @@ class AgentLoop:
             ctx.runtime = runtime
         if ctx.on_runtime_admitted is not None:
             await ctx.on_runtime_admitted(runtime)
+        is_subagent = ctx.kind is TurnKind.SYSTEM and ctx.msg.sender_id == "subagent"
+        default_replay_budget = self._replay_token_budget(runtime)
+        replay_budget = default_replay_budget
+        replay_reason = "default"
+        if ctx.kind is TurnKind.USER:
+            replay_budget, replay_reason = replay_budget_for_message(
+                ctx.msg.content,
+                default_budget=default_replay_budget,
+                has_media=bool(ctx.msg.media),
+            )
+            if replay_budget != default_replay_budget:
+                logger.info(
+                    "Adaptive history replay budget session={} tokens={}/{} reason={} msg_chars={}",
+                    ctx.session_key,
+                    replay_budget,
+                    default_replay_budget,
+                    replay_reason,
+                    len(ctx.msg.content or ""),
+                )
+        ctx.skip_history_replay = (
+            ctx.kind is TurnKind.USER and should_skip_history_replay(replay_reason)
+        )
+        ctx.lightweight_system_prompt = (
+            ctx.skip_history_replay and light_system_prompt_enabled()
+        )
+        plain_greeting = (ctx.msg.content or "").strip().lower() in {"hello", "hi", "hey"}
+        ctx.compact_system_prompt = (
+            ctx.kind is TurnKind.USER
+            and should_use_compact_system_prompt(replay_reason)
+            and not plain_greeting
+        )
         replay_max_messages = replay_max_messages_for_context(
             runtime.context_window_tokens
         )
+        if ctx.compact_system_prompt:
+            replay_max_messages = light_replay_max_messages(replay_max_messages)
+        if is_subagent:
+            replay_max_messages = replay_max_messages_for_context(
+                runtime.context_window_tokens
+            )
+            ctx.skip_history_replay = False
+            ctx.compact_system_prompt = False
+            ctx.lightweight_system_prompt = False
         if not ctx.ephemeral:
             await self.consolidator.maybe_consolidate_by_tokens(
                 ctx.session,
                 runtime=runtime,
                 replay_max_messages=replay_max_messages,
             )
-        is_subagent = ctx.kind is TurnKind.SYSTEM and ctx.msg.sender_id == "subagent"
-
         if ctx.kind is TurnKind.USER and (message_tool := self.tools.get("message")):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
         _hist_kwargs: dict[str, Any] = {
             "max_messages": replay_max_messages,
-            "max_tokens": self._replay_token_budget(runtime),
+            "max_tokens": replay_budget,
             "extend_to_user": is_subagent,
         }
-        ctx.history = ctx.session.get_history(**_hist_kwargs)
+        if ctx.compact_system_prompt:
+            _hist_kwargs["include_timestamps"] = True
+        ctx.history = (
+            []
+            if ctx.skip_history_replay
+            else ctx.session.get_history(**_hist_kwargs)
+        )
         if is_subagent:
             # Keep the durable internal delivery as an assistant record, but
             # present this completion to the model as fresh follow-up input.
@@ -1905,6 +1992,36 @@ class AgentLoop:
         if turn_latency_ms is not None and last_assistant_idx is not None:
             session.messages[last_assistant_idx]["latency_ms"] = int(turn_latency_ms)
         session.updated_at = datetime.now()
+
+    @staticmethod
+    def _recent_direct_history(
+        session: Session,
+        max_messages: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Return a small raw tail for deterministic reply guards."""
+        out: list[dict[str, Any]] = []
+        for message in session.messages[-max_messages:]:
+            role = message.get("role")
+            content = message.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str):
+                out.append({"role": role, "content": content})
+        return out
+
+    def _save_direct_turn(
+        self,
+        session: Session,
+        msg: InboundMessage,
+        direct: OutboundMessage,
+    ) -> None:
+        """Persist deterministic replies so follow-up small talk has context."""
+        media_paths = [p for p in (msg.media or []) if isinstance(p, str) and p]
+        if msg.content or media_paths:
+            extra: dict[str, Any] = {"media": list(media_paths)} if media_paths else {}
+            session.add_message("user", msg.content or "", **extra)
+        if direct.content:
+            session.add_message("assistant", direct.content)
+        session.enforce_file_cap(on_archive=self.context.memory.raw_archive)
+        self.sessions.save(session)
 
     def _persist_subagent_followup(self, session: Session, msg: InboundMessage) -> bool:
         """Persist subagent follow-ups before prompt assembly so history stays durable.

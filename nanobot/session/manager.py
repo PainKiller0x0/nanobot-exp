@@ -166,6 +166,7 @@ class Session:
         max_tokens: int = 0,
         extend_to_user: bool = False,
         include_runtime_context: bool = True,
+        include_timestamps: bool = True,
     ) -> list[dict[str, Any]]:
         """Return unconsolidated messages for LLM input.
 

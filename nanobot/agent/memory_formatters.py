@@ -27,9 +27,11 @@ def format_memory_saved(content: str, data: dict[str, Any]) -> str:
 
 
 def format_memory_status(stats: dict[str, Any], recent: list[Any]) -> str:
+    confirmed = stats.get("confirmed", stats.get("total_memories", "-"))
     lines = [
         "本地记忆状态（未调用 LLM）",
-        f"已确认：{stats.get('confirmed', '-')} 条；待审核：{stats.get('candidates', '-')} 条",
+        f"本地记忆：{confirmed} 条",
+        f"已确认：{confirmed} 条；待审核：{stats.get('candidates', '-')} 条",
         f"对话索引：{stats.get('episodes', '-')} 条；文章摘要索引：{stats.get('knowledge', '-')} 条",
         "模式：明确记住立即写入；普通聊天只生成待审核候选；本地 SQLite 不自动外传。",
     ]
@@ -40,6 +42,8 @@ def format_memory_status(stats: dict[str, Any], recent: list[Any]) -> str:
                 lines.append(
                     f"- {short_text(item.get('content'), 44)}（{item.get('kind', item.get('category', 'note'))}）"
                 )
+    else:
+        lines.append("最近记住：暂无")
     lines.append(f"看板：{DASHBOARD_URL}")
     return "\n".join(lines)
 
