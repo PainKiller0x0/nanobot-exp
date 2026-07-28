@@ -35,6 +35,13 @@ check 'nanobot/agent/memory_client.py' 'save_memory' 'Agent Reflexio memory clie
 check 'nanobot/agent/memory_intents.py' 'extract_memory_to_save' 'Agent memory intent matcher'
 check 'nanobot/agent/memory_formatters.py' 'format_memory_status' 'Agent memory reply formatter'
 check 'nanobot/exp/agent/memory_bridge.py' 'class MemoryHook' 'memory-rs bridge source'
+
+if ! git -C "$REPO" ls-files --error-unmatch nanobot/exp/agent/memory_bridge.py >/dev/null 2>&1; then
+  printf "MISS memory-rs bridge source is not tracked by git\n" >&2
+  fail=1
+else
+  printf "ok   memory-rs bridge source is tracked\n"
+fi
 check 'nanobot/cli/commands.py' 'build_memory_hook' 'memory-rs hook composition'
 check 'nanobot/channels/qq/runtime.py' 'from nanobot.exp.qq import stream_runtime as qq_stream_runtime' 'QQ downstream helper seam'
 check 'nanobot/exp/qq/streaming.py' 'should_stream_text' 'QQ streaming policy helper'
