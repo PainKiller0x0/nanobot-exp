@@ -269,8 +269,17 @@ def _pick_heartbeat_target_from_sessions(
     sessions: Iterable[dict[str, Any]],
     archived_keys: Iterable[str],
     unified_session_metadata: dict[str, Any] | None = None,
+    fixed_channel: str | None = None,
+    fixed_chat_id: str | None = None,
 ) -> tuple[str, str]:
     enabled = set(enabled_channels)
+    if fixed_channel and fixed_chat_id:
+        if fixed_channel == "cli" or fixed_channel in enabled:
+            return fixed_channel, fixed_chat_id
+        logger.warning(
+            "Heartbeat fixed target channel {} is not enabled; using recent session fallback",
+            fixed_channel,
+        )
     archived = set(archived_keys)
     for item in sessions:
         key = item.get("key") or ""
@@ -1645,6 +1654,7 @@ def _run_gateway(
     from nanobot.cron.service import CronJobSkippedError, CronService
     from nanobot.cron.session_turns import is_bound_cron_job
     from nanobot.cron.types import CronJob
+    from nanobot.exp.agent.memory_bridge import build_memory_hook
     from nanobot.providers.factory import (
         build_provider_snapshot,
         build_unconfigured_provider_snapshot,
@@ -1760,7 +1770,7 @@ def _run_gateway(
         runtime_events=runtime_events,
         turn_delivery_factory=turn_delivery_factory,
         provider_signature=provider_snapshot.signature,
-        hooks=[TokenUsageHook(timezone_name=config.agents.defaults.timezone)],
+        hooks=[TokenUsageHook(timezone_name=config.agents.defaults.timezone), build_memory_hook()],
         local_trigger_store=trigger_store,
         hook_factories=[create_file_edit_activity_hook],
     )
@@ -2013,6 +2023,8 @@ def _run_gateway(
             sessions=session_manager.list_sessions(),
             archived_keys=sidebar_state.get("archived_keys", []),
             unified_session_metadata=unified_metadata,
+            fixed_channel=hb_cfg.delivery_channel,
+            fixed_chat_id=hb_cfg.delivery_chat_id,
         )
 
     if channels.enabled_channels:

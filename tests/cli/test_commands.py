@@ -1787,6 +1787,34 @@ def test_heartbeat_target_skips_archived_webui_sessions():
     assert target == ("websocket", "active")
 
 
+def test_heartbeat_target_prefers_fixed_delivery_route():
+    from nanobot.cli.commands import _pick_heartbeat_target_from_sessions
+
+    target = _pick_heartbeat_target_from_sessions(
+        enabled_channels=["qq", "weixin"],
+        archived_keys=[],
+        sessions=[{"key": "weixin:recent"}],
+        fixed_channel="qq",
+        fixed_chat_id="fixed-user",
+    )
+
+    assert target == ("qq", "fixed-user")
+
+
+def test_heartbeat_target_falls_back_when_fixed_channel_is_disabled():
+    from nanobot.cli.commands import _pick_heartbeat_target_from_sessions
+
+    target = _pick_heartbeat_target_from_sessions(
+        enabled_channels=["qq"],
+        archived_keys=[],
+        sessions=[{"key": "qq:recent"}],
+        fixed_channel="weixin",
+        fixed_chat_id="fixed-user",
+    )
+
+    assert target == ("qq", "recent")
+
+
 def test_heartbeat_target_uses_last_channel_for_unified_session():
     from nanobot.cli.commands import _pick_heartbeat_target_from_sessions
     from nanobot.session.keys import LAST_CHANNEL_METADATA_KEY, UNIFIED_SESSION_KEY
