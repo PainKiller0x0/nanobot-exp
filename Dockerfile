@@ -25,7 +25,11 @@ RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
 COPY nanobot/ nanobot/
 COPY bridge/ bridge/
 COPY webui/ webui/
+COPY scripts/install_channel_dependencies.py scripts/install_channel_dependencies.py
 RUN NANOBOT_FORCE_WEBUI_BUILD=1 uv pip install --system --no-cache .
+# WhatsApp is available in the default image. Reuse the channel manifest so
+# the image stays aligned when its optional dependency constraints change.
+RUN python -m scripts.install_channel_dependencies whatsapp
 
 # Preload tiktoken's encoder into the image so the first live chat turn does
 # not block on encoder download/cache creation.

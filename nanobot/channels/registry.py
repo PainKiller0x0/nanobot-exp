@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import pkgutil
 import os
+import pkgutil
 from functools import cache
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING

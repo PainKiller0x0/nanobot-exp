@@ -2,12 +2,12 @@
 
 import asyncio
 import json
-from contextvars import ContextVar
 import os
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
