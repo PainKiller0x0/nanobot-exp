@@ -869,3 +869,32 @@ class TestGenerationForwarded:
         )
         assert fb.generation.temperature == 0.5
         assert fb.generation.max_tokens == 1024
+
+
+class _RaisingProvider(_FakeProvider):
+    def __init__(self, error: Exception):
+        super().__init__("raising")
+        self._error = error
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.chat_calls.append(dict(kwargs))
+        raise self._error
+
+
+@pytest.mark.asyncio
+async def test_provider_exception_is_converted_and_falls_back() -> None:
+    primary = _RaisingProvider(TimeoutError("upstream timed out"))
+    fallback = _FakeProvider("fallback", _make_response("fallback ok"))
+    factory = MagicMock(return_value=fallback)
+
+    fb = FallbackProvider(
+        primary=primary,
+        fallback_presets=[_fallback("fallback-a")],
+        provider_factory=factory,
+    )
+
+    result = await fb.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert result.content == "fallback ok"
+    assert result.finish_reason == "stop"
+    assert fallback.chat_calls[0]["model"] == "fallback-a"

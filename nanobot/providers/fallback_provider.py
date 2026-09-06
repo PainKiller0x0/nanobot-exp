@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -191,7 +192,14 @@ class FallbackProvider(LLMProvider):
 
         if self._primary_available():
             primary_was_attempted = True
-            response = await call(self._primary, kwargs)
+            response, primary_exception = await self._call_provider(
+                call, self._primary, kwargs
+            )
+            if primary_exception is not None:
+                logger.warning(
+                    "Primary model '{}' raised {} before responding",
+                    primary_model, type(primary_exception).__name__,
+                )
             if response.finish_reason != "error":
                 self._primary_failures = 0
                 self._primary_tripped_at = None
@@ -291,7 +299,14 @@ class FallbackProvider(LLMProvider):
             else:
                 kwargs["reasoning_effort"] = fallback.reasoning_effort
             try:
-                fallback_response = await call(fallback_provider, kwargs)
+                fallback_response, fallback_exception = await self._call_provider(
+                    call, fallback_provider, kwargs
+                )
+                if fallback_exception is not None:
+                    logger.warning(
+                        "Fallback '{}' raised {}",
+                        fallback_model, type(fallback_exception).__name__,
+                    )
             finally:
                 for name, value in original_values.items():
                     if value is _MISSING:
@@ -325,6 +340,26 @@ class FallbackProvider(LLMProvider):
             content=f"Primary model '{primary_model}' circuit open and no fallbacks available",
             finish_reason="error",
         )
+
+    @staticmethod
+    async def _call_provider(
+        call: Callable[[LLMProvider, dict[str, Any]], Awaitable[LLMResponse]],
+        provider: LLMProvider,
+        kwargs: dict[str, Any],
+    ) -> tuple[LLMResponse, Exception | None]:
+        """Turn provider exceptions into error responses without swallowing cancellation."""
+        try:
+            return await call(provider, kwargs), None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            response = LLMProvider._error_response_from_exception(exc)
+            if response.error_kind is None and any(
+                token in (str(exc).strip() or type(exc).__name__).lower()
+                for token in _AUTHENTICATION_ERROR_TOKENS
+            ):
+                response.error_kind = "authentication"
+            return response, exc
 
     async def _notify_fallback_model(self, model: str) -> None:
         if self._fallback_model_observer is None:
