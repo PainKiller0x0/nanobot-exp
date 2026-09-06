@@ -232,6 +232,21 @@ fn ad_score(title: &str, summary: &str, content: &str) -> i32 {
         "\u{666E}\u{901A}\u{767E}\u{59D3}\u{4E5F}\u{80FD}\u{5403}\u{5F97}\u{8D77}",
     ];
 
+    let urgency_title_signals = [
+        "很严重",
+        "立刻",
+        "做准备",
+        "随时",
+        "变天",
+        "赶紧",
+        "马上",
+        "大事不妙",
+    ];
+    let concrete_event_signals = [
+        "台风", "地震", "暴雨", "洪水", "火灾", "预警", "气象", "通知", "公告", "官方", "政策",
+        "央行", "停课", "市场", "股市",
+    ];
+
     let mut s = 0_i32;
     for k in hard_title {
         if title.contains(k) {
@@ -280,6 +295,15 @@ fn ad_score(title: &str, summary: &str, content: &str) -> i32 {
         s += 3;
     } else if supplement_product_hits >= 1 && supplement_commerce_hits >= 3 {
         s += 2;
+    }
+    let urgency_hits = urgency_title_signals
+        .iter()
+        .filter(|k| title_l.contains(*k))
+        .count();
+    let exclamation_count = title.chars().filter(|c| matches!(c, '!' | '！')).count();
+    let has_concrete_event = concrete_event_signals.iter().any(|k| title_l.contains(*k));
+    if urgency_hits >= 3 && exclamation_count >= 2 && !has_concrete_event {
+        s += 3;
     }
     s
 }
@@ -1502,6 +1526,20 @@ mod tests {
         let content = "\u{6700}\u{8FD1}\u{71AC}\u{591C}\u{8D76}\u{5DE5}\u{FF0C}\u{9519}\u{8FC7}\u{4E86}\u{548C}\u{5BB6}\u{4EBA}\u{51FA}\u{95E8}\u{3002}\u{5199}\u{8FD9}\u{7BC7}\u{6587}\u{7AE0}\u{53EA}\u{662F}\u{63D0}\u{9192}\u{81EA}\u{5DF1}\u{FF0C}\u{522B}\u{628A}\u{8EAB}\u{4F53}\u{5F53}\u{6210}\u{65E0}\u{9650}\u{900F}\u{652F}\u{7684}\u{8D26}\u{6237}\u{3002}";
 
         assert!(ad_score(title, summary, content) < 2);
+    }
+
+    #[test]
+    fn ad_score_blocks_generic_fear_urgency_clickbait_title() {
+        let title = "情况很严重了！大家立刻做准备吧，随时会变天！！";
+
+        assert!(ad_score(title, "", "") >= 3);
+    }
+
+    #[test]
+    fn ad_score_keeps_concrete_emergency_notice() {
+        let title = "台风预警发布，请居民提前做好防汛准备！";
+
+        assert!(ad_score(title, "", "") < 3);
     }
 
     #[test]

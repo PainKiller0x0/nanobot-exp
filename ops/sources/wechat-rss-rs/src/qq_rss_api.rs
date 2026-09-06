@@ -20,7 +20,7 @@ use crate::qq_extractive_qa::extractive_answer;
 
 const SIGNED_PREFIX: &str = "NBRAW1-SHA256:";
 const WECHAT_CACHE_FILE: &str =
-    "/root/.nanobot/workspace/skills/wechat-rss-sidecar/wechat_push_cache.json";
+    "/root/.nanobot/workspace/wechat_rss_service/wechat_push_cache.json";
 const YAGE_CACHE_FILE: &str = "/root/.nanobot/workspace/skills/news-curator/yage_cache.json";
 const YAGE_BIZ_DAILY: &str = "yage_kit_daily";
 const YAGE_SUB_NAME_HINT: &str = "鸭哥AI要闻-每日记录";
@@ -382,7 +382,7 @@ async fn build_wechat_signed_value(st: Arc<AppState>, q: RssActionQuery) -> Valu
         .get(&cache_key)
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    if !force && cached == entry_id {
+    if !force && cached >= entry_id {
         return json!({"status":"empty","reason":"ALREADY_SENT","entry_id":entry_id,"subscription_id":subscription_id});
     }
     let mut body = format_article_push_body(&article);

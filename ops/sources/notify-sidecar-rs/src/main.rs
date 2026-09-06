@@ -788,8 +788,7 @@ async fn get_access_token(state: &Arc<AppState>) -> anyhow_like::Result<String> 
 }
 
 async fn ack_wechat_delivery(sub_id: i64, entry_id: i64) -> anyhow_like::Result<()> {
-    let path =
-        PathBuf::from("/root/.nanobot/workspace/skills/wechat-rss-sidecar/wechat_push_cache.json");
+    let path = PathBuf::from("/root/.nanobot/workspace/wechat_rss_service/wechat_push_cache.json");
     let mut obj = read_json_object(&path).await.unwrap_or_default();
     let key = format!("sub:{sub_id}");
     let prev = obj.get(&key).and_then(Value::as_i64).unwrap_or(0);

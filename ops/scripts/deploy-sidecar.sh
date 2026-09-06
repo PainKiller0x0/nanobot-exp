@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${NANOBOT_OPS_REPO:-/root/nanobot-ops}"
+REPO="${NANOBOT_OPS_REPO:-/root/nanobot/ops}"
 BIN_DIR="${SIDECAR_BIN_DIR:-/usr/local/bin}"
 APT_MIRROR="${WECHAT_RSS_APT_MIRROR:-mirrors.tuna.tsinghua.edu.cn}"
 DRY_RUN=0

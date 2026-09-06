@@ -40,6 +40,11 @@ done
 SRC=$(readlink -f "$SRC")
 DST=$(readlink -m "$DST")
 
+if [[ "$SRC" == "/root/nanobot/ops" && "$(readlink -f "$DST")" == "$SRC" ]]; then
+  echo "ops directories unified: $SRC"
+  exit 0
+fi
+
 if [[ "$SRC" != "/root/nanobot/ops" ]]; then
   echo "refusing non-standard source: $SRC" >&2
   exit 1

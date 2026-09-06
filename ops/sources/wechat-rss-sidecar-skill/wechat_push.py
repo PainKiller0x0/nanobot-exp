@@ -15,7 +15,8 @@ from ops_common import format_article_push_body, load_json_dict, sign_nbraw_sha2
 
 BASE_DIR = "/root/.nanobot/workspace/skills/wechat-rss-sidecar"
 CLIENT_PATH = f"{BASE_DIR}/client.py"
-CACHE_FILE = f"{BASE_DIR}/wechat_push_cache.json"
+# This path is mounted into the RSS sidecar container as writable shared state.
+CACHE_FILE = "/root/.nanobot/workspace/wechat_rss_service/wechat_push_cache.json"
 
 
 def _run_latest(
@@ -93,7 +94,8 @@ def main() -> None:
         return
 
     cache_key = f"sub:{subscription_id}"
-    if (not args.force) and int(load_json_dict(CACHE_FILE).get(cache_key, 0) or 0) == entry_id:
+    cached_entry_id = int(load_json_dict(CACHE_FILE).get(cache_key, 0) or 0)
+    if (not args.force) and cached_entry_id >= entry_id:
         return
 
     body = format_article_push_body(latest)
