@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+from nanobot.utils.http import request_json as _http_request_json
 
 DASHBOARD_TIMEOUT = 0.8
 DASHBOARD_BASES = ("http://172.17.0.1:8093", "http://127.0.0.1:8093")
+
+
+def dashboard_bases() -> list[str]:
+    values = [os.environ.get("NANOBOT_DASHBOARD_URL", "").strip(), *DASHBOARD_BASES]
+    bases: list[str] = []
+    for value in values:
+        value = value.rstrip("/")
+        if value and value not in bases:
+            bases.append(value)
+    return bases
 
 
 def get_json(path: str, default: Any, *, timeout: float = DASHBOARD_TIMEOUT) -> Any:
@@ -31,28 +40,8 @@ def request_json(
     *,
     timeout: float = DASHBOARD_TIMEOUT,
 ) -> Any:
-    body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    headers = {"Accept": "application/json"}
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-    for base in dashboard_bases():
-        req = Request(base + path, data=body, headers=headers, method=method)
-        try:
-            with urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8", errors="replace"))
-        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
-            continue
-    return default
-
-
-def dashboard_bases() -> list[str]:
-    values = [os.environ.get("NANOBOT_DASHBOARD_URL", "").strip(), *DASHBOARD_BASES]
-    bases: list[str] = []
-    for value in values:
-        value = value.rstrip("/")
-        if value and value not in bases:
-            bases.append(value)
-    return bases
+    urls = [base + path for base in dashboard_bases()]
+    return _http_request_json(urls, method, payload, default, timeout=timeout)
 
 
 def compact_text(text: str) -> str:

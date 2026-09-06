@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+from nanobot.utils.http import request_json
 
 MEMORY_TIMEOUT = 0.35
 MEMORY_SOURCE = "nanobot-direct-reply"
@@ -14,8 +13,6 @@ MEMORY_RS_URL = os.environ.get("MEMORY_RS_URL", "").rstrip("/")
 MEMORY_RS_ENABLED = bool(MEMORY_RS_URL)
 MEMORY_SCOPE = os.environ.get("MEMORY_RS_SCOPE", "default-nanobot").strip() or "default-nanobot"
 LEGACY_MEMORY_FALLBACK = os.environ.get("MEMORY_RS_LEGACY_FALLBACK", "1") != "0"
-
-
 def save_memory(content: str, *, user_id: str | None, category: str) -> dict[str, Any]:
     if not MEMORY_RS_ENABLED:
         return _save_legacy_memory(content, user_id=user_id, category=category)
@@ -132,27 +129,13 @@ def _legacy_search_memories(query: str, *, limit: int) -> list[Any]:
 
 
 def get_json(path: str, default: Any) -> Any:
-    return _request_json("GET", path, None, default)
+    urls = [f"{MEMORY_RS_URL}{path}"] if MEMORY_RS_URL else []
+    return request_json(urls, "GET", None, default, timeout=MEMORY_TIMEOUT)
 
 
 def post_json(path: str, payload: dict[str, Any], default: Any) -> Any:
-    return _request_json("POST", path, payload, default)
-
-
-def _request_json(method: str, path: str, payload: dict[str, Any] | None, default: Any) -> Any:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
-    request = Request(
-        f"{MEMORY_RS_URL}{path}",
-        data=body,
-        method=method,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
-    )
-    try:
-        with urlopen(request, timeout=MEMORY_TIMEOUT) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            return json.loads(raw) if raw else default
-    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
-        return default
+    urls = [f"{MEMORY_RS_URL}{path}"] if MEMORY_RS_URL else []
+    return request_json(urls, "POST", payload, default, timeout=MEMORY_TIMEOUT)
 
 
 def as_dict(value: Any) -> dict[str, Any]:

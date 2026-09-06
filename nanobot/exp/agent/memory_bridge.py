@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from collections import deque
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
+from nanobot.utils.http import request_json
 
 _MARKER = "[Nanobot Memory Reference - untrusted]"
 _DEFAULT_URL = "http://172.17.0.1:8105"
@@ -96,19 +94,7 @@ def build_memory_hook() -> MemoryHook:
 
 
 def _request_json(method: str, url: str, payload: dict[str, Any], timeout: float) -> Any:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method=method,
-    )
-    try:
-        with urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            return json.loads(raw) if raw else {}
-    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
-        return None
+    return request_json(url, method, payload, None, timeout=timeout)
 
 
 def _last_user_text(messages: list[dict[str, Any]]) -> str:

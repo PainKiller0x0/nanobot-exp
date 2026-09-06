@@ -30,18 +30,6 @@ HTTP = JsonHttpClient(
 )
 
 
-def request(path: str, method: str = 'GET', payload: dict | None = None, expect_json: bool = True):
-    return HTTP.request(path, method=method, payload=payload, expect_json=expect_json)
-
-
-def request_json(path: str, method: str = 'GET', payload: dict | None = None) -> dict:
-    return request(path, method=method, payload=payload, expect_json=True)
-
-
-def request_text(path: str, method: str = 'GET') -> str:
-    return request(path, method=method, expect_json=False)
-
-
 def print_json(data: dict) -> int:
     print(json.dumps(data, ensure_ascii=False, indent=2))
     return 0
@@ -64,7 +52,7 @@ def fetch_timeline_items(days: int, limit: int, subscription_id: int | None = No
     params = {'days': days, 'limit': limit}
     if subscription_id:
         params['subscription_id'] = subscription_id
-    payload = request_json('/api/timeline?' + urllib.parse.urlencode(params))
+    payload = HTTP.get_json('/api/timeline?' + urllib.parse.urlencode(params))
     items = payload.get('items') or []
     if not isinstance(items, list):
         return []
@@ -80,12 +68,12 @@ def fetch_timeline_items(days: int, limit: int, subscription_id: int | None = No
 
 
 def build_article_payload(entry_id: int, raw: bool = False) -> dict:
-    raw_item = request_json(f'/api/articles/{entry_id}')
+    raw_item = HTTP.get_json(f'/api/articles/{entry_id}')
     if raw:
         return raw_item
 
     item = raw_item.get('item') or {}
-    markdown = request_text(f'/api/articles/{entry_id}/markdown').strip()
+    markdown = HTTP.get_text(f'/api/articles/{entry_id}/markdown').strip()
     if not markdown:
         markdown = (
             item.get('article_markdown')
@@ -120,13 +108,13 @@ def build_latest_article_payload(
             'sample_interval': sample_interval,
         }
         if subscription_id:
-            request_json(
+            HTTP.post_json(
                 f'/api/subscriptions/{subscription_id}/refresh',
                 method='POST',
                 payload=refresh_payload,
             )
         else:
-            request_json('/api/refresh-all', method='POST', payload=refresh_payload)
+            HTTP.post_json('/api/refresh-all', payload=refresh_payload)
     items = fetch_timeline_items(days=days, limit=max(10, limit), subscription_id=subscription_id)
     if not items:
         return {
@@ -329,14 +317,14 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == 'subscriptions':
-        return print_json(request_json('/api/subscriptions'))
+        return print_json(HTTP.get_json('/api/subscriptions'))
 
     if args.command == 'timeline':
         return print_json({'items': fetch_timeline_items(days=args.days, limit=args.limit, subscription_id=args.subscription_id)})
 
     if args.command == 'new-items':
         params = {'hours': args.hours, 'limit': args.limit}
-        return print_json(request_json('/api/new-items?' + urllib.parse.urlencode(params)))
+        return print_json(HTTP.get_json('/api/new-items?' + urllib.parse.urlencode(params)))
 
     if args.command == 'article':
         return print_json(build_article_payload(args.entry_id, raw=args.raw))
@@ -369,8 +357,8 @@ def main() -> int:
 
     if args.command == 'llm-settings':
         if args.api_base is None and args.api_key is None and args.model is None and not args.enabled and not args.disabled:
-            return print_json(request_json('/api/settings/llm'))
-        current = request_json('/api/settings/llm').get('item', {})
+            return print_json(HTTP.get_json('/api/settings/llm'))
+        current = HTTP.get_json('/api/settings/llm').get('item', {})
         payload = {
             'enabled': bool(current.get('enabled')),
             'api_base': current.get('api_base') or '',
@@ -387,16 +375,18 @@ def main() -> int:
             payload['api_key'] = args.api_key
         if args.model is not None:
             payload['model'] = args.model
-        return print_json(request_json('/api/settings/llm', method='POST', payload=payload))
+        return print_json(HTTP.post_json('/api/settings/llm', payload=payload))
 
     if args.command == 'refresh':
         payload = {'days': args.days, 'sample_fetches': args.sample_fetches, 'sample_interval': args.sample_interval}
         if args.all:
-            return print_json(request_json('/api/refresh-all', method='POST', payload=payload))
+            return print_json(HTTP.post_json('/api/refresh-all', payload=payload))
         if not args.subscription_id:
             print('refresh requires --subscription-id or --all', file=sys.stderr)
             return 2
-        return print_json(request_json(f'/api/subscriptions/{args.subscription_id}/refresh', method='POST', payload=payload))
+        return print_json(
+            HTTP.post_json(f'/api/subscriptions/{args.subscription_id}/refresh', payload=payload)
+        )
 
     return 0
 
