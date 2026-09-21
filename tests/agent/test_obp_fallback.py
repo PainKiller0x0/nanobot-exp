@@ -1,0 +1,96 @@
+import pytest
+
+from nanobot.exp.agent.obp_fallback import OBPFallbackClient
+from nanobot.providers.base import LLMResponse
+
+
+def test_prepare_kwargs_removes_tools_and_caps_tokens() -> None:
+    kwargs = OBPFallbackClient.prepare_kwargs(
+        {
+            "model": "primary",
+            "tools": [{"type": "function"}],
+            "tool_choice": "auto",
+            "reasoning_effort": "high",
+            "on_retry_wait": object(),
+            "max_tokens": 2048,
+        },
+        env={"NANOBOT_OBP_FALLBACK_MAX_TOKENS": "128"},
+        model="gemini-3.1-flash-lite",
+    )
+
+    assert kwargs["model"] == "gemini-3.1-flash-lite"
+    assert kwargs["tools"] is None
+    assert kwargs["max_tokens"] == 128
+    assert "tool_choice" not in kwargs
+    assert "reasoning_effort" not in kwargs
+    assert "on_retry_wait" not in kwargs
+
+
+def test_provider_is_disabled_without_base() -> None:
+    assert OBPFallbackClient().provider(env={}) is None
+
+
+def test_provider_tags_obp_source_header(monkeypatch) -> None:
+    from nanobot.providers import openai_compat_provider
+
+    captured: dict[str, object] = {}
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(openai_compat_provider, "OpenAICompatProvider", FakeProvider)
+
+    fallback = OBPFallbackClient().provider(
+        env={
+            "NANOBOT_OBP_FALLBACK_BASE": "http://obp.local/v1",
+            "NANOBOT_OBP_FALLBACK_SOURCE": "unit-fallback",
+        }
+    )
+
+    assert fallback is not None
+    assert captured["extra_headers"] == {"X-OBP-Source": "unit-fallback"}
+
+
+@pytest.mark.asyncio
+async def test_request_returns_none_when_disabled() -> None:
+    class Logger:
+        def warning(self, *args, **kwargs):
+            pass
+
+        def info(self, *args, **kwargs):
+            pass
+
+    result = await OBPFallbackClient().request({}, reason="timeout", logger=Logger(), env={})
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_request_returns_none_on_fallback_error_finish(monkeypatch) -> None:
+    from nanobot.providers import openai_compat_provider
+
+    class Logger:
+        def warning(self, *args, **kwargs):
+            pass
+
+        def info(self, *args, **kwargs):
+            pass
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            pass
+
+        async def chat_with_retry(self, **kwargs):
+            return LLMResponse(content="bad", finish_reason="error")
+
+    monkeypatch.setattr(openai_compat_provider, "OpenAICompatProvider", FakeProvider)
+
+    result = await OBPFallbackClient().request(
+        {"messages": [], "max_tokens": 10},
+        reason="timeout",
+        logger=Logger(),
+        env={"NANOBOT_OBP_FALLBACK_BASE": "http://obp.local/v1"},
+    )
+
+    assert result is None

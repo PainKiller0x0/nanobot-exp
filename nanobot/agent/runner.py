@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -25,6 +26,10 @@ from nanobot.agent.context_governance import (
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
 from nanobot.agent.tools.execution import execute_tool_calls
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.exp.agent.tool_budget import (
+    latest_user_text_for_observability,
+    tool_definitions_for_turn,
+)
 from nanobot.events import NO_EVENTS, EventSink
 from nanobot.llm_usage.context import (
     LLMUsageSource,
@@ -68,6 +73,23 @@ _ARREARAGE_ERROR_MESSAGE = (
     "account is in arrears. Please top up / check the billing status of your API key and try again."
 )
 _PERSISTED_MODEL_ERROR_PLACEHOLDER = "[Assistant reply unavailable due to model error.]"
+_PROVIDER_ERROR_TAIL_RE = re.compile(
+    r"\s*(?:Error calling LLM:\s*)?(?:Gemini request failed:\s*)?Gemini API error code:\s*\d+.*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_provider_error_tail(text: str | None) -> str | None:
+    if not text:
+        return text
+    cleaned, count = _PROVIDER_ERROR_TAIL_RE.subn("", text)
+    return cleaned.rstrip() if count else text
+
+
+def _sanitize_provider_delta(delta: str) -> str:
+    return _strip_provider_error_tail(delta) or ""
+
+
 _MAX_EMPTY_RETRIES = 2
 _MAX_LENGTH_RECOVERIES = 3
 
@@ -105,6 +127,7 @@ class AgentRunSpec:
     consolidate_history: HistoryConsolidator | None = None
     consolidate_provider_compaction: ProviderCompactionConsolidator | None = None
     injection_callback: InjectionCallback | None = None
+    current_user_text: str | None = None
     terminal_injection_callback: InjectionCallback | None = None
     continuation_callback: ContinuationCallback | None = None
     finalize_on_max_iterations: bool = True
@@ -465,7 +488,7 @@ class AgentRunner:
                 response.thinking_blocks,
                 response.content,
             )
-            response.content = cleaned_content
+            response.content = _strip_provider_error_tail(cleaned_content)
             round_usages.append(raw_usage)
             context.usage = raw_usage
             usage = self._merge_usage(usage, raw_usage)
@@ -869,7 +892,24 @@ class AgentRunner:
         malformed_retry: bool = False,
         transcript: list[dict[str, Any]] | None,
     ) -> tuple[LLMResponse, LLMUsage]:
-        tool_definitions = spec.tools.get_definitions()
+        all_tool_definitions = spec.tools.get_definitions()
+        tool_definitions, tool_reason = tool_definitions_for_turn(
+            all_tool_definitions,
+            messages,
+            current_user_text=spec.current_user_text,
+        )
+        if all_tool_definitions and tool_definitions is None:
+            latest_user_text = (
+                spec.current_user_text
+                or latest_user_text_for_observability(messages)
+            )
+            logger.info(
+                "Adaptive tool ads disabled reason={} total_tools={} latest_user_chars={} latest_user_preview={}",
+                tool_reason,
+                len(all_tool_definitions),
+                len(latest_user_text),
+                latest_user_text.replace("\n", " ")[:80],
+            )
         messages, provider_context = await self.context_governor.prepare_request(
             request_state,
             messages,
@@ -960,6 +1000,9 @@ class AgentRunner:
                 if delta:
                     context.streamed_content = True
                     await _close_native_reasoning()
+                delta = _sanitize_provider_delta(delta)
+                if not delta:
+                    return
                 await hook.on_stream(context, delta)
 
             async def _thinking(delta: str) -> None:

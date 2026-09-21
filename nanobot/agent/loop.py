@@ -25,7 +25,13 @@ from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.context import ContextBuilder, PersistedPromptContextResolver, TranscriptInput
 from nanobot.agent.cron_turns import CronTurnCoordinator
+from nanobot.agent.direct_reply import build_direct_reply
 from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
+from nanobot.exp.agent.history_budget import (
+    light_replay_max_messages,
+    replay_budget_for_message,
+    should_skip_history_replay,
+)
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.runner import AgentRunner, AgentRunResult, AgentRunSpec
@@ -264,6 +270,7 @@ class AgentLoop:
         max_iterations: int | None = None,
         max_concurrent_subagents: int | None = None,
         context_window_tokens: int | None = None,
+        history_replay_tokens: int | None = None,
         max_tool_result_chars: int | None = None,
         provider_retry_mode: str = "standard",
         tool_hint_max_length: int | None = None,
@@ -316,6 +323,11 @@ class AgentLoop:
         self.max_iterations = (
             max_iterations if max_iterations is not None else defaults.max_tool_iterations
         )
+        self.history_replay_tokens = (
+            history_replay_tokens
+            if history_replay_tokens is not None
+            else defaults.history_replay_tokens
+        )
         initial_context_window = (
             context_window_tokens
             if context_window_tokens is not None
@@ -363,6 +375,7 @@ class AgentLoop:
             default_restrict_to_workspace=restrict_to_workspace,
         )
         self._start_time = time.time()
+        self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
         self._hook_factories: list[AgentTurnHookFactory] = hook_factories or []
 
@@ -492,6 +505,7 @@ class AgentLoop:
             max_iterations=defaults.max_tool_iterations,
             max_concurrent_subagents=defaults.max_concurrent_subagents,
             context_window_tokens=context_window_tokens,
+            history_replay_tokens=defaults.history_replay_tokens,
             max_tool_result_chars=defaults.max_tool_result_chars,
             provider_retry_mode=defaults.provider_retry_mode,
             tool_hint_max_length=defaults.tool_hint_max_length,
@@ -1208,6 +1222,7 @@ class AgentLoop:
                 initial_messages=None,
                 tools=effective_tools,
                 runtime=runtime,
+                current_user_text=request_ctx.original_user_text,
                 max_iterations=self.max_iterations,
                 max_tool_result_chars=self.max_tool_result_chars,
                 transcript_input=transcript_input,
@@ -1906,6 +1921,19 @@ class AgentLoop:
             turn_scopes=ctx.turn_scopes,
         )
         result = await self.commands.dispatch(cmd_ctx)
+        if result is None and is_user_turn:
+            direct = build_direct_reply(
+                ctx.msg,
+                model=self.model,
+                start_time=self._start_time,
+                last_usage=self._last_usage,
+                history=self._recent_direct_history(session),
+            )
+            if direct is not None:
+                ctx.outbound = direct
+                self._save_direct_turn(session, ctx.msg, direct)
+                self._clear_pending_user_turn(session)
+                return True
         if cmd_ctx.raw.lower() == "/compact":
             # Compaction reports through events, not an archiveable command reply.
             return True
@@ -1935,6 +1963,19 @@ class AgentLoop:
             return True
         return False
 
+    def _replay_token_budget(self, runtime: LLMRuntime | None = None) -> int:
+        if self.history_replay_tokens > 0:
+            return self.history_replay_tokens
+        runtime = runtime or self.runtime_resolver.runtime
+        if runtime.context_window_tokens <= 0:
+            return 0
+        try:
+            reserved_output = int(runtime.generation.max_tokens)
+        except (TypeError, ValueError):
+            reserved_output = 4096
+        budget = runtime.context_window_tokens - max(1, reserved_output) - 1024
+        return budget if budget > 0 else max(128, runtime.context_window_tokens // 2)
+
     async def _build_turn(self, ctx: TurnContext) -> None:
         session = ctx.require_session()
         runtime = ctx.runtime
@@ -1956,8 +1997,40 @@ class AgentLoop:
             )
             session = ctx.require_session()
         is_subagent = ctx.kind is TurnKind.SYSTEM and ctx.msg.sender_id == "subagent"
-
-        ctx.history = session.get_history(extend_to_user=is_subagent)
+        replay_budget = self._replay_token_budget(runtime)
+        replay_reason = "default"
+        if ctx.kind is TurnKind.USER:
+            replay_budget, replay_reason = replay_budget_for_message(
+                ctx.msg.content,
+                default_budget=replay_budget,
+                has_media=bool(ctx.msg.media),
+            )
+        ctx.skip_history_replay = (
+            ctx.kind is TurnKind.USER and should_skip_history_replay(replay_reason)
+        )
+        replay_max_messages = (
+            light_replay_max_messages(0)
+            if replay_reason in {
+                "short standalone turn",
+                "empty short turn",
+                "contextual chat turn",
+                "structured chat turn",
+            }
+            else 0
+        )
+        if is_subagent:
+            replay_budget = self._replay_token_budget(runtime)
+            replay_max_messages = 0
+            ctx.skip_history_replay = False
+        ctx.history = (
+            []
+            if ctx.skip_history_replay
+            else session.get_history(
+                max_messages=replay_max_messages,
+                max_tokens=replay_budget,
+                extend_to_user=is_subagent,
+            )
+        )
         stored_state = session.provider_state
         subagent_followup_persisted = False
         if is_subagent:
@@ -2105,6 +2178,8 @@ class AgentLoop:
             else ctx.turn_wall_started_at
         )
         ctx.turn_latency_ms = max(0, int((time.time() - latency_started_at) * 1000))
+        if ctx.usage is not None:
+            self._last_usage = ctx.usage.to_dict()
         if ctx.usage is not None and not ctx.ephemeral:
             session.metadata["_last_usage"] = ctx.usage.to_dict()
         self._save_turn(
@@ -2343,6 +2418,35 @@ class AgentLoop:
         if saved_followup_ids:
             acknowledge_pending_followups(session, saved_followup_ids)
         session.updated_at = datetime.now()
+
+    @staticmethod
+    def _recent_direct_history(
+        session: Session,
+        max_messages: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Return a small raw tail for deterministic reply guards."""
+        out: list[dict[str, Any]] = []
+        for message in session.messages[-max_messages:]:
+            role = message.get("role")
+            content = message.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str):
+                out.append({"role": role, "content": content})
+        return out
+
+    def _save_direct_turn(
+        self,
+        session: Session,
+        msg: InboundMessage,
+        direct: OutboundMessage,
+    ) -> None:
+        """Persist deterministic replies so follow-up small talk keeps context."""
+        media_paths = [p for p in (msg.media or []) if isinstance(p, str) and p]
+        if msg.content or media_paths:
+            extra: dict[str, Any] = {"media": list(media_paths)} if media_paths else {}
+            session.add_message("user", msg.content or "", **extra)
+        if direct.content:
+            session.add_message("assistant", direct.content)
+        self.sessions.save(session)
 
     def _persist_subagent_followup(self, session: Session, msg: InboundMessage) -> bool:
         """Persist subagent follow-ups before prompt assembly so history stays durable.

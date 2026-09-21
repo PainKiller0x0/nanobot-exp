@@ -1,0 +1,65 @@
+[Unit]
+Description=Nanobot container (Podman)
+Documentation=man:podman-generate-systemd(1)
+After=network-online.target podman-wechat-rss-sidecar.service notify-sidecar-rs.service
+Wants=network-online.target podman-wechat-rss-sidecar.service notify-sidecar-rs.service
+RequiresMountsFor=%t/containers
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+Type=notify
+NotifyAccess=all
+Restart=always
+RestartSec=5
+TimeoutStopSec=90
+
+ExecStartPre=/usr/bin/podman network exists nanobot-net
+ExecStartPre=/bin/rm -f %t/%n.ctr-id
+ExecStartPre=-/usr/bin/podman rm -f nanobot-cage
+ExecStartPre=/usr/bin/install -m 0600 /root/nanobot/nanobot/channels/qq.py /root/.nanobot/overrides/qq.py
+ExecStart=/usr/bin/podman run \
+  --cidfile=%t/%n.ctr-id \
+  --cgroups=no-conmon \
+  --rm \
+  --sdnotify=conmon \
+  -d \
+  --name nanobot-cage \
+  --replace \
+  --network nanobot-net \
+  --memory 600m \
+  --cpus 1 \
+  --security-opt label=disable \
+  --env-file /root/.nanobot/secrets/nanobot.env \
+  --env-file /root/.nanobot/secrets/obp-proxy.env \
+  -p 127.0.0.1:8080:18790 \
+  -e PYTHONMALLOC=malloc \
+  -e TZ=Asia/Shanghai \
+  -e MEMORY_RS_URL=http://172.17.0.1:8105 \
+  -e PYTHONPATH=/app \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e MALLOC_ARENA_MAX=2 \
+  -e MALLOC_TRIM_THRESHOLD_=131072 \
+  -e NANOBOT_CONFIG=/root/.nanobot/config.json \
+  -e NANOBOT_CHANNEL_ALLOWLIST=qq,weixin \
+  -e MEMORY_RS_SCOPE=default-nanobot \
+  -e NANOBOT_FAILOVER_SETTINGS_URL=http://172.17.0.1:8093/obp/admin/failover \
+  -e NANOBOT_LLM_TIMEOUT_S=35 \
+  -e NANOBOT_OBP_FALLBACK_BASE=http://172.17.0.1:8093/obp/v1 \
+  -e NANOBOT_OBP_FALLBACK_MODEL=gemini-3.1-flash-lite \
+  -e NANOBOT_OBP_FALLBACK_TIMEOUT_S=35 \
+  -e NANOBOT_OBP_FALLBACK_MAX_TOKENS=1024 \
+  -e PYTHONUNBUFFERED=1 \
+  -e TIKTOKEN_CACHE_DIR=/root/.nanobot/cache/tiktoken \
+  -e ARK_SLOT_WORKSPACE=/root/.nanobot/workspace \
+  -v /root/nanobot:/app:rw \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /root/.nanobot:/root/.nanobot:rw \
+  -v /run/podman/podman.sock:/var/run/docker.sock:rw \
+  -v /usr/bin/chromium:/usr/bin/chromium:ro \
+  localhost/nanobot-nanobot:latest \
+  sh -lc 'python /root/.nanobot/overrides/apply_overrides.py && python -m nanobot.cli.commands gateway'
+ExecStop=/usr/bin/podman stop --ignore -t 30 --cidfile=%t/%n.ctr-id
+ExecStopPost=/usr/bin/podman rm -f --ignore -t 10 --cidfile=%t/%n.ctr-id
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+[Unit]
+Description=Nanobot Memory Rust Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/nanobot/ops/sources/memory-rs
+Environment=MEMORY_RS_HOST=127.0.0.1
+Environment=MEMORY_RS_PORT=8105
+Environment=MEMORY_RS_BRIDGE_HOST=172.17.0.1
+Environment=MEMORY_RS_DB=/root/.nanobot/data/memory-rs/memory.db
+Environment=MEMORY_LEGACY_DB=/root/.nanobot/data/reflexio/reflexio.db
+ExecStartPre=/usr/bin/mkdir -p /root/.nanobot/data/memory-rs
+ExecStart=/usr/local/bin/memory-rs
+Restart=always
+RestartSec=3
+User=root
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

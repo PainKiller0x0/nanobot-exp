@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Nanobot sidecar auto-heal guard every 5 minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=5m
+AccuracySec=30s
+Persistent=true
+Unit=nanobot-ops-heal.service
+
+[Install]
+WantedBy=timers.target

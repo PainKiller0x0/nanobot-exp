@@ -124,6 +124,25 @@ class AgentDefaults(Base):
     )
     max_tokens: int = 8192
     context_window_tokens: int = 200_000
+    history_replay_tokens: int = Field(
+        default=16_000,
+        ge=0,
+        validation_alias=AliasChoices("historyReplayTokens", "history_replay_tokens"),
+        serialization_alias="historyReplayTokens",
+    )
+    eager_compact_tokens: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices("eagerCompactTokens", "eager_compact_tokens"),
+        serialization_alias="eagerCompactTokens",
+    )
+    startup_warm_sessions: int = Field(
+        default=0,
+        ge=0,
+        le=50,
+        validation_alias=AliasChoices("startupWarmSessions", "startup_warm_sessions"),
+        serialization_alias="startupWarmSessions",
+    )
     temperature: float = 0.1
     fallback_models: list[FallbackCandidate] = Field(default_factory=list)
     max_tool_iterations: int = 200

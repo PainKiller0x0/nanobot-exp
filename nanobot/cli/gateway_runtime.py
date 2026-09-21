@@ -33,6 +33,7 @@ from nanobot.cli.webui_support import (
     _webui_endpoint_reachable,
 )
 from nanobot.config.paths import is_default_workspace
+from nanobot.exp.agent.memory_bridge import build_memory_hook
 from nanobot.config.schema import Config
 from nanobot.gateway.runtime import GatewayInstance
 from nanobot.security.network import is_loopback_host
@@ -492,7 +493,7 @@ def _run_gateway(
         turn_delivery_factory=turn_delivery_factory,
         provider_signature=provider_snapshot.signature,
         local_trigger_store=trigger_store,
-        hooks=[_MCPReadinessHook(mcp_provider)],
+        hooks=[_MCPReadinessHook(mcp_provider), build_memory_hook()],
         hook_factories=[create_file_edit_activity_hook],
         tool_registry=tools,
         recovery_admission=recovery,

@@ -1,0 +1,659 @@
+# nanobot-exp 架构设计
+
+本文档描述 `nanobot-exp` 当前线上实现。它不是愿景文档，而是为了后续改动时能快速判断边界、风险和回滚方式。
+
+## 个人副驾驶层
+
+Nanobot-exp keeps personal assistant features in `ops/sources/personal-ops-assistant`
+instead of adding more resident services. The layer is intentionally script-first:
+`copilot.py` composes the existing dashboard APIs, OBP stats, RSS metadata, LOF board
+state, notify jobs and a tiny JSONL decision log under
+`/root/.nanobot/data/personal-ops-assistant/`.
+
+Design rules:
+
+- Default to read-only summaries for QQ: daily brief, reading triage, anomaly radar,
+  cost guard, decision log, night wrap-up and weekly self-review.
+- Mutating actions must remain explicit, for example `refresh-lof --yes` or the
+  existing `refresh-rss --yes`.
+- No extra always-on process is introduced; this keeps memory stable and preserves the
+  sidecar-first architecture.
+- Skills and capability registry point to `copilot.py`; the older `ops_summary.py`
+  remains as a compatibility layer for existing commands.
+- OBP stats expose `paid` and `free` ledgers in addition to the legacy total fields; UI and QQ cost summaries default to the paid ledger so free LongCat traffic does not distort wallet-facing numbers.
+
+## 目标
+
+`nanobot-exp` 是基于上游 `HKUDS/nanobot` 的个人线上 fork。核心规则是：
+
+> Nanobot 本体尽量贴近上游，个人产品、定时任务、看板和集成尽量放到 sidecar 或 skill。
+
+架构目标：
+
+- `nanobot/` 保持小而清晰，方便继续合并上游。
+- 长期运行的个人业务逻辑不塞进 Python core。
+- 小内存 VPS 上优先使用 Rust sidecar。
+- 公网只保留一个 Web 入口。
+- secret、日志、数据库、真实 cron 目标和运行态数据不进 Git。
+- 每个服务都能独立重启、独立回测、独立回滚。
+
+## 运行拓扑
+
+```text
+                         public internet
+                              |
+                              v
+                    http://<host>:8093
+                  LOF dashboard + reverse proxy
+                              |
+       +----------------------+----------------------+
+       |          |           |          |           |
+     /rss/    /reflexio/    /obp/    /trends/   /sidecars
+       |          |           |          |           |
+  RSS sidecar  Reflexio   OBP bridge  Trend     manager API
+  127.0.0.1    127.0.0.1  127.0.0.1   Radar     same process
+  :8091        :8081      :8000       :8095
+
+  /workbench、/inbox、/assets/nb-shell.js、
+  /assets/nb-common.js 由 LOF dashboard 同进程提供，
+  不再额外增加常驻服务。
+
+  Nanobot core 和内部桥接不直接暴露公网：
+
+  nanobot-cage          127.0.0.1:8080    Podman
+  qq-sidecar-rs         172.17.0.1:8092   systemd, Podman bridge 可访问
+  notify-sidecar-rs     127.0.0.1:8094    systemd
+```
+
+健康检查约定：
+
+- 服务健康以 `8093/api/sidecars` 聚合结果为准，不再让脚本各自猜端口。
+- QQ Sidecar 线上通过 `20-podman-bridge.conf` 绑定 `172.17.0.1:8092`，不是 `127.0.0.1:8092`。
+- HERMES 自检必须读 sidecar manager API，避免端口绑定变化造成误报。
+
+只有 `lof-sidecar-rs` 作为公网入口。它负责：
+
+- `/`：今日驾驶舱。
+- `/lof`：LOF/QDII 看板。
+- `/sidecars`、`/api/sidecars`、`/api/capabilities`：能力总控台和服务矩阵。
+- `/workbench`：内容工作台，聚合 RSS、知识收件箱和热点雷达，本地标记已读/收藏。
+- `/inbox` 和 `/api/inbox`：知识收件箱预览、删除和 JSON。
+- `/evolution` 和 `/api/evolution`：已关闭，返回 `410 Gone`，历史进化数据只保留在本地文件。
+- `/assets/nb-shell.js`：sidecar 统一导航壳、主题同步和跨页面入口。
+- `/assets/nb-common.js`：sidecar 页面共享 JS helper。
+- `/rss/`、`/reflexio/`、`/obp/`、`/trends/`：反代到内部 sidecar，并注入统一导航壳。
+
+`podman-port-forward-allow.service` 是公网端口守卫。预期端口策略是：
+
+- 公网开放：`8093`，以及 SSH 和云厂商必要管理端口。
+- 仅本机或容器桥接：`8000`、`8080`、`8081`、`8091`、`8092`、`8094`、`8095`。
+
+## 服务矩阵
+
+服务注册表以 `ops/config/sidecars.json` 为准。线上运行副本在 `/root/.nanobot/sidecars.json`。
+
+| ID | 服务 | 运行方式 | 端口 | 公网路径 | 职责 |
+|---|---|---:|---:|---|---|
+| `nanobot` | Nanobot Core | Podman | `8080` | 无 | QQ/WeChat 入口、agent loop、dream |
+| `rss` | RSS Sidecar | Podman | `8091` | `/rss/` | 微信文章、鸭哥 AI、Markdown 预览、广告过滤 |
+| `qq` | QQ Bridge | systemd | `8092` | 无 | QQ API 直连探测、签名发送支持 |
+| `lof` | LOF Dashboard | systemd | `8093` | `/lof` | QDII/LOF 看板；同进程还提供 `/` 今日驾驶舱、公网反代、服务总控、知识收件箱预览 |
+| `notify` | Notify Bridge | systemd | `8094` | 无 | cron 调度、重试状态、QQ 通知分发 |
+| `trend` | Trend Radar | systemd | `8095` | `/trends/` | NewsNow 热榜、搜索、话题分析、MCP 风格工具 |
+| `reflexio` | Reflexio | systemd | `8081` | `/reflexio/` | 记忆和反思看板 |
+| `obp` | OBP Bridge | systemd | `8000` | `/obp/` | 模型网关、双协议 API、成本和兜底控制台 |
+| `podman-public-rule` | Port Guard | systemd | n/a | 无 | 阻断旧业务端口公网访问 |
+
+## 目录布局
+
+```text
+nanobot-exp/
+  nanobot/                         上游核心，尽量少改
+  scripts/                         上游友好的运行时补丁脚本
+  docs/                            用户文档和架构文档
+  ops/
+    config/sidecars.json           脱敏后的服务注册表
+    config/notify-sidecar-rs/
+      config.example.json          示例配置，不含真实 QQ 目标 ID
+    bin/sidecarctl                 日常运维 CLI
+    scripts/deploy-sidecar.sh      构建、安装、重启、状态检查入口
+    scripts/check-nanobot-exp-patches.sh
+                                    上游同步后检查 exp 必保留补丁
+    scripts/smoke_common.py         smoke 脚本共享 HTTP/JSON/命令 helper
+    sbin/                          主机辅助脚本
+    systemd/                       systemd unit 和 drop-in
+    sources/
+      _shared/                     skill 客户端共享 Python helper
+      hermes-check/                HERMES 自检脚本快照
+      qdii-monitor/                LOF notify 包装脚本快照
+      *-rs/                        Rust sidecar 源码快照
+      *-assistant/                 Nanobot skill 源码快照
+```
+
+线上还有 `/root/nanobot-ops`，这是实际运维工作副本，`/usr/local/sbin/deploy-sidecar` 默认从这里构建和部署。
+GitHub 里的 `ops/` 是它的脱敏快照，也是代码源头；不要直接把长期修改留在 `/root/nanobot-ops`。
+`/root/nanobot-ops` 不保留 `.git`，避免旧 Git 基线制造误导性的 dirty 状态；判断 live 是否干净只用 `sync-to-live.sh --check`。
+
+## 部署模型
+
+部署链路保持简单，但必须先同步：
+
+```text
+修改 /root/nanobot/ops
+        |
+        v
+ops/scripts/sync-to-live.sh --check      # 检查 /root/nanobot-ops 是否漂移
+        |
+        +-- 有漂移：ops/scripts/sync-to-live.sh --apply
+        |
+        v
+deploy-sidecar <target>                  # 默认再次做 sync guard
+        |
+        +-- Rust sidecar: cargo build --release + install 到 /usr/local/bin
+        +-- RSS sidecar: podman build + restart local image
+        |
+        v
+systemd restart + health check
+```
+
+`deploy-sidecar` 默认会执行 `/root/nanobot/ops/scripts/sync-to-live.sh --check`。如果确实只想看状态，可用 `deploy-sidecar all --status`；如果必须临时跳过漂移保护，使用 `--skip-sync-check` 或 `NANOBOT_OPS_SKIP_SYNC_CHECK=1`，但这应该只用于救火。
+
+常用命令：
+
+```bash
+/root/nanobot/ops/scripts/sync-to-live.sh --check
+/root/nanobot/ops/scripts/sync-to-live.sh --apply
+deploy-sidecar all --status
+deploy-sidecar lof
+deploy-sidecar trend
+sidecarctl status
+sidecarctl logs lof
+sidecarctl restart notify
+systemctl status nanobot-stack.target
+```
+
+`nanobot-stack.target` 用轻量 `PartOf=` drop-in 把服务分组。它只是 systemd 分组，不是调度系统，也不是 k8s。
+
+## 数据和状态归属
+
+边界必须清楚：
+
+- Git 保存代码、文档、示例配置、systemd unit 和部署胶水。
+- `/root/.nanobot` 保存运行配置、workspace skills、sidecar 状态、RSS 数据库和 secrets。
+- `/root/.nanobot/secrets/*.env` 保存凭据和代理认证材料。
+- Rust `target/`、日志、SQLite 数据库、真实 notify 配置不提交。
+
+| 数据 | 归属 | 是否进 Git |
+|---|---|---|
+| QQ app secret | `/root/.nanobot/config.json` 或 secrets env | 不提交 |
+| Notify 目标 ID | 线上 `config.json` | 不提交 |
+| Notify 示例配置 | `ops/config/notify-sidecar-rs/config.example.json` | 提交 |
+| Trend cache | `/root/.nanobot/data/trend-sidecar/state.json` | 不提交 |
+| RSS DB | live sidecar volume/workspace | 不提交 |
+| Sidecar 源码 | `ops/sources/*` | 提交 |
+
+## Nanobot Core 边界
+
+Nanobot core 应该负责：
+
+- 聊天入口和出口。
+- Agent loop、LLM/tool 编排。
+- 很难外置的小型路由胶水。
+- 调用本地 sidecar API 和 skill 脚本。
+
+Nanobot core 不应该负责：
+
+- RSS 抓取和文章存储。
+- QDII/LOF 行情抓取。
+- Cron 执行和 retry 状态。
+- 热榜新闻采集。
+- Web dashboard。
+- 长期运行的个人业务逻辑。
+
+如果一个功能可以表达为 `HTTP API + CLI/script + dashboard`，通常应该做成 sidecar 或 skill，而不是继续改 core。
+
+
+## Article Rendering And Backread
+
+Article cleanup is a shared seam, not a per-command detail. The Python skill side
+uses `ops/sources/_shared/ops_common.py` as the common module:
+
+- `clean_article_markdown` strips tracker images, naked URLs, source-link residue,
+  HTML tags and duplicate titles before QQ delivery.
+- `format_article_push_body` remains the one-shot RSS push formatter and appends
+  the final clean `[article source](...)` link.
+- `ops/sources/knowledge-inbox/inbox.py` must call `clean_article_markdown` for
+  RSS backread bodies instead of carrying its own cleanup regex. This keeps
+  article-tail fixes local to `_shared`.
+
+The Rust RSS sidecar keeps an equivalent formatter in
+`ops/sources/wechat-rss-rs/src/qq_article_format.rs` for API-backed delivery. If
+article formatting rules change, update the Python shared helper and the Rust
+formatter together, with one regression test on each side when practical.
+
+QQ backread flow is intentionally simple:
+
+```text
+QQ message -> exp.qq.fast_paths -> exp.qq.local_commands
+           -> knowledge-inbox skill -> RSS sidecar API
+           -> exp.qq.local_handlers one-shot send, chunk fallback only on send failure
+```
+
+Full backread sends metadata plus the cleaned body. It does not show the
+first-sentences heuristic summary, because that summary is only an extractive
+preview and reads like duplicated body text before a full article. If a true
+summary is needed later, add it as an explicit LongCat-powered command rather
+than making every full backread pay the latency tax.
+
+当前仍然必须承认的 `nanobot-exp` 本体/运行时补丁：
+
+- Agent OBP fallback：`AgentRunner` 只保留超时/timeout-like 分支判断，OBP provider 缓存、环境变量、无工具请求降级和 token cap 放在 `nanobot/exp/agent/obp_fallback.py`。
+- Agent startup warmup：线上预热路径已经收口为 `ops/systemd/nanobot-llm-warmup.service` 和 `podman-nanobot-cage.service.d/20-llm-warmup.conf`，由 systemd 在容器启动后调用 `python3 -m nanobot.agent.warmup`。不要再把启动预热调度塞回 `AgentLoop`；core 只负责消息编排。
+- Adaptive lightweight chat：短句独立闲聊的历史回放、轻量 system prompt 和工具广告省略是一个 shared seam，不再让 `AgentLoop`、`AgentRunner`、`tool_budget` 各自判断 reason 字符串。公共入口在 `nanobot/exp/agent/history_budget.py`：`replay_budget_for_message` 负责分类和 token budget，`should_skip_history_replay` 负责决定是否给模型传 `history=[]`，`should_omit_tool_ads` 负责决定是否隐藏 tool schema。短句独立闲聊默认不回放 raw session tail，避免上一话题污染；显式上下文词（如“刚才/前面/你说/那个”）仍走正常历史回放。
+- Direct replies：无 LLM 快捷回复保留在 agent 层；触发词/短句意图判断放在 `nanobot/agent/direct_reply_intents.py`，系统内存直查放在 `nanobot/agent/system_reply.py`，能力注册读取放在 `nanobot/agent/capability_registry.py`，dashboard 聚合读取放在 `nanobot/agent/capability_snapshot.py`，能力回复格式放在 `nanobot/agent/capability_formatters.py`，知识收件箱意图识别放在 `nanobot/agent/inbox_intents.py`，知识收件箱 skill runner 放在 `nanobot/agent/inbox_tool.py`，Reflexio 记忆 API client 放在 `nanobot/agent/memory_client.py`，记忆触发词放在 `nanobot/agent/memory_intents.py`，记忆回复格式放在 `nanobot/agent/memory_formatters.py`，能力/收件箱/记忆分别在 `capability_reply.py`、`inbox_reply.py`、`memory_reply.py`，`direct_reply.py` 只做路由。
+- QQ channel：`ops/config/overrides/qq.py` 是线上 QQ 通道胶水覆盖实现，容器启动时由 `/root/.nanobot/overrides/apply_overrides.py` 覆盖到 `/app/nanobot/channels/qq.py`。QQ 文件应尽量保留上游 botpy 适配结构；nanobot-exp 自定义策略放在 `nanobot/exp/qq/`，目前包括 `streaming.py`（流式策略）、`stream_runtime.py`（流式状态机和 delta flush）、`fast_paths.py`（本地快捷指令匹配）、`article_requests.py`（微信/鸭哥文章请求解析）、`article_handlers.py`（微信/鸭哥文章意图处理和 QQ 回复组织）、`article_runtime.py`（RSS/鸭哥 Rust API 优先、旧脚本 fallback）、`gateway_greeting.py`（gateway 重启一次性问候）、`local_commands.py`（本地 skill 命令 runner）、`local_handlers.py`（个人运维/知识收件箱快捷命令处理）、`signatures.py`（签名/ACK 解析）、`signed_delivery.py`（签名 payload 防篡改、自修复和投递确认）和 `rss_sidecar.py`（QQ 到 RSS Rust sidecar 的 HTTP Adapter）。短句“内存”查询必须走 `system` fast path，避免让 LLM 猜系统状态。
+- RSS 推送链路：`wechat-rss-rs` 暴露 `/api/latest`、`/api/ask`、`/api/push/wechat-signed`、`/api/push/wechat-recover`、`/api/push/wechat-ack`、`/api/push/yage-signed`、`/api/push/yage-ack`；QQ 推送正文格式化放在 `ops/sources/wechat-rss-rs/src/qq_article_format.rs`，抽取式问答放在 `ops/sources/wechat-rss-rs/src/qq_extractive_qa.rs`。QQ 正常路径优先通过 Rust HTTP API 获取文章 JSON、签名 payload，并在 QQ 发送成功后通过 Rust API 推进 WeChat/鸭哥已投递缓存；旧 Python skill 脚本只作为 Rust API 不可达时的 fallback。这个 seam 的 Interface 是“文章查询/签名推送/投递确认”，不要让 QQ channel 重新关心 RSS 数据库、Markdown 清洗或脚本缓存细节。
+- Gateway heartbeat：`gateway.heartbeat.deliveryChannel` / `deliveryChatId` 用来固定原生 heartbeat 投递目标，避免“最近活跃渠道”把自省报告发到 WeChat。
+- 上游同步后必须跑 `ops/scripts/check-nanobot-exp-patches.sh /root/nanobot`，至少确认 heartbeat 投递、HERMES manager check、LOF refresh-before-send 这些补丁还在。
+- 若怀疑 core drift，先看 `git diff official/main...HEAD -- nanobot/`，再判断要不要把逻辑继续 sidecar 化。
+
+## Skills 和公共 helper
+
+个人 skill 的源码快照放在 `ops/sources/*`，线上运行副本在 workspace。
+
+共享 Python helper：
+
+```text
+ops/sources/_shared/ops_common.py
+```
+
+当前提供：
+
+- `JsonHttpClient`：base URL fallback、JSON GET/POST、文本请求，支持浮点秒级 timeout。
+- `parse_dt`、`fmt_time`、`now_shanghai`。
+- `holiday_info`、`is_cn_workday`：复用中国法定节假日/补班日判断。
+- `short`：适合 QQ 输出的短文本截断。
+- `safe_items`：安全提取 items/entries/data/rows，已从 copilot.py 收口。
+- `clean_article_markdown`、`format_article_push_body`、`is_wechat_paid_teaser`：文章清洗和推送格式化。
+- `load_json_dict`、`normalize_sentence`、`markdown_link_text`、`extract_json_array`。
+- `sign_nbraw_sha256`：签名 payload。
+- `post_chat_completion_content`：轻量 LLM 调用 helper。
+
+目前应复用它的脚本包括：
+
+- `trend-radar/trend_client.py`
+- `personal-ops-assistant/ops_summary.py`
+- `wechat-rss-sidecar-skill/client.py`
+- `hermes-check/hermes_check.py`
+- `qdii-monitor/send_qq.py`
+- `knowledge-inbox/inbox.py` 中需要 HTTP、时间或短文本输出的新增逻辑。
+
+这样 skill/ops 脚本不需要各自复制 HTTP fallback、JSON 解析、timeout 和时间解析逻辑。
+
+知识收件箱当前是按需 skill，不是常驻 sidecar：
+
+- 源码快照在 `ops/sources/knowledge-inbox/`。
+- 线上入口是 `/root/.nanobot/workspace/skills/knowledge-inbox/inbox.py`。
+- 数据归属 `/root/.nanobot/data/knowledge-inbox/items.json` 和 `markdown/`。
+- `capture` 支持普通网页和微信文章链接；微信文章抓取必须使用浏览器 UA，避免只得到空壳或“环境异常”。
+- 摘要优先用免费 `LongCat-Flash-Lite`；不满足免费模型条件时回退本地 extractive summary，不走付费 OBP。
+- `/inbox` 只做预览、删除和路径复制，不能把长 Markdown 路径和抓取噪音关键词直接铺在卡片上。
+
+抽取原则：
+
+- 通用 IO、时间、短文本 helper 放 `_shared`。
+- 业务格式化留在各自 skill。
+- 不把 secret、真实目标 ID、机器私有状态塞进共享代码。
+
+## Sidecar 职责
+
+### `lof-sidecar-rs`
+
+- `8093` 公网入口。
+- LOF/QDII 看板、报告、历史溢价视图。
+- `/api/run` 是同步刷新接口；`/api/status` 是状态和缓存读取接口。
+- 内部 sidecar 反代。
+- 能力总控台、服务矩阵和健康聚合。
+- 内容工作台 `/workbench`：聚合 RSS、知识收件箱、热点雷达；已读/收藏只存在浏览器 `localStorage`，不写服务器状态。
+- 知识收件箱 `/inbox` 和 `/api/inbox`；进化日志 HTTP 入口已关闭，避免搜索引擎索引私有运行记录。
+- `/assets/nb-shell.js` 承载统一侧边/浮动导航壳、明暗主题同步和反代页面注入。
+- `/assets/nb-common.js` 承载 sidecar 页面共享前端 helper：HTML escape、东八区时间、host 解析、主题绑定、统计卡片、短列表、复制按钮和命令块。
+
+前端公共 helper 边界：
+
+- Rust 内部 `sidecar_manager.rs` 负责读取服务注册表、探测 systemd/http/tcp、输出 `/api/sidecars` 聚合状态。
+- Rust 内部 `system_metrics.rs` 负责内存、CPU、磁盘和 loadavg 读取，驾驶舱只消费 JSON。
+- Rust 内部 `pages.rs` 负责驾驶舱、内容工作台、知识收件箱和服务矩阵页面 HTML，避免页面字符串继续压在 `main.rs`。
+- Rust 内部 `reverse_proxy.rs` 负责内部 sidecar 反代、统一导航壳注入和响应头透传。
+- Rust 内部 `lof_domain.rs` 负责 QDII 代码列表、HaoETF 解析、交易时段判断、溢价历史、套利报告和看板数据构造。
+- `nb-shell.js` 负责“壳”：导航、全局主题同步、反代 HTML 注入和统一视觉变量。
+- `nb-common.js` 负责“机制”：`esc`、`fmtTime`、`host`、`bindTheme`、`stat`、`shortList`、`copyText`、`copyFromButton`、`cmdHtml`。
+- 业务页面只组合数据、布局和文案，不再复制基础 escape、复制按钮、短列表、命令块和常规时间/host helper。
+- 不把业务 HTML 结构、具体文案、数据字段解释、prompt 或付费模型判断塞进公共 JS。
+- 如果页面继续增长，优先拆静态 HTML/CSS/JS 文件或 Rust module，而不是继续把所有页面字符串塞进 `main.rs`。
+
+LOF 定时报告不是直接读缓存发送。Notify 任务调用 `qdii-monitor/send_qq.py`，脚本会：
+
+1. 先 POST `/api/run` 触发同步刷新。
+2. 最多等待 `LOF_RUN_TIMEOUT_SECS`，默认 60 秒。
+3. 成功则发送新报告。
+4. 刷新失败或超时才回退当天新鲜缓存，并在输出前加 `[WARN]`。
+
+这个顺序很重要：交易时段 5 分钟差异足够影响判断，不能优先发旧缓存。
+
+### `wechat-rss-rs`
+
+- RSS 订阅管理。
+- 微信文章和鸭哥 AI 抓取。
+- Markdown 预览。
+- LLM 设置和广告过滤。
+- 用 Podman 隔离 RSS 运行环境。
+
+实现边界：
+
+- `db.rs` 保存数据库 schema、读写和查询 helper。
+- `markdown.rs` 保存 HTML -> Markdown 的 inline bold/em/link 保真转换。
+- `paid_cleaner.rs` 保存付费文章清洗 payload、断句/合段规则、Markdown 组装和 cleaner 响应元信息。
+- `pages.rs` 保存 RSS 首页和付费文章清洗器页面 HTML，让 UI 调整不再挤进 route/crawler 主流程。
+- `settings.rs` 保存 LLM 设置、自动刷新设置、secret mask、兼容旧 JSON 字段和 `free_only` 成本策略。
+- `yage.rs` 保存鸭哥 AI Kit 来源 adapter，包括 profile 抓取、文章正文解码、HTML 清理、每日/周记录 Entry 构造。
+- `main.rs` 仍然承载 HTTP route、通用 RSS crawler 和订阅 API，是后续继续拆分的主要对象。
+- 自动刷新链路只读 `LlmSettings::enabled()`，不要在 handler 或 crawler 里重新手写“是否允许付费模型”的判断。
+### `notify-sidecar-rs`
+
+- cron-like 调度。
+- retry/timeout 状态。
+- 通过 QQ bridge 或 Nanobot 配置分发通知。
+- 负责 HERMES、天气、RSS/鸭哥、LOF 报告等主动推送。
+- 把循环任务从 Nanobot core 内存里拿出去。
+
+LOF 溢价告警通过 notify cron 调度 `lof_alert.py`（工作日 10:00/14:00），默认阈值 8%，只在检测到美元溢价超过阈值时推送 QQ 告警，日常 5% 提醒不做额外推送。
+
+HERMES 任务调用 `hermes-check/hermes_check.py`。脚本应读取 `8093/api/sidecars` 聚合健康状态，而不是硬编码逐个端口探测。
+
+### `trend-sidecar-rs`
+
+- NewsNow 热榜采集。
+- 本地缓存和自动刷新。
+- 搜索、话题分析、摘要 API。
+- `/trends/mcp` 下提供 MCP 风格 JSON-RPC 工具。
+
+### `qq-sidecar-rs`
+
+- 轻量 QQ API 桥。
+- 直连发送健康探测。
+- 给 notify 脚本提供稳定本地目标。
+
+### `nanobot-reflexio-rs`
+
+- Reflexio 风格记忆/反思看板。
+- 有独立 Web 和数据生命周期，所以不放 core。
+
+实现边界：
+
+- `storage.rs` 管 SQLite 生命周期和查询。
+- `provider.rs` 管 OpenAI-compatible LLM 请求。
+- `reasoning.rs` 管事实提取/反思提示词和解析。
+- `embedding.rs` 管 embedding 请求和本地相似度计算。
+- `cost_policy.rs` 是免费模型策略入口，统一保存默认免费模型、环境开关解析、LLM/embedding 白名单和 `*_enabled` 判断。
+- 后续如果允许新的免费模型，优先改 `cost_policy.rs`，不要在 `main.rs` 或 `embedding.rs` 复制 base URL/model 判断。
+
+### `obp-rs`
+
+- 模型网关、成本统计、fallback 控制台。
+- 公网访问必须经 `8093/obp`，并保留认证或网络限制。
+- 外部 OpenAI 兼容入口：`/obp/v1/chat/completions`。
+- 外部 Anthropic 兼容入口：`/obp/anthropic/v1/messages`。
+- client API 协议和 upstream 渠道协议解耦：同一个外部请求可以路由到 OpenAI-compatible 或 Anthropic 渠道；非流式响应会做基础格式转换。
+- 流式请求只做同协议透传；跨协议 streaming 暂不转换，避免引入额外延迟和不完整 SSE 语义。
+- 每次响应带 `x-obp-route`、`x-obp-group`、`x-obp-requested-model`、`x-obp-actual-model`、`x-obp-channel`、`x-obp-reason`。Nanobot provider 只在 OBP endpoint 上读取这些头并写入 `podman logs -f nanobot-cage`。
+
+路由策略原则：
+
+- 不用“累计 token / 字符数 / 消息数”自动升 Pro。长度只能说明成本压力，不能说明任务难度。
+- 显式请求 `pro_model`、`backup_model`、`emergency_model` 时优先尊重；月预算硬熔断除外。
+- 默认模型保持 smart-routable：普通闲聊、状态查询、天气、cron、LOF/RSS 这类轻任务走默认模型。
+- 上下文压缩、记忆整理、反思、架构/review/排障等复杂任务才走 Pro。
+- 关键词只看当前最后一条用户消息，不扫描完整历史，避免历史里的“深度/架构/review”让普通闲聊误升 Pro。
+- Heartbeat 决策提示词包含 `Review the following HEARTBEAT.md`，但这只是轻量检查，必须强制保持 default route；判断依据是 `heartbeat.md` / heartbeat tool 文本模式，不能因为 `review` 关键词误升 Pro。
+- `x-obp-purpose` / `x-obp-intent` 或请求体 `metadata.purpose` / `metadata.intent` 可作为零额外延迟 hint；不额外调用分类模型。
+- 月预算降级只抑制自动升 Pro，不影响普通默认模型请求。
+- 月预算硬熔断优先走 backup；backup 失败后才走 emergency。日常主模型超时或上游报错时，fallback 顺序仍优先 emergency，保证体验。
+
+## 公共实现边界
+
+当前已经形成三类公共实现，后续 review 优先检查有没有重复造轮子：
+
+| 层级 | 公共入口 | 负责内容 | 不负责内容 |
+|---|---|---|---|
+| Python skill/script | `ops/sources/_shared/ops_common.py` | HTTP fallback、JSON 请求、东八区时间、节假日/补班日、短文本截断 | 业务文案、具体报告格式、secret |
+| Agent lightweight chat | `nanobot/exp/agent/history_budget.py` | 短句/任务/上下文分类、轻量历史 budget、是否跳过 raw history、是否省略 tool schema | system prompt 文案、具体工具实现、QQ 流式发送 |
+| RSS cleaner | `wechat-rss-rs::{markdown,paid_cleaner}` | HTML/Markdown 保真转换、付费文章规则清洗、断句/合段、cleaner 响应元信息 | RSS 抓取、订阅存储、LLM 自动判定 |
+| RSS LLM settings | `wechat-rss-rs::LlmSettings` | LLM 设置 merge、密钥遮蔽、保存/公开 JSON、免费策略状态、测试 URL | crawler 业务判断、文章格式化 |
+| Reflexio cost policy | `nanobot-reflexio-rs/src/cost_policy.rs` | 免费 LLM/embedding 默认值、环境开关、白名单、启用判断 | 具体 prompt、事实抽取、SQLite 检索 |
+| OBP protocol adapter | `obp-rs::protocol` | OpenAI/Anthropic 请求响应互转、upstream endpoint、渠道鉴权适配 | 路由策略、成本统计、熔断降级 |
+| OBP route metadata | `obp-rs::{config,proxy,stats}` | 模型组、渠道配置、fallback、成本统计、响应头路由信息 | Nanobot agent 语义判断、sidecar 主动消费模型 |
+| Sidecar shell JS | `/assets/nb-shell.js` | 统一导航壳、明暗主题同步、反代页面注入、跨页面入口 | 业务页面渲染、数据解释、prompt |
+| Sidecar common JS | `/assets/nb-common.js` | HTML escape、东八区时间、host 解析、主题绑定、统计卡片、短列表、复制按钮、命令块 | 页面布局、业务字段、具体文案 |
+
+抽取原则：
+
+- 只抽“稳定重复的机制”，不要为了抽象把业务文案、HTML 结构、prompt 全塞进 shared。
+- 涉及费用的钱包策略必须有单一入口：RSS 看 `LlmSettings`，Reflexio 看 `cost_policy.rs`，Nanobot 主模型看 OBP。
+- 共享 helper 不能包含真实账号、chat_id、API key、机器私有路径以外的可迁移默认值。
+- 新增 sidecar 自动 LLM 调用时，默认必须先证明它使用免费模型；否则应走 OBP 并计入成本统计。
+- Review 时如果看到 `reqwest`/`urllib`/`requests` wrapper、东八区时间、节假日、密钥遮蔽、免费模型判断被重新写一遍，优先收口。
+
+## MCP 和 AI 分析路径
+
+当前 MCP-like 路径优先本地化：
+
+```text
+Trend Radar sidecar
+  /api/trends/*
+  /api/mcp/tools
+  /mcp
+        |
+        v
+Nanobot skill 或 LLM call
+        |
+        v
+QQ 回复 / dashboard 摘要
+```
+
+这样可以先获得 MCP 能力形态，又不引入重型 MCP server stack。
+如果未来需要外部 MCP client，再优先加认证和内网监听，不要直接裸露公网。
+
+## 当前实现 review
+
+方向是对的：
+
+- 所有 systemd 服务已加 `MemoryMax`（Podman 容器 `--memory 128m-256m`，Rust sidecar `MemoryMax=64M`），避免容器无限制增长或 Rust sidecar 内存泄漏不被约束。
+- copilot `render_today` 已包含知识收件箱交集；不再需要单独查 inbox 才能看到飞书文档。
+- 知识收件箱已支持微信链接解析、免费 LongCat 摘要、删除、预览整理和噪音关键词过滤，适合作为按需 skill，而不是常驻服务。
+
+- core/sidecar 拆分已经形成，个人功能大多离开 `nanobot/`。
+- Podman 迁移后，常驻内存比 Docker 低。
+- 服务矩阵和 `sidecarctl` 让 health/log/restart 有统一入口。
+- Trend Radar 提供新闻采集和 MCP 风格工具，但没有把重 Python 服务塞进 core。
+- `_shared/ops_common.py` 已经减少 skill 客户端重复代码，HERMES、LOF wrapper、Trend、RSS skill 和个人 ops summary 都复用同一套 HTTP/时间 helper。
+- `ops/scripts/smoke_common.py` 已经收口 smoke 脚本的 HTTP/JSON、结果记录、短摘要和命令执行 helper；`smoke-sidecars.py` 与 `smoke-model-switch.py` 只保留各自检查流程。
+- RSS 的 cleaner 规则已经收口到 `paid_cleaner.rs`，HTML inline Markdown 保真收口到 `markdown.rs`；handler 只负责接收请求和返回 JSON。
+- RSS 的 LLM settings 重复逻辑已经收口到 `LlmSettings`，避免 handler、settings API、test endpoint 各自处理密钥遮蔽和 `free_only`。
+- Reflexio 的免费模型策略已经收口到 `cost_policy.rs`，`main.rs` 和 `embedding.rs` 不再各自复制 env bool 与免费白名单判断。
+- sidecar 页面已开始复用 `/assets/nb-shell.js` 和 `/assets/nb-common.js`；`inbox`、`evolution`、`sidecars` 不再各自复制 escape、主题切换、时间/host、短列表、命令块和复制按钮逻辑。
+- 能力总控台已经明确分成“能力层：我能做什么”和“支撑服务层：谁在跑”，两个区块默认展开、可折叠；能力卡只展示触发语/入口/运行形态，服务卡承载端口、日志、重启和健康细节，避免同一服务重复铺成两套重卡片。
+- 内容工作台已经成为信息阅读入口，聚合 RSS、知识收件箱和热点雷达；卡片已做 Inbox Markdown 决策摘要结构化，避免把原始 Markdown 或噪音关键词直接铺出来。
+- 知识收件箱已经具备微信链接解析、免费 LongCat 摘要、删除、预览整理和噪音关键词过滤，适合作为按需 skill，而不是常驻服务。
+- OBP 已避免 heartbeat 的 `review` 文本误升 Pro；协议互转已收口到 `protocol.rs`，路由日志仍通过响应头进入 Nanobot provider 日志，便于追踪钱包行为。
+
+主要技术债：
+
+- `lof-sidecar-rs` 仍然偏大，但服务管理、系统指标、页面 HTML、反代和 LOF domain 已拆出；下一步重点是 OBP auth/session 和 dashboard/inbox 数据 API 继续 deepening。
+- `wechat-rss-rs` 仍然偏大，虽然 DB、Markdown helper、paid cleaner、pages、settings 和 `yage` adapter 已有边界，但通用 RSS crawler、订阅 API route handler 仍主要挤在 `main.rs`。
+- `ops/` 快照和 `/root/nanobot-ops` 线上工作副本可能漂移；现在已有 `sync-to-live.sh`、`check-architecture.sh`、`smoke-sidecars.py`、`smoke-model-switch.py` 和 `smoke_common.py`，提交前必须跑。
+- `/obp/` 和未来 MCP 入口的认证边界要继续显式维护，不能为了方便把 admin 面裸露出去。
+- 部分 systemd unit 指向 `/root/.nanobot` 线上路径，这是设计选择，但恢复环境时必须先恢复 workspace 和 secrets。
+- `weather-expert/weather_check.py` 仍有一套天气专用的节假日/时段逻辑；除非继续扩成多脚本复用，否则先不要硬抽，避免破坏天气文案。
+- 知识收件箱的抓取和摘要目前仍在一个 Python 文件里；如果后续增加更多来源，再拆 `fetchers`、`summarizer`、`store`。
+
+建议下一步重构：
+
+1. Rust sidecar 的大块 HTML/CSS 如果继续增长，拆到 `static` 或 `include_str!` 文件；公共 JS 已有 `/assets/nb-shell.js` 和 `/assets/nb-common.js`，不要再复制基础导航、主题、复制、时间、host、短列表和命令块工具函数。
+2. `lof-sidecar-rs` 如果继续加功能，下一步拆 OBP auth/session、dashboard history 和 inbox data API；service manager、system metrics、pages、reverse proxy 和 `lof_domain` 已经完成第一轮拆分。
+3. `wechat-rss-rs` 下一步优先拆通用 RSS crawler、订阅/文章 route handler；`paid_cleaner`、`pages`、`settings` 与 `yage` 继续分别保留为文章格式化、页面、settings/cost policy 和 Kit 来源 adapter 入口。
+4. `weather-expert/weather_check.py` 如果出现第二个天气/通勤脚本，再把节假日和未来时段选择抽进 `_shared`。
+5. 保持 `ops/scripts/check-architecture.sh`、`ops/scripts/smoke_common.py`、`ops/scripts/smoke-sidecars.py`、`ops/scripts/smoke-model-switch.py` 和 `ops/scripts/sync-to-live.sh`，检查 registry/unit/seam、复用 smoke helper、跑线上 smoke、同步 `/root/nanobot-ops`。
+6. 新个人自动化默认采用 `skill + sidecar API`，除非确实必须改 Nanobot core。
+
+## 上游同步 checklist
+
+同步 `HKUDS/nanobot` 后先做这些检查：
+
+```bash
+git diff official/main...HEAD -- nanobot/
+ops/scripts/check-nanobot-exp-patches.sh /root/nanobot
+PYTHONPATH=/root/nanobot uv run pytest tests/cli/test_commands.py::test_heartbeat_delivery_target_config_aliases
+```
+
+注意：服务器上可能装有系统级旧 `nanobot` 包；本地回测必须加 `PYTHONPATH=/root/nanobot`，否则 pytest 可能导入 `/usr/local/lib/python.../dist-packages/nanobot` 而不是当前源码。
+
+如果 `check-nanobot-exp-patches.sh` 失败，先不要重启线上服务，先确认是上游重构导致的真实冲突，还是 ops 快照没有同步。
+
+## 模型切换 smoke
+
+切换默认模型、Pro 模型、backup/emergency 模型或 OBP upstream 渠道后，必须跑模型切换 smoke：
+
+```bash
+python3 ops/scripts/smoke-model-switch.py --with-llm
+python3 ops/scripts/smoke-model-switch.py --refresh-lof
+```
+
+覆盖范围：
+
+- sidecar manager、dashboard system、LOF 状态和刷新。
+- RSS 订阅、最近文章、Markdown 预览、自动刷新。
+- 知识收件箱 capture/list/delete、微信文章解析、免费摘要和 `/inbox` 预览。
+- Notify cron jobs、QQ sidecar、Reflexio stats。
+- Trend Radar 状态、MCP 工具列表和 MCP-like call。
+- OBP OpenAI shell、Anthropic shell、工具调用、compact 升 Pro、heartbeat 不升 Pro、历史关键词防污染。
+- Nanobot provider 默认模型链路和 `podman logs -f nanobot-cage` 的 OBP route header。
+
+这套 smoke 的目标不是测模型智商，而是确认“换模型不丢 sidecar 能力、不误升 Pro、不破坏工具调用、不把预算熔断顺序打乱”。
+
+
+## Sidecar 模型费用策略
+
+按 API 计费后，sidecar 的默认职责是抓取、缓存、规则判断和格式化；自动链路只能调用明确免费的模型。
+
+当前允许自动调用的免费模型：
+
+- RSS 广告判定：仅允许 `LongCat-Flash-Lite`，且 base 必须是 LongCat；其他模型即使填了 key 也不会被自动刷新链路调用。实现入口是 `LlmSettings::free_allowed()` / `LlmSettings::enabled()`。
+- Reflexio 事实提取：默认 `LongCat-Flash-Lite`，`REFLEXIO_ALLOW_PAID_LLM=false` 时付费模型不会自动启用。实现入口是 `cost_policy::llm_enabled()`。
+- Reflexio embedding：仅在配置了硅基流动免费 embedding key 且 endpoint/model 命中免费白名单时启用；否则回退到本地 SQLite 文本检索。实现入口是 `cost_policy::embedding_enabled()`。
+- Trend、LOF、Notify、QQ sidecar：保持纯规则/抓取/投递，不直接调用 LLM。
+- OBP 是模型网关，不主动消费模型；只有外部请求进来才转发并计费。
+
+部署约束：RSS 容器使用 Podman，本地已有镜像时 `deploy-sidecar rss` 会复用 `localhost/wechat-rss-rs:local`，只替换 Rust 二进制，不再默认拉 Docker Hub。若必须完整重建，可用 `WECHAT_RSS_BASE_IMAGE=<国内镜像>/library/debian:bookworm-slim` 显式指定基础镜像。
+
+回测记录：RSS `LongCat-Flash-Lite` 连通成功但延迟约 10s；实际刷新只在规则分数暧昧时调用免费 LLM。Reflexio 使用 `LongCat-Flash-Lite` 做事实提取回测通过，约 2s。
+
+## 变更 checklist
+
+新增功能时按这个顺序判断：
+
+1. 先定边界：core、skill、sidecar、script。
+2. 如果长期运行或拥有数据，优先 sidecar。
+3. 受管理服务必须写入 `sidecars.json`。
+4. 增加 health endpoint 和 `deploy-sidecar` 支持。
+5. secret 和 live data 不进 Git。
+6. sidecar API 稳定后，再加 skill 或 QQ fast path。
+7. 回测：
+
+```bash
+deploy-sidecar <target>
+deploy-sidecar all --status
+python3 -m py_compile <changed-python-scripts>
+cargo check --offline --manifest-path <changed-rust-sidecar>/Cargo.toml
+ops/scripts/check-nanobot-exp-patches.sh /root/nanobot
+```
+
+8. 只要服务图、core patch、端口绑定、主动推送链路或共享 helper 边界变化，就同步更新本文档。
+9. 新增 Python helper 前先检查 \`_shared/ops_common.py\` 是否已有等价函数；若不满足需求，优先扩展 ops_common 而不是在消费者脚本中本地重定义。
+10. 新增 skill 脚本时，按顺序判断是否应引入 \`_shared/ops_common.py\`（HTTP、时间、文本、节假日等基础工具）。
+11. 如果必须新定义与 ops_common 同名的函数，用显式别名导入避免阴影：\`from ops_common import short as _short\`。
+
+## 公共实现收口记录
+
+2026-06-04 对 ops/sources/ 下的 Python skill 脚本做了系统性重复扫描和收口修复。
+
+### 扫描方法
+
+扫描 \`ops/sources/_shared/ops_common.py\` 中所有 def 和 class 定义作为共享符号，然后对 7 个消费脚本逐一比对本地 def 定义，标记出重定义。
+
+### 已修复的重复
+
+| 文件 | 重复函数 | 处理方式 |
+|---|---|---|
+| \`personal-ops-assistant/copilot.py\` | \`parse_dt\` | 删除本地定义，改用 ops_summary 导入（已从 ops_common 导入） |
+| \`personal-ops-assistant/copilot.py\` | \`safe_items\` | 迁入 \`_shared/ops_common.py\`，消费者统一 import |
+| \`knowledge-inbox/inbox.py\` | \`short\` | 删除本地定义（默认 limit=80），改用 \`from ops_common import short\`（所有调用已传显式 limit） |
+| \`trend-radar/trend_client.py\` | \`fmt_time\` | 删除本地包装，改用 import 别名 \`common_fmt_time\`（已有），统一调用 |
+
+### 保留的"重复"（设计保留，非真正重复）
+
+| 文件 | 函数 | 保留理由 |
+|---|---|---|
+| \`wechat-rss-sidecar-skill/client.py\` | \`request()\` | 模块级薄包装，\`HTTP.request()\` 的 11 次内部调用已通过此入口；与 \`JsonHttpClient.request()\` 类方法语义不同 |
+| \`trend-radar/trend_client.py\` | \`fmt_time()\` | 虽已删除本地定义，但保留 import alias \`common_fmt_time\` 以避免与现有关联函数冲突 |
+
+### 当前结果
+
+| 指标 | 值 |
+|---|---|
+| \`_shared/ops_common.py\` 共享符号数 | **37**（\`JsonHttpClient\`、\`short\`、\`safe_items\`、\`parse_dt\`、\`fmt_time\`、\`now_shanghai\`、\`clean_article_markdown\` 等） |
+| 扫描的消费脚本数 | 7 |
+| 修复的重复定义数 | **4/6**（2 处设计保留） |
+| 剩余重复 | 0 处需要修复的实际重复 |
+
+\`_shared/ops_common.py\` 已涵盖 HTTP 请求、时间解析、文本截断、JSON 数组提取、节假日判断、文章清洗、签名 payload 和轻量 LLM 调用；新增功能应优先复用而非重写。
+
+
+9. 新增 Python helper 前先检查 \`_shared/ops_common.py\` 是否已有等价函数；若不满足需求，优先扩展 ops_common 而不是在消费者脚本中本地重定义。
+10. 新增 skill 脚本时，按顺序判断是否应引入 \`_shared/ops_common.py\`（HTTP、时间、文本、节假日等基础工具）。
+11. 如果必须新定义与 ops_common 同名的函数，用显式别名导入避免阴影：\`from ops_common import short as _short\`。
+
+## 公共实现收口记录
+
+2026-06-04 对 ops/sources/ 下的 Python skill 脚本做了系统性重复扫描和收口修复。
+
+### 扫描方法
+
+扫描 \`ops/sources/_shared/ops_common.py\` 中所有 def 和 class 定义作为共享符号，然后对 7 个消费脚本逐一比对本地 def 定义，标记出重定义。
+
+### 已修复的重复
+
+| 文件 | 重复函数 | 处理方式 |
+|---|---|---|
+| \`personal-ops-assistant/copilot.py\` | \`parse_dt\` | 删除本地定义，改用 ops_summary 导入（已从 ops_common 导入） |
+| \`personal-ops-assistant/copilot.py\` | \`safe_items\` | 迁入 \`_shared/ops_common.py\`，消费者统一 import |
+| \`knowledge-inbox/inbox.py\` | \`short\` | 删除本地定义（默认 limit=80），改用 \`from ops_common import short\`（所有调用已传显式 limit） |
+| \`trend-radar/trend_client.py\` | \`fmt_time\` | 删除本地包装，改用 import 别名 \`common_fmt_time\`（已有），统一调用 |
+
+### 保留的"重复"（设计保留，非真正重复）
+
+| 文件 | 函数 | 保留理由 |
+|---|---|---|
+| \`wechat-rss-sidecar-skill/client.py\` | \`request()\` | 模块级薄包装，\`HTTP.request()\` 的 11 次内部调用已通过此入口；与 \`JsonHttpClient.request()\` 类方法语义不同 |
+| \`trend-radar/trend_client.py\` | \`fmt_time()\` | 虽已删除本地定义，但保留 import alias \`common_fmt_time\` 以避免与现有关联函数冲突 |
+
+### 当前结果
+
+| 指标 | 值 |
+|---|---|
+| \`_shared/ops_common.py\` 共享符号数 | **37**（\`JsonHttpClient\`、\`short\`、\`safe_items\`、\`parse_dt\`、\`fmt_time\`、\`now_shanghai\`、\`clean_article_markdown\` 等） |
+| 扫描的消费脚本数 | 7 |
+| 修复的重复定义数 | **4/6**（2 处设计保留） |
+| 剩余重复 | 0 处需要修复的实际重复 |
+
+\`_shared/ops_common.py\` 已涵盖 HTTP 请求、时间解析、文本截断、JSON 数组提取、节假日判断、文章清洗、签名 payload 和轻量 LLM 调用；新增功能应优先复用而非重写。
