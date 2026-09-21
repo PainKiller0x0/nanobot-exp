@@ -36,6 +36,35 @@
 
 🐈 **nanobot** is an ultra-lightweight, open-source, self-hosted personal AI agent framework written in Python. It runs in a WebUI, terminal, or chat apps and combines tools, long-term memory, MCP integrations, model routing, multi-agent delegation, scheduled automation, and an OpenAI-compatible API in a small, readable core.
 
+## PainKiller0x0 Maintained Fork
+
+This repository is a production-oriented fork of [HKUDS/nanobot](https://github.com/HKUDS/nanobot). The current upstream baseline is **v0.3.5**.
+
+The fork keeps the upstream core close to upstream and isolates local behavior in focused extension and operations layers:
+
+- \`nanobot/exp/\`: QQ delivery/runtime helpers, memory and history bridges, tool budgets, and model fallback helpers.
+- \`ops/sources/\`: Rust sidecars and other local service sources.
+- \`ops/scripts/\`: installation, synchronization, smoke-test, health-check, and rollback tooling.
+- \`ops/systemd/\`: service and timer definitions for the VPS deployment.
+- \`docs/ARCHITECTURE.md\`, \`docs/EXTENSIONS_GLUE.md\`, \`docs/RUNTIME_PATCH_SCRIPTS.md\`, and \`docs/memory-rs.md\`: local architecture and extension notes.
+
+### VPS deployment
+
+The production VPS mounts \`/root/nanobot\` into the Podman container and uses \`ops/Dockerfile.vps-runtime\` for the incremental runtime image. The main service is \`podman-nanobot-cage.service\`; the local health check is:
+
+\`\`\`text
+http://127.0.0.1:8080/health
+\`\`\`
+
+Runtime configuration, API credentials, databases, and backup files stay outside Git. The active deployment also honors \`NANOBOT_CHANNEL_ALLOWLIST\` (currently \`qq,weixin\`).
+
+Rollback references for the v0.3.5 migration are kept on the VPS:
+
+- Git: \`backup/pre-upstream-20260921\`
+- Image: \`localhost/nanobot-nanobot:pre-v0.3.5-20260921\`
+
+This fork intentionally keeps custom behavior as a replaceable glue layer so upstream upgrades can be applied without reworking the Nanobot core.
+
 ## Start Here
 
 | You want to... | Go to |
