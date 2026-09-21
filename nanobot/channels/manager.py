@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import os
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
@@ -237,6 +238,12 @@ class ChannelManager:
         from nanobot.optional_features import ensure_enabled_channel_dependencies
 
         plugins = discover_plugins()
+        raw_allowlist = os.getenv("NANOBOT_CHANNEL_ALLOWLIST", "").strip()
+        allowed_channels = {item.strip() for item in raw_allowlist.split(",") if item.strip()}
+        if allowed_channels and allowed_channels != {"*"}:
+            plugins = {
+                name: plugin for name, plugin in plugins.items() if name in allowed_channels
+            }
         default_sections: dict[str, Any] = {}
         activations: dict[str, tuple[Any, list[tuple[str, Any]]]] = {}
         enabled_names: set[str] = set()
