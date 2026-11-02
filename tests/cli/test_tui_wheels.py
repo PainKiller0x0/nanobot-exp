@@ -27,6 +27,19 @@ from scripts.release_candidate import (
 )
 
 
+def test_tracked_paths_are_case_insensitive_safe():
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "-z"], cwd=packager.ROOT
+    ).decode("utf-8").split("\0")
+    seen: dict[str, str] = {}
+    collisions = []
+    for path in filter(None, tracked):
+        previous = seen.setdefault(path.casefold(), path)
+        if previous != path:
+            collisions.append((previous, path))
+    assert not collisions, f"Tracked paths collide on Windows: {collisions}"
+
+
 @pytest.fixture
 def candidate(tmp_path):
     version = tomllib.loads((packager.ROOT / "pyproject.toml").read_text())["project"]["version"]
