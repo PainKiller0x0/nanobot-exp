@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
+from typing import Any, cast
 
 from nanobot.utils.http import request_json as _http_request_json
 
@@ -54,12 +54,12 @@ def short_text(value: Any, limit: int = 48) -> str:
 
 
 def as_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 def as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
+    return cast(list[Any], value) if isinstance(value, list) else []
 
 
 def items_from(data: dict[str, Any]) -> list[dict[str, Any]]:
-    return [item for item in as_list(data.get("items")) if isinstance(item, dict)]
+    return [cast(dict[str, Any], item) for item in as_list(data.get("items")) if isinstance(item, dict)]

@@ -178,6 +178,7 @@ class TurnContext:
     streamed_content: bool = False
 
     input_persisted_early: bool = False
+    skip_history_replay: bool = False
     save_skip: int = 0
 
     outbound: OutboundMessage | None = None
@@ -2460,7 +2461,7 @@ class AgentLoop:
         )
         ctx.turn_latency_ms = max(0, int((time.time() - latency_started_at) * 1000))
         if ctx.usage is not None:
-            self._last_usage = ctx.usage.to_dict()
+            self._last_usage = ctx.usage.to_turn_dict()
         ctx.delivery.record_latency(ctx.turn_latency_ms)
         turn_continuation.prepare_save_boundary(ctx)
         if ctx.usage is not None and not ctx.ephemeral:
@@ -2720,7 +2721,7 @@ class AgentLoop:
         direct: OutboundMessage,
     ) -> None:
         """Persist deterministic replies so follow-up small talk keeps context."""
-        media_paths = [p for p in (msg.media or []) if isinstance(p, str) and p]
+        media_paths = [p for p in (msg.media or []) if p]
         if msg.content or media_paths:
             extra: dict[str, Any] = {"media": list(media_paths)} if media_paths else {}
             session.add_message("user", msg.content or "", **extra)

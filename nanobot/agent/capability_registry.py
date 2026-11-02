@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 CAPABILITY_FILE = Path("/root/.nanobot/capabilities.json")
 
@@ -14,12 +14,13 @@ def load_capabilities(path: Path | None = None, *, env: dict[str, str] | None = 
     """Load enabled capability metadata from the local registry file."""
     source = path or configured_registry_path(env=env)
     try:
-        data = json.loads(source.read_text(encoding="utf-8"))
+        data: Any = json.loads(source.read_text(encoding="utf-8"))
     except Exception:
         return []
     if not isinstance(data, list):
         return []
-    return [item for item in data if isinstance(item, dict)]
+    items = cast(list[Any], data)
+    return [cast(dict[str, Any], item) for item in items if isinstance(item, dict)]
 
 
 def configured_registry_path(*, env: dict[str, str] | None = None) -> Path:

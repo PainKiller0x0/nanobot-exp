@@ -101,12 +101,11 @@ def format_today_brief(data: dict[str, Any]) -> str:
     jobs = _list(data["notify"].get("job_details") or data["notify"].get("configured_jobs"))
     article_items = _items(data["articles"])
     rows = _list(_dict(data["lof"].get("last_board")).get("rows"))
-    errors = [
-        job
-        for job in jobs
-        if isinstance(job, dict)
-        and _dict(job.get("status")).get("last_status") in {"error", "timeout"}
-    ]
+    errors: list[dict[str, Any]] = []
+    for job in jobs:
+        job_data = _dict(job)
+        if _dict(job_data.get("status")).get("last_status") in {"error", "timeout"}:
+            errors.append(job_data)
     high_lof = [row for row in rows if (_float(_dict(row).get("rt_premium_pct")) or 0) >= 5]
 
     lines = [
