@@ -38,7 +38,7 @@ def store(tmp_path):
 
 @pytest.fixture
 def mock_provider():
-    p = MagicMock()
+    p = MagicMock(aclose=AsyncMock())
     p.chat_stream_with_retry = AsyncMock()
     p.generation = GenerationSettings(max_tokens=100)
     return p
@@ -136,6 +136,7 @@ class TestTurnTranscriptSummary:
         runtime,
         summary,
     ):
+        runtime = replace(runtime, context_window_tokens=4096)
         accepted = [
             {"role": "system", "content": "stable system"},
             {"role": "user", "content": "accepted history"},
@@ -364,7 +365,7 @@ class TestConsolidatorSummarize:
     async def test_summarize_raw_dumps_on_llm_failure(
         self, consolidator, mock_provider, store, runtime
     ):
-        """On LLM failure, raw-dump messages to HISTORY.md."""
+        """On LLM failure, append raw messages to memory/history.jsonl."""
         mock_provider.chat_stream_with_retry.side_effect = Exception("API error")
         messages = [{"role": "user", "content": "hello"}]
         result = await _archive(consolidator, messages, runtime)
@@ -401,7 +402,7 @@ class TestConsolidatorSummarize:
         mock_provider,
         runtime,
     ):
-        runtime = replace(runtime, generation=GenerationSettings(max_tokens=96))
+        runtime = replace(runtime, generation=GenerationSettings(max_tokens=256))
         mock_provider.chat_stream_with_retry.side_effect = RuntimeError("API error")
 
         result = await _archive(
@@ -695,11 +696,13 @@ class TestCompactIdleSession:
             "cli:events",
             runtime=runtime,
             events=EventSink(observe),
+            notify=True,
         )
 
         assert result == "Summary."
         assert [event.phase for event in events] == ["started", "succeeded"]
         assert events[0].compaction_id == events[1].compaction_id
+        assert all(event.notify for event in events)
 
     @pytest.mark.asyncio
     async def test_event_callback_failure_does_not_abort_compaction(
@@ -777,8 +780,9 @@ class TestCompactIdleSession:
 
     @pytest.mark.asyncio
     async def test_next_turn_rebuilds_context_after_idle_compaction(
-        self, loop_factory, mock_provider,
+        self, loop_factory, mock_provider, monkeypatch,
     ):
+        monkeypatch.setenv("NANOBOT_LIGHT_REPLAY_MESSAGES", "10")
         mock_provider.can_resume_conversation_state.return_value = True
         mock_provider.estimate_prompt_tokens.return_value = (100, "test")
         mock_provider.chat_stream_with_retry.return_value = LLMResponse(
@@ -810,7 +814,9 @@ class TestCompactIdleSession:
             contents = [message.get("content", "") for message in sent["messages"]]
             assert "Archived conversation summary." in contents[0]
             assert "question-0" not in contents
-            assert contents[1:-1] == []
+            assert len(contents[1:-1]) == 10
+            assert "question-5" in contents[1]
+            assert contents[-2] == "answer-9"
             assert "Next question" in contents[-1]
         finally:
             await loop.aclose()
@@ -877,10 +883,10 @@ class TestCompactIdleSession:
             "cli:incremental",
             runtime=runtime,
         )
-        current = sessions.get_or_create("cli:incremental")
+        current = await sessions.state.get("cli:incremental")
         current.add_message("user", "second user")
         current.add_message("assistant", "second assistant")
-        sessions.save(current)
+        await sessions.state.finish_turn(current)
         second = await real_consolidator.compact_idle_session(
             "cli:incremental",
             runtime=runtime,
@@ -910,6 +916,7 @@ class TestCompactIdleSession:
         store,
         runtime,
     ):
+        runtime = replace(runtime, generation=GenerationSettings(max_tokens=256))
         mock_provider.chat_stream_with_retry.side_effect = [
             LLMResponse(content="Earlier durable checkpoint.", finish_reason="stop"),
             RuntimeError("LLM unavailable"),
@@ -924,10 +931,10 @@ class TestCompactIdleSession:
             "cli:cumulative-fallback",
             runtime=runtime,
         )
-        current = sessions.get_or_create("cli:cumulative-fallback")
+        current = await sessions.state.get("cli:cumulative-fallback")
         current.add_message("user", "second user")
         current.add_message("assistant", "newest working state")
-        sessions.save(current)
+        await sessions.state.finish_turn(current)
 
         fallback = await real_consolidator.compact_idle_session(
             "cli:cumulative-fallback",
@@ -967,10 +974,10 @@ class TestCompactIdleSession:
             runtime=runtime,
         )
 
-        current = sessions.get_or_create("cli:nothing-after-summary")
+        current = await sessions.state.get("cli:nothing-after-summary")
         current.add_message("user", "thanks")
         current.add_message("assistant", "you're welcome")
-        sessions.save(current)
+        await sessions.state.finish_turn(current)
         result = await real_consolidator.compact_idle_session(
             "cli:nothing-after-summary",
             runtime=runtime,
@@ -995,9 +1002,10 @@ class TestCompactIdleSession:
         sessions.save(session)
 
         async def append_during_archive(**_kwargs):
-            current = sessions.get_or_create("cli:concurrent")
+            current = await sessions.state.get("cli:concurrent")
             current.add_message("user", "late user")
             current.add_message("assistant", "late assistant")
+            await sessions.state.finish_turn(current)
             return LLMResponse(content="Summary.", finish_reason="stop")
 
         mock_provider.chat_stream_with_retry.side_effect = append_during_archive
@@ -1579,7 +1587,7 @@ class TestCompactIdleSession:
         assert not lock.locked()
 
 
-class TestRawArchiveTruncation:
+class TestRawArchiveChunks:
     """raw_archive() keeps complete journal content with bounded individual entries."""
 
     @pytest.mark.parametrize("boundary", ["A ", "\n\n", "<think>PRIVATE</think>"])
@@ -1600,8 +1608,8 @@ class TestRawArchiveTruncation:
         assert "PRIVATE" not in joined
         assert "PUBLIC_TAIL" in joined
 
-    def test_raw_archive_truncates_large_content(self, store):
-        """Large messages should be truncated to _RAW_ARCHIVE_MAX_CHARS."""
+    def test_raw_archive_splits_large_content_into_bounded_entries(self, store):
+        """Large messages are split across bounded journal entries."""
         big = "x" * 50_000
         messages = [{"role": "user", "content": big}]
         store.raw_archive(messages)

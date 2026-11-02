@@ -13,13 +13,15 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import Field
 
+from nanobot.bus.delivery import ChannelNotReadyError
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import ContextCompactionEvent, ProgressEvent
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.command.builtin import build_help_text
+from nanobot.config.network import NetworkConfig
 from nanobot.config.paths import get_media_dir
-from nanobot.config.schema import Base
+from nanobot.config_base import Base
 from nanobot.utils.helpers import safe_filename, split_message
 
 DISCORD_AVAILABLE = importlib.util.find_spec("discord") is not None
@@ -63,9 +65,7 @@ class DiscordConfig(Base):
     working_emoji_delay: float = 2.0
     streaming: bool = True
     reply_to_message: bool = False
-    proxy: str | None = None
-    proxy_username: str | None = None
-    proxy_password: str | None = None
+    use_proxy: bool = False
 
 
 if DISCORD_AVAILABLE:
@@ -96,6 +96,8 @@ if DISCORD_AVAILABLE:
                 self._channel.logger.warning("app command sync failed: {}", e)
 
         async def on_message(self, message: discord.Message) -> None:
+            if self._channel._client is not self or not self._channel.is_running:
+                return
             await self._channel._handle_discord_message(message)
 
         async def on_thread_delete(self, thread: discord.Thread) -> None:
@@ -259,6 +261,10 @@ if DISCORD_AVAILABLE:
         async def send_outbound(self, msg: OutboundMessage) -> None:
             """Send a nanobot outbound message using Discord transport rules."""
             compaction = msg.event if isinstance(msg.event, ContextCompactionEvent) else None
+            if compaction is not None and not (
+                compaction.notify or self._channel.show_compaction_notices
+            ):
+                return
             # A compaction's outcome replaces its own start notice in place, so
             # the lifecycle stays visible as one message instead of two (#5719).
             # Without a stored notice (restart, edit refused) it is sent as usual.
@@ -371,6 +377,7 @@ class DiscordChannel(BaseChannel):
 
     name = "discord"
     display_name = "Discord"
+    uses_shared_proxy = True
     _STREAM_EDIT_INTERVAL = 0.8
 
     @classmethod
@@ -436,17 +443,21 @@ class DiscordChannel(BaseChannel):
         partial = cast(Any, channel).get_partial_message(message_id)
         return partial.to_reference(fail_if_not_exists=fail_if_not_exists), mention_settings
 
-    def __init__(self, config: Any, bus: MessageBus):
+    def __init__(
+        self, config: Any, bus: MessageBus, *, network: NetworkConfig | None = None,
+    ):
         if isinstance(config, dict):
             config = DiscordConfig.model_validate(config)
-        super().__init__(config, bus)
+        super().__init__(config, bus, network=network)
         self.config: DiscordConfig = config
+        self._proxy = self.network.resolve_proxy(self.config.use_proxy)
         self._client: DiscordBotClient | None = None
         self._typing_tasks: dict[str, asyncio.Task[None]] = {}
         self._bot_user_id: str | None = None
         self._pending_reactions: dict[str, Any] = {}  # chat_id -> message object
         self._compaction_notices: dict[tuple[str, str], discord.Message] = {}
-        self._working_emoji_tasks: dict[str, asyncio.Task[None]] = {}
+        self._working_emoji_tasks: dict[str, set[asyncio.Task[None]]] = {}
+        self._inbound_tasks: set[asyncio.Task[Any]] = set()
         self._stream_bufs: dict[str, _StreamBuf] = {}
         self._known_channels: dict[str, Any] = {}
 
@@ -470,30 +481,10 @@ class DiscordChannel(BaseChannel):
             intents = discord.Intents.none()
             intents.value = self.config.intents
 
-            proxy_auth = None
-            has_user = bool(self.config.proxy_username)
-            has_pass = bool(self.config.proxy_password)
-            if has_user and has_pass:
-                import aiohttp
-
-                proxy_auth = aiohttp.BasicAuth(
-                    login=cast(str, self.config.proxy_username),
-                    password=cast(str, self.config.proxy_password),
-                )
-            elif has_user != has_pass:
-                self.logger.warning(
-                    "proxy auth incomplete: both proxy_username and "
-                    "proxy_password must be set; ignoring partial credentials",
-                )
-
-            proxy = self.config.proxy
-            if proxy and "://" not in proxy:
-                proxy = f"http://{proxy}"
             self._client = DiscordBotClient(
                 self,
                 intents=intents,
-                proxy=proxy,
-                proxy_auth=proxy_auth,
+                proxy=self._proxy,
             )
         except Exception:
             self.logger.exception("Failed to initialize client")
@@ -532,7 +523,7 @@ class DiscordChannel(BaseChannel):
         """Send a message through Discord using discord.py."""
         client = self._client
         if client is None or not client.is_ready():
-            raise RuntimeError("Discord client is not ready")
+            raise ChannelNotReadyError("Discord client is not ready")
 
         is_progress = isinstance(msg.event, ProgressEvent)
 
@@ -625,6 +616,17 @@ class DiscordChannel(BaseChannel):
             raise
 
     async def _handle_discord_message(self, message: discord.Message) -> None:
+        """Own in-flight callbacks until they finish or runtime reset drains them."""
+        task = asyncio.current_task()
+        if task is not None:
+            self._inbound_tasks.add(task)
+        try:
+            await self._process_discord_message(message)
+        finally:
+            if task is not None:
+                self._inbound_tasks.discard(task)
+
+    async def _process_discord_message(self, message: discord.Message) -> None:
         """Handle incoming Discord messages from discord.py.
 
         Self-loop guard: only drop messages from this bot's own account. Messages
@@ -672,7 +674,17 @@ class DiscordChannel(BaseChannel):
             with suppress(Exception):
                 await message.add_reaction(self.config.working_emoji)
 
-        self._working_emoji_tasks[channel_id] = asyncio.create_task(_delayed_working_emoji())
+        task = asyncio.create_task(_delayed_working_emoji())
+        self._working_emoji_tasks.setdefault(channel_id, set()).add(task)
+
+        def reaction_done(done: asyncio.Task[None]) -> None:
+            tasks = self._working_emoji_tasks.get(channel_id)
+            if tasks is not None:
+                tasks.discard(done)
+                if not tasks:
+                    self._working_emoji_tasks.pop(channel_id, None)
+
+        task.add_done_callback(reaction_done)
 
         try:
             await self._handle_message(
@@ -883,15 +895,18 @@ class DiscordChannel(BaseChannel):
 
     async def _clear_reactions(self, chat_id: str) -> None:
         """Remove all pending reactions after bot replies."""
-        # Cancel delayed working emoji if it hasn't fired yet
-        task = self._working_emoji_tasks.pop(chat_id, None)
-        if task and not task.done():
-            task.cancel()
-
+        # Keep tasks owned until done, so a concurrent reset can drain them too.
+        tasks = tuple(self._working_emoji_tasks.get(chat_id, ()))
+        # Snapshot before yielding; a newer receipt must survive this cleanup.
         msg_obj = self._pending_reactions.pop(chat_id, None)
+        bot_user = self._client.user if self._client else None
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
         if msg_obj is None:
             return
-        bot_user = self._client.user if self._client else None
         for emoji in (self.config.read_receipt_emoji, self.config.working_emoji):
             with suppress(Exception):
                 await msg_obj.remove_reaction(emoji, bot_user)
@@ -902,9 +917,28 @@ class DiscordChannel(BaseChannel):
         for channel_id in channel_ids:
             await self._stop_typing(channel_id)
 
+    async def _cancel_all_reactions(self) -> None:
+        """Stop delayed reactions and release their retained messages."""
+        tasks = tuple(task for group in self._working_emoji_tasks.values() for task in group)
+        self._pending_reactions.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._working_emoji_tasks.clear()
+
     async def _reset_runtime_state(self, close_client: bool) -> None:
-        """Reset client and typing state."""
+        """Reset client and transient runtime state."""
+        self._running = False
+        # Drain callbacks before clearing the state they can still create after an await.
+        current = asyncio.current_task()
+        inbound = tuple(task for task in self._inbound_tasks if task is not current)
+        for task in inbound:
+            task.cancel()
+        if inbound:
+            await asyncio.gather(*inbound, return_exceptions=True)
         await self._cancel_all_typing()
+        await self._cancel_all_reactions()
         self._compaction_notices.clear()
         self._stream_bufs.clear()
         self._known_channels.clear()

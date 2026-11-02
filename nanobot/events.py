@@ -33,10 +33,17 @@ class ResponseSourceEvent(AgentEvent):
     content: str | None = None
 
 
+CompactionReason = Literal["idle", "context_pressure", "manual", "provider_native"]
+
+
 @dataclass(frozen=True)
 class ContextCompactionEvent(AgentEvent):
     compaction_id: str
     phase: Literal["started", "succeeded", "failed", "cancelled"]
+    # Request a chat notice (e.g. /compact), not event delivery or persistence.
+    # Interactive clients still consume every phase when this is false.
+    notify: bool = False
+    reason: CompactionReason | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +69,8 @@ class RecoveryStateEvent(AgentEvent):
     reason: str | None = None
     attempts: int = 0
     can_continue: bool | None = None
+    failure_error_kind: str | None = None
+    reply_preserved: bool | None = None
 
 
 @dataclass(frozen=True)

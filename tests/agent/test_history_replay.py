@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.exp.agent.history_budget import replay_history
 from nanobot.providers.base import LLMResponse
 from nanobot.session.manager import Session
 
@@ -66,7 +67,34 @@ def test_explicit_message_limit_still_starts_at_user_turn() -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_message_hands_complete_replay_to_runner(tmp_path: Path) -> None:
+async def test_process_message_hands_bounded_replay_to_runner(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setenv("NANOBOT_LIGHT_REPLAY_TOKENS", "10000")
+    monkeypatch.setenv("NANOBOT_LIGHT_REPLAY_MESSAGES", "20")
+    loop = _make_loop(tmp_path, context_window_tokens=32_768)
+    loop.provider.chat_stream_with_retry = AsyncMock(
+        return_value=LLMResponse(content="ok", tool_calls=[], usage=None)
+    )
+    loop.tools.get_definitions = MagicMock(return_value=[])
+
+    session = await loop.sessions.state.import_messages("cli:test", _populated_session(30).messages)
+    expected_history = session.get_history(max_messages=20, max_tokens=10_000)
+    loop.provider.aclose = AsyncMock()
+    result = await loop.process_direct("hello", session_key="cli:test")
+
+    assert result is not None
+    sent = loop.provider.chat_stream_with_retry.await_args.kwargs["messages"]
+    assert sent[1:-1] == expected_history
+    assert len(sent[1:-1]) <= 20
+    assert sent[-1]["content"].startswith("hello\n\n")
+    await loop.aclose()
+
+
+@pytest.mark.asyncio
+async def test_process_message_replays_recent_archived_history(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("NANOBOT_LIGHT_REPLAY_TOKENS", "10000")
+    monkeypatch.setenv("NANOBOT_LIGHT_REPLAY_MESSAGES", "6")
     loop = _make_loop(tmp_path, context_window_tokens=32_768)
     loop.provider.chat_stream_with_retry = AsyncMock(
         return_value=LLMResponse(content="ok", tool_calls=[], usage=None)
@@ -74,18 +102,31 @@ async def test_process_message_hands_complete_replay_to_runner(tmp_path: Path) -
     loop.tools.get_definitions = MagicMock(return_value=[])
 
     session = loop.sessions.get_or_create("cli:test")
-    with patch.object(session, "get_history", wraps=session.get_history) as get_history:
-        result = await loop._process_message(
-            InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
-        )
+    for index in range(12):
+        session.add_message("user", f"old-{index}")
+        session.add_message("assistant", f"reply-{index}")
+    session.commit_summary_checkpoint("archived summary")
+    loop.sessions.save(session)
+    archive_boundary = session.last_archived
+    expected_history = replay_history(session, max_messages=6, max_tokens=10_000)
+    loop.provider.aclose = AsyncMock()
+
+    result = await loop.process_direct("接着刚才的话题继续", session_key="cli:test")
 
     assert result is not None
-    assert get_history.call_args.kwargs == {"extend_to_user": False}
+    sent = loop.provider.chat_stream_with_retry.await_args.kwargs["messages"]
+    assert sent[1:-1] == expected_history
+    assert sent[1:-1]
+    assert session.last_archived == archive_boundary
+    await loop.aclose()
 
 
 @pytest.mark.asyncio
 async def test_runner_checkpoint_keeps_current_user_as_replay_boundary(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path, context_window_tokens=8_000)
+    loop.provider.estimate_prompt_tokens.side_effect = (
+        lambda messages, tools, model: (100 * len(messages), "test")
+    )
     loop.provider.chat_stream_with_retry = AsyncMock(
         return_value=LLMResponse(content="ok", tool_calls=[], usage=None)
     )
@@ -113,5 +154,6 @@ async def test_runner_checkpoint_keeps_current_user_as_replay_boundary(tmp_path:
     sent_text = "\n".join(str(message.get("content")) for message in sent_messages)
     assert "new question" in sent_text
     assert [message["role"] for message in sent_messages] == ["system", "user"]
-    assert sent_messages[1]["content"] == "new question"
+    assert sent_messages[1]["content"].startswith("new question\n\n")
+    assert "File access:" in sent_messages[1]["content"]
     assert any(message.get("content") == "long older turn" for message in session.messages)

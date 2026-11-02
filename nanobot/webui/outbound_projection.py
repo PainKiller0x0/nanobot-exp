@@ -20,6 +20,8 @@ from nanobot.bus.outbound_events import (
     TurnModelUpdatedEvent,
     UserInputEvent,
 )
+from nanobot.bus.runtime_events import SubagentTaskChanged
+from nanobot.pairing.events import PairingChanged
 from nanobot.session.webui_turns import clear_websocket_turn_if_current
 from nanobot.webui.metadata import (
     WEBSOCKET_TURN_OWNER_METADATA_KEY,
@@ -43,6 +45,8 @@ class WebUIOutboundTransport(Protocol):
     """Wire operations required by the outbound application projector."""
 
     def webui_subscribers(self, chat_id: str) -> tuple[ServerConnection, ...]: ...
+
+    async def send_pairing_changed(self) -> None: ...
 
     async def send_runtime_model_updated(
         self,
@@ -121,7 +125,7 @@ class WebUIOutboundProjector:
 
     async def hydrate(self, chat_id: str) -> None:
         """Replay reconnect state through the existing stable wire operations."""
-        for event in self._session_projection.hydration_events(
+        for event in await self._session_projection.hydration_events(
             webui_session_key(chat_id),
             chat_id,
         ):
@@ -137,6 +141,9 @@ class WebUIOutboundProjector:
 
     async def send(self, msg: OutboundMessage) -> None:
         event = msg.event
+        if isinstance(event, PairingChanged):
+            await self._transport.send_pairing_changed()
+            return
         if isinstance(event, RetryWaitEvent):
             return
         progress_event = event if isinstance(event, ProgressEvent) else None
@@ -157,6 +164,7 @@ class WebUIOutboundProjector:
                 SessionUpdatedEvent,
                 GoalStatusEvent,
                 GoalStateSyncEvent,
+                SubagentTaskChanged,
                 ContextCompactionEvent,
             )
             log = (
@@ -243,6 +251,16 @@ class WebUIOutboundProjector:
                 turn_owner=turn_owner if isinstance(turn_owner, str) else None,
             )
             await self._transport.send_session_updated(msg.chat_id, scope=session_update_scope)
+            return
+        if isinstance(event, SubagentTaskChanged):
+            if conns:
+                task = self._session_projection.subagent_task(webui_session_key(msg.chat_id), event.task_id)
+                if task is not None:
+                    await self._transport.send_payload(
+                        msg.chat_id,
+                        {"event": "subagent_task", "chat_id": msg.chat_id, "task": task},
+                        persistence="transient",
+                    )
             return
         if isinstance(event, SessionUpdatedEvent):
             if conns:

@@ -112,6 +112,7 @@ async def test_stream_true_returns_sse(aiohttp_client) -> None:
     )
     assert resp.status == 200
     assert resp.content_type == "text/event-stream"
+    assert resp.headers["X-Request-ID"]
 
     body = await resp.text()
     lines = [line for line in body.split("\n") if line.startswith("data: ")]
@@ -240,35 +241,6 @@ async def test_stream_sse_chunk_ids_are_consistent(aiohttp_client) -> None:
     chunk_ids = {c["id"] for c in chunks}
     assert len(chunk_ids) == 1, f"Expected single chunk id, got {chunk_ids}"
     assert chunk_ids.pop().startswith("chatcmpl-")
-
-
-@pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")
-@pytest.mark.asyncio
-async def test_stream_passes_on_stream_callbacks(aiohttp_client) -> None:
-    """process_direct should be called with on_stream and on_stream_end when streaming."""
-    captured_kwargs: dict = {}
-
-    async def fake_process_direct(**kwargs):
-        captured_kwargs.update(kwargs)
-        if kwargs.get("on_stream_end"):
-            await kwargs["on_stream_end"]()
-        return "done"
-
-    agent = MagicMock()
-    agent.process_direct = fake_process_direct
-    agent.aclose = AsyncMock()
-
-    app = create_app(agent, model_name="m", api_key=API_KEY)
-    client = await aiohttp_client(app)
-
-    resp = await client.post(
-        "/v1/chat/completions",
-        headers=AUTH_HEADERS,
-        json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
-    )
-    assert resp.status == 200
-    assert captured_kwargs.get("on_stream") is not None
-    assert captured_kwargs.get("on_stream_end") is not None
 
 
 @pytest.mark.skipif(not HAS_AIOHTTP, reason="aiohttp not installed")

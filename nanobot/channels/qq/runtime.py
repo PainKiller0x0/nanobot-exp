@@ -25,21 +25,23 @@ import os
 import re
 import time
 from collections import deque
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import unquote, urlparse
 
 import aiohttp
 from loguru import logger
 from pydantic import Field
 
+from nanobot.bus.delivery import ChannelNotReadyError
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import ContextCompactionEvent
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import Base
+from nanobot.config_base import Base
 from nanobot.exp.qq import article_handlers as qq_article_handlers
 from nanobot.exp.qq import article_runtime as qq_article_runtime
 from nanobot.exp.qq import gateway_greeting as qq_gateway_greeting
@@ -288,6 +290,119 @@ def _make_bot_class(channel: QQChannel) -> type[botpy.Client]:
     return _Bot
 
 
+# ---------------------------------------------------------------------------
+# Quoted messages
+#
+# QQ's C2C/group events do not carry ``message_reference``; botpy models that
+# field because the object is shared with guild messages, but QQ never sends it
+# here.  The quoted original arrives in ``msg_elements``, linked from
+# ``message_scene.ext`` by ``ref_msg_idx``.  botpy parses neither field, and
+# ``BaseMessage.__slots__`` drops the raw payload, so
+# ``_install_qq_payload_capture`` keeps the payload from the constructor before
+# it is discarded.  If a future botpy exposes those fields on the message
+# object, ``_quoted_content_for`` prefers that copy and the hook becomes dead
+# weight rather than a correctness dependency.
+# ---------------------------------------------------------------------------
+
+QQ_QUOTED_CONTEXT_MAX_CHARS = 4_000
+QQ_RAW_PAYLOAD_CACHE = 200
+
+_qq_raw_payloads: dict[str, dict[str, Any]] = {}
+
+
+def _flatten_scene_ext(scene: Any) -> dict[str, str]:
+    """Turn QQ's ``message_scene.ext`` (``["key=value", ...]``) into a mapping."""
+    if not isinstance(scene, Mapping):
+        return {}
+    ext = cast("Mapping[str, Any]", scene).get("ext")
+    if not isinstance(ext, list):
+        return {}
+    flattened: dict[str, str] = {}
+    for item in cast("list[Any]", ext):
+        if isinstance(item, str) and "=" in item:
+            key, _, value = item.partition("=")
+            flattened[key] = value
+    return flattened
+
+
+def extract_quoted_content(raw: Mapping[str, Any] | None) -> str | None:
+    """Return the text of the message the sender quoted, if any.
+
+    QQ points at the quoted message from ``message_scene.ext``: ``ref_msg_idx=X``
+    matches the ``msg_elements`` entry whose ``msg_idx`` is ``X``, and that
+    entry's ``content`` is the original text.  Matching on the index instead of
+    taking the first element keeps this correct if QQ ever sends more than one.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+
+    ref_idx = _flatten_scene_ext(raw.get("message_scene")).get("ref_msg_idx")
+    if not ref_idx:
+        return None
+
+    elements = raw.get("msg_elements")
+    if not isinstance(elements, list):
+        return None
+
+    for element in cast("list[Any]", elements):
+        if not isinstance(element, Mapping):
+            continue
+        entry = cast("Mapping[str, Any]", element)
+        if entry.get("msg_idx") != ref_idx:
+            continue
+        text = entry.get("content")
+        if not isinstance(text, str) or not text.strip():
+            return None
+        text = text.strip()
+        if len(text) > QQ_QUOTED_CONTEXT_MAX_CHARS:
+            text = text[:QQ_QUOTED_CONTEXT_MAX_CHARS] + "..."
+        return text
+    return None
+
+
+def _install_qq_payload_capture() -> None:
+    """Keep raw QQ payloads that botpy would otherwise discard (idempotent)."""
+    if not QQ_AVAILABLE:
+        return
+    try:
+        from botpy import message as botpy_message
+
+        for message_cls in (botpy_message.C2CMessage, botpy_message.GroupMessage):
+            original_init = cast("Callable[..., Any]", message_cls.__init__)
+            if getattr(original_init, "_nanobot_qq_capture", False):
+                continue
+
+            def _capture(
+                self: Any,
+                api: Any,
+                event_id: Any,
+                data: Any,
+                _original: Callable[..., Any] = original_init,
+            ) -> Any:
+                if isinstance(data, Mapping):
+                    payload = cast("Mapping[str, Any]", data)
+                    message_id = payload.get("id")
+                    if isinstance(message_id, str):
+                        _qq_raw_payloads[message_id] = dict(payload)
+                        while len(_qq_raw_payloads) > QQ_RAW_PAYLOAD_CACHE:
+                            _qq_raw_payloads.pop(next(iter(_qq_raw_payloads)))
+                return _original(self, api, event_id, data)
+
+            setattr(_capture, "_nanobot_qq_capture", True)
+            setattr(message_cls, "__init__", _capture)
+    except Exception:  # pragma: no cover - optional dependency shape may vary
+        logger.debug("QQ quoted-message payload capture unavailable")
+
+
+def _quoted_content_for(message: Any) -> str | None:
+    """Resolve the quoted text for one inbound QQ message."""
+    scene = getattr(message, "message_scene", None)
+    elements = getattr(message, "msg_elements", None)
+    if scene is not None or elements is not None:
+        return extract_quoted_content({"message_scene": scene, "msg_elements": elements})
+    return extract_quoted_content(_qq_raw_payloads.get(str(getattr(message, "id", ""))))
+
+
 class QQConfig(Base):
     """QQ channel configuration using botpy SDK."""
 
@@ -304,8 +419,10 @@ class QQConfig(Base):
     download_chunk_size: int = 1024 * 256  # 256KB
     download_max_bytes: int = 1024 * 1024 * 200  # 200MB safety limit
 
-    # QQ C2C/group messages cannot edit or recall compaction notices.
-    show_compaction_notices: bool = False
+    # QQ's C2C/group message API has no edit or recall endpoint, so automatic
+    # notices would land as separate permanent messages (#5784). Unset inherits
+    # the global policy (off by default); explicit legacy true/false still override it.
+    show_compaction_notices: bool | None = None
 
     # QQ can truncate/deny oversized text payloads. Split long replies into chunks.
     text_chunk_max_len: int = 1200
@@ -364,7 +481,7 @@ class QQChannel(BaseChannel):
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
-        return QQConfig().model_dump(by_alias=True)
+        return QQConfig().model_dump(by_alias=True, exclude_none=True)
 
     @property
     def supports_streaming(self) -> bool:
@@ -374,6 +491,9 @@ class QQChannel(BaseChannel):
             config = QQConfig.model_validate(config)
         super().__init__(config, bus)
         self.config: QQConfig = config
+        # Preserve explicitly configured notices for standalone channel callers.
+        # ChannelManager resolves global inheritance from the original section.
+        self.show_compaction_notices = bool(config.show_compaction_notices)
 
         self._client: botpy.Client | None = None
         self._http: aiohttp.ClientSession | None = None
@@ -387,6 +507,9 @@ class QQChannel(BaseChannel):
         self._generated_image_delivery_allowed: dict[str, bool] = {}
         self._tts_enabled: dict[str, bool] = {}
         self._tts_accumulated: dict[str, str] = {}
+
+        # QQ delivers the quoted original in a payload field botpy discards.
+        _install_qq_payload_capture()
 
         self._media_root: Path = self._init_media_root()
 
@@ -409,6 +532,18 @@ class QQChannel(BaseChannel):
         root.mkdir(parents=True, exist_ok=True)
         logger.info("QQ media directory: {}", str(root))
         return root
+
+    async def login(self, force: bool = False) -> bool:
+        """Scan a QQ Bot QR code and save the AppID/secret it returns."""
+        from nanobot.channels.qq.connect import QQConnectStore
+
+        if not force and self.config.app_id and self.config.secret:
+            return True
+        credentials = await QQConnectStore().login()
+        if credentials is None:
+            return False
+        self.config.app_id, self.config.secret = credentials
+        return True
 
     async def start(self) -> None:
         """Start the QQ bot with auto-reconnect loop."""
@@ -549,9 +684,11 @@ class QQChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send attachments first, then text."""
+        # QQ has no edit or recall endpoint for automatic compaction notices;
+        # explicit /compact feedback remains available.
         if (
             isinstance(msg.event, ContextCompactionEvent)
-            and not self.config.show_compaction_notices
+            and not (msg.event.notify or self.show_compaction_notices)
         ):
             return
 
@@ -579,10 +716,7 @@ class QQChannel(BaseChannel):
 
         try:
             if not self._client:
-                status = "skipped"
-                reason = "no_client"
-                logger.warning("QQ client not initialized")
-                return
+                raise ChannelNotReadyError("QQ client not initialized")
 
             msg_id = msg.metadata.get("message_id")
             chat_type = self._chat_type_cache.get(msg.chat_id, "c2c")
@@ -1366,6 +1500,16 @@ class QQChannel(BaseChannel):
     # ---------------------------
 
     async def _on_message(self, data: C2CMessage | GroupMessage, is_group: bool = False) -> None:
+        try:
+            await self._process_inbound_message(data, is_group)
+        except Exception:
+            logger.exception("Error handling inbound message id={}", getattr(data, "id", "?"))
+
+    async def _process_inbound_message(
+        self,
+        data: C2CMessage | GroupMessage,
+        is_group: bool = False,
+    ) -> None:
         """Parse inbound message, download attachments, and publish to the bus."""
         if data.id in self._processed_ids:
             return
@@ -1387,13 +1531,12 @@ class QQChannel(BaseChannel):
             user_id = chat_id
             self._chat_type_cache[chat_id] = "c2c"
 
+        # Check access before acknowledgements or attachment downloads.
         if not self.is_allowed(user_id):
             logger.warning(
                 "QQ access denied for sender {} chat_id={} message_id={}",
                 user_id, chat_id, getattr(data, "id", "unknown"),
             )
-            # Preserve upstream pairing behavior for unauthorized direct messages,
-            # while group messages remain silently ignored.
             if not is_group:
                 await self._handle_message(
                     sender_id=user_id,
@@ -1402,6 +1545,13 @@ class QQChannel(BaseChannel):
                     is_dm=True,
                 )
             return
+        user_content = (getattr(data, "content", "") or "").strip()
+        content = user_content
+        self._generated_image_delivery_allowed[chat_id] = _has_explicit_image_generation_request(user_content)
+        quoted = _quoted_content_for(data)
+        if quoted:
+            quote_tag = f"[Reply to: {quoted}]"
+            content = f"{quote_tag}\n{content}" if content else quote_tag
 
         ack_message = (getattr(self.config, "ack_message", "") or "").strip()
         if ack_message:
@@ -1415,11 +1565,8 @@ class QQChannel(BaseChannel):
             except Exception as e:
                 logger.warning("QQ ack send failed message_id={} err={}", data.id, e)
 
-        content = (getattr(data, "content", "") or "").strip()
-        self._generated_image_delivery_allowed[chat_id] = _has_explicit_image_generation_request(content)
-
         # Handle voice-mode settings locally. They must never enter the LLM/tool path.
-        if any(phrase in content for phrase in ("用语音回复", "语音回复我", "打开语音回复", "开启语音回复")):
+        if any(phrase in user_content for phrase in ("用语音回复", "语音回复我", "打开语音回复", "开启语音回复")):
             if not os.environ.get("MIMO_API_KEY", "").strip():
                 self._tts_enabled[chat_id] = False
                 await self._send_text_only(
@@ -1437,7 +1584,7 @@ class QQChannel(BaseChannel):
             )
             logger.info("QQ TTS enabled for chat_id={}", chat_id)
             return
-        if "退出语音" in content or "关闭语音" in content or "不要语音" in content:
+        if "退出语音" in user_content or "关闭语音" in user_content or "不要语音" in user_content:
             self._tts_enabled[chat_id] = False
             await self._send_text_only(
                 chat_id=chat_id, is_group=is_group, msg_id=data.id,
@@ -1449,19 +1596,19 @@ class QQChannel(BaseChannel):
         # the data used by tests don't contain attachments property
         # so we use getattr with a default of [] to avoid AttributeError in tests
         attachments = getattr(data, "attachments", None) or []
-        if content and not attachments:
+        if user_content and not attachments:
             if await self._try_handle_personal_ops_query(
                 chat_id=chat_id,
                 is_group=is_group,
                 message_id=data.id,
-                content=content,
+                content=user_content,
             ):
                 return
             if await self._try_handle_knowledge_inbox_query(
                 chat_id=chat_id,
                 is_group=is_group,
                 message_id=data.id,
-                content=content,
+                content=user_content,
             ):
                 return
 
@@ -1476,10 +1623,10 @@ class QQChannel(BaseChannel):
         if not content and not media_paths:
             return
 
-        if content and not media_paths:
+        if user_content and not media_paths:
             yage_handled = await self._try_handle_yage_raw(
                 chat_id=chat_id,
-                content=content,
+                content=user_content,
                 message_id=data.id,
             )
             if yage_handled:
@@ -1489,7 +1636,7 @@ class QQChannel(BaseChannel):
             handled = await self._try_handle_wechat_grounded(
                 user_id=user_id,
                 chat_id=chat_id,
-                content=content,
+                content=user_content,
                 message_id=data.id,
             )
             if handled:

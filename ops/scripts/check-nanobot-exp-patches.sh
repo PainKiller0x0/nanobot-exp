@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO="${1:-/root/nanobot}"
+WORKSPACE_ROOT="${NANOBOT_WORKSPACE_ROOT:-/root/.nanobot/workspace}"
 fail=0
 
 check() {
@@ -14,9 +15,6 @@ check() {
   fi
 }
 
-check 'nanobot/config/schema.py' 'delivery_channel: str | None = None' 'heartbeat delivery_channel schema'
-check 'nanobot/config/schema.py' 'delivery_chat_id: str | None = None' 'heartbeat delivery_chat_id schema'
-check 'nanobot/cli/commands.py' 'fixed_channel=hb_cfg.delivery_channel' 'heartbeat fixed target routing'
 check 'ops/sources/hermes-check/hermes_check.py' 'SIDECAR_STATUS_API' 'HERMES sidecar manager health check'
 check 'ops/sources/qdii-monitor/send_qq.py' 'run_fresh_report' 'LOF refresh-before-send wrapper'
 check 'ops/systemd/nanobot-llm-warmup.service' 'nanobot.agent.warmup' 'Nanobot LLM warmup systemd unit'
@@ -34,15 +32,29 @@ check 'nanobot/agent/inbox_intents.py' 'extract_inbox_intent' 'Agent knowledge i
 check 'nanobot/agent/memory_client.py' 'save_memory' 'Agent Reflexio memory client helper'
 check 'nanobot/agent/memory_intents.py' 'extract_memory_to_save' 'Agent memory intent matcher'
 check 'nanobot/agent/memory_formatters.py' 'format_memory_status' 'Agent memory reply formatter'
-check 'nanobot/exp/agent/memory_bridge.py' 'class MemoryHook' 'memory-rs bridge source'
+check 'ops/sources/memory-rs/memory_bridge.py' 'class MemoryHook' 'memory-rs bridge source'
 
-if ! git -C "$REPO" ls-files --error-unmatch nanobot/exp/agent/memory_bridge.py >/dev/null 2>&1; then
-  printf "MISS memory-rs bridge source is not tracked by git\n" >&2
+if ! git -C "$REPO" ls-files --error-unmatch ops/sources/memory-rs/memory_bridge.py >/dev/null 2>&1; then
+  printf "MISS memory-rs canonical source is not tracked by git\n" >&2
   fail=1
 else
-  printf "ok   memory-rs bridge source is tracked\n"
+  printf "ok   memory-rs canonical source is tracked\n"
 fi
-check 'nanobot/cli/commands.py' 'build_memory_hook' 'memory-rs hook composition'
+if ! cmp -s "$REPO/ops/sources/memory-rs/memory_bridge.py" "$REPO/nanobot/exp/agent/memory_bridge.py"; then
+  printf "MISS installed memory bridge differs from canonical source\n" >&2
+  fail=1
+else
+  printf "ok   installed memory bridge matches canonical source\n"
+fi
+if grep -qF 'from nanobot.exp.agent.memory_bridge import build_memory_hook' "$REPO/nanobot/cli/gateway_runtime.py" 2>/dev/null \
+  && grep -qF 'hooks=[_MCPReadinessHook(mcp_provider), build_memory_hook()]' "$REPO/nanobot/cli/gateway_runtime.py" 2>/dev/null; then
+  printf "ok   memory-rs gateway hook composition\n"
+elif grep -qF 'build_memory_hook' "$REPO/nanobot/cli/commands.py" 2>/dev/null; then
+  printf "ok   memory-rs legacy command hook composition\n"
+else
+  printf "MISS memory-rs hook composition (gateway_runtime.py)\n" >&2
+  fail=1
+fi
 check 'nanobot/channels/qq/runtime.py' 'from nanobot.exp.qq import stream_runtime as qq_stream_runtime' 'QQ downstream helper seam'
 check 'nanobot/exp/qq/streaming.py' 'should_stream_text' 'QQ streaming policy helper'
 check 'nanobot/exp/qq/stream_runtime.py' 'send_delta' 'QQ streaming runtime helper'
@@ -61,4 +73,27 @@ check 'ops/sources/wechat-rss-rs/src/qq_rss_api.rs' 'wechat_ack' 'RSS sidecar We
 check 'ops/sources/wechat-rss-rs/src/qq_article_format.rs' 'format_article_push_body' 'RSS sidecar QQ article formatter'
 check 'ops/sources/wechat-rss-rs/src/qq_extractive_qa.rs' 'extractive_answer' 'RSS sidecar extractive QA helper'
 check 'ops/sources/wechat-rss-rs/src/qq_rss_api.rs' 'yage_ack' 'RSS sidecar Yage ACK API'
+check 'ops/sources/homeassistant-climate/homeassistant_climate.py' 'class HomeAssistantClimateControlTool' 'restricted Shenzhen climate bridge source'
+check 'ops/sources/homeassistant-climate/SKILL.md' 'home_assistant_shenzhen_climate_control' 'Home Assistant climate skill source'
+check 'ops/scripts/install-ha-climate-bridge.py' 'patched_gateway' 'Home Assistant climate bridge installer'
+check 'nanobot/exp/agent/homeassistant_climate.py' 'class HomeAssistantClimateControlTool' 'installed Shenzhen climate bridge'
+if ! cmp -s "$REPO/ops/sources/homeassistant-climate/homeassistant_climate.py" "$REPO/nanobot/exp/agent/homeassistant_climate.py"; then
+  printf "MISS installed climate bridge differs from canonical source\n" >&2
+  fail=1
+else
+  printf "ok   installed climate bridge matches canonical source\n"
+fi
+if ! cmp -s "$REPO/ops/sources/homeassistant-climate/SKILL.md" "$WORKSPACE_ROOT/skills/home-assistant/SKILL.md"; then
+  printf "MISS installed Home Assistant skill differs from canonical source\n" >&2
+  fail=1
+else
+  printf "ok   installed Home Assistant skill matches canonical source\n"
+fi
+if grep -qF 'from nanobot.exp.agent.homeassistant_climate import (' "$REPO/nanobot/cli/gateway_runtime.py" \
+  && grep -qF 'tools.register(HomeAssistantClimateControlTool())' "$REPO/nanobot/cli/gateway_runtime.py"; then
+  printf "ok   restricted climate tool gateway registration\n"
+else
+  printf "MISS restricted climate tool gateway registration\n" >&2
+  fail=1
+fi
 exit "$fail"

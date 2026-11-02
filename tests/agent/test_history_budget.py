@@ -196,6 +196,18 @@ def test_explicit_operational_request_keeps_full_budget() -> None:
     assert reason.startswith("task marker:")
 
 
+def test_explicit_english_operation_keeps_tools_and_full_budget() -> None:
+    budget, reason = replay_budget_for_message(
+        "run the tests",
+        default_budget=16_000,
+        light_budget=3_000,
+    )
+
+    assert budget == 16_000
+    assert reason == "task marker: English operation"
+    assert should_omit_tool_ads(reason) is False
+
+
 def test_lightweight_reason_policy_helpers() -> None:
     assert should_skip_history_replay("short standalone turn") is False
     assert should_skip_history_replay("empty short turn") is True

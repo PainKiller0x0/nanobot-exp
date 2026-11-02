@@ -10,13 +10,15 @@ import argparse
 import shutil
 from pathlib import Path
 
-
 ROOT = Path('/root/nanobot')
 BRIDGE_SOURCE = ROOT / 'ops' / 'sources' / 'memory-rs' / 'memory_bridge.py'
 BRIDGE_DEST = ROOT / 'nanobot' / 'exp' / 'agent' / 'memory_bridge.py'
 COMMANDS = ROOT / 'nanobot' / 'cli' / 'commands.py'
+GATEWAY_RUNTIME = ROOT / 'nanobot' / 'cli' / 'gateway_runtime.py'
 IMPORT = '    from nanobot.exp.agent.memory_bridge import build_memory_hook\n'
 MALFORMED_IMPORT = 'from nanobot.exp.agent.memory_bridge import build_memory_hook\n'
+GATEWAY_IMPORT = 'from nanobot.exp.agent.memory_bridge import build_memory_hook'
+GATEWAY_HOOK = 'hooks=[_MCPReadinessHook(mcp_provider), build_memory_hook()]'
 ANCHOR = '    from nanobot.webui.token_usage import TokenUsageHook\n'
 HOOK = 'hooks=[TokenUsageHook(timezone_name=config.agents.defaults.timezone)],'
 HOOK_REPLACEMENT = 'hooks=[TokenUsageHook(timezone_name=config.agents.defaults.timezone), build_memory_hook()],'
@@ -27,6 +29,15 @@ def fail(message: str) -> None:
 
 
 def patch_commands(write: bool) -> bool:
+    if GATEWAY_RUNTIME.exists():
+        runtime = GATEWAY_RUNTIME.read_text(encoding='utf-8')
+        has_import = GATEWAY_IMPORT in runtime
+        has_hook = GATEWAY_HOOK in runtime
+        if has_import and has_hook:
+            return False
+        if has_import or has_hook:
+            fail('gateway_runtime memory hook seam is incomplete; refusing to patch')
+
     text = COMMANDS.read_text(encoding='utf-8')
     changed = False
     if f"\n{MALFORMED_IMPORT}" in f"\n{text}":
@@ -61,6 +72,8 @@ def main() -> None:
             fail('bridge anchor is present but installation is incomplete; run installer before restart')
         if not BRIDGE_DEST.exists():
             fail(f'missing installed bridge: {BRIDGE_DEST}')
+        if BRIDGE_DEST.read_bytes() != BRIDGE_SOURCE.read_bytes():
+            fail('installed bridge differs from source; run installer before restart')
         print('memory-rs bridge check OK')
         return
     BRIDGE_DEST.parent.mkdir(parents=True, exist_ok=True)

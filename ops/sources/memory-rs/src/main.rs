@@ -10,7 +10,7 @@ use chrono::Utc;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env, fs,
     net::SocketAddr,
     path::PathBuf,
@@ -23,6 +23,7 @@ const DEFAULT_SCOPE: &str = "default-nanobot";
 const MAX_CONTENT: usize = 4_000;
 const MAX_TURN: usize = 8_000;
 const MAX_RECALL: usize = 8;
+const MAX_REFERENCE_CONTENT: usize = 700;
 
 #[derive(Clone)]
 struct AppState {
@@ -246,7 +247,31 @@ impl Store {
                 memory_ids TEXT NOT NULL, elapsed_ms INTEGER NOT NULL, created_at TEXT NOT NULL
             );"
         )?;
-        Ok(Self { conn })
+        let store = Self { conn };
+        store.migrate_episode_index()?;
+        Ok(store)
+    }
+
+    fn migrate_episode_index(&self) -> Result<()> {
+        let version: i64 = self.conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version >= 1 {
+            return Ok(());
+        }
+        let episodes = self.conn.prepare("SELECT id,user_text FROM episodes")?
+            .query_map([], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM ngrams WHERE entity='episode'", [])?;
+        for (id, text) in episodes {
+            let mut grams: Vec<_> = ngrams(&clip(authored_text(&text), MAX_REFERENCE_CONTENT)).into_iter().collect();
+            grams.sort();
+            for gram in grams.into_iter().take(512) {
+                tx.execute("INSERT OR IGNORE INTO ngrams(entity,entity_id,gram) VALUES('episode',?1,?2)", params![id,gram])?;
+            }
+        }
+        tx.pragma_update(None, "user_version", 1)?;
+        tx.commit()?;
+        Ok(())
     }
 
     fn now() -> String {
@@ -263,6 +288,8 @@ impl Store {
             grams.insert(normalize(text));
         }
         let tx = self.conn.unchecked_transaction()?;
+        let mut grams: Vec<_> = grams.into_iter().collect();
+        grams.sort();
         for gram in grams.into_iter().take(512) {
             tx.execute(
                 "INSERT OR IGNORE INTO ngrams(entity, entity_id, gram) VALUES(?1,?2,?3)",
@@ -315,7 +342,7 @@ impl Store {
         let status = q.status.as_deref().unwrap_or("confirmed");
         let limit = q.limit.unwrap_or(60).clamp(1, 200) as i64;
         if let Some(query) = q.q.as_deref().filter(|v| !v.trim().is_empty()) {
-            let ids = self.entity_ids("memory", query, limit as usize * 3)?;
+            let ids = self.entity_ids("memory", &scope, query, limit as usize * 3)?;
             if ids.is_empty() {
                 return Ok(vec![]);
             }
@@ -354,7 +381,7 @@ impl Store {
     }
 
     fn record_turn(&self, req: TurnRequest) -> Result<()> {
-        let user_text = clip(&req.user_text, MAX_TURN);
+        let user_text = clip(authored_text(&req.user_text), MAX_TURN);
         let assistant_text = clip(&req.assistant_text, MAX_TURN);
         if user_text.is_empty() || assistant_text.is_empty() {
             return Ok(());
@@ -365,7 +392,7 @@ impl Store {
         let now = Self::now();
         self.conn.execute("INSERT INTO episodes(scope,session_key,channel,user_text,assistant_text,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![scope, session, channel, user_text, assistant_text, now])?;
         let id = self.conn.last_insert_rowid();
-        self.add_ngrams("episode", id, &format!("{} {}", user_text, assistant_text))?;
+        self.add_ngrams("episode", id, &clip(&user_text, MAX_REFERENCE_CONTENT))?;
         if let Some((kind, candidate)) = extract_candidate(&user_text) {
             let _ = self.create_memory(CreateMemoryRequest {
                 content: candidate,
@@ -389,13 +416,22 @@ impl Store {
         let hot = self.hot(&scope, 4)?;
         let mut results = self.search_memories(&scope, &req.query, limit)?;
         results.extend(self.search_episodes(&scope, &req.query, limit)?);
-        results.extend(self.search_knowledge(&scope, &req.query, limit)?);
+        let topic = authored_text(&req.query).to_lowercase();
+        if ["文章", "收件箱", "看过", "读过", "知识库", "rss", "新闻"].iter().any(|word| topic.contains(word)) {
+            results.extend(self.search_knowledge(&scope, &req.query, limit)?);
+        }
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.kind.cmp(&b.kind))
+                .then_with(|| b.id.cmp(&a.id))
         });
-        results.dedup_by(|a, b| a.kind == b.kind && a.id == b.id);
+        let mut seen: HashSet<_> = hot
+            .iter()
+            .map(|item| (item.kind.clone(), normalize(&clip(&item.content, MAX_REFERENCE_CONTENT))))
+            .collect();
+        results.retain(|item| seen.insert((item.kind.clone(), normalize(&item.content))));
         results.truncate(limit);
         let ids = results
             .iter()
@@ -419,15 +455,31 @@ impl Store {
         Ok(rows)
     }
 
-    fn entity_ids(&self, entity: &str, query: &str, limit: usize) -> Result<Vec<i64>> {
-        let grams: Vec<String> = ngrams(query).into_iter().take(48).collect();
+    fn entity_ids(
+        &self,
+        entity: &str,
+        scope: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<i64>> {
+        let mut grams: Vec<String> = recall_ngrams(query).into_iter().collect();
+        grams.sort();
+        grams.truncate(48);
         if grams.is_empty() {
             return Ok(vec![]);
         }
+        let table = match entity {
+            "memory" => "memories",
+            "episode" => "episodes",
+            "knowledge" => "knowledge",
+            _ => anyhow::bail!("unknown ngram entity"),
+        };
+        // Apply scope before LIMIT so other scopes cannot crowd out local candidates.
         let marks = placeholders(grams.len());
-        let sql = format!("SELECT entity_id FROM ngrams WHERE entity=? AND gram IN ({}) GROUP BY entity_id ORDER BY COUNT(*) DESC LIMIT ?", marks);
+        let sql = format!("WITH matched AS (SELECT entity_id,gram FROM ngrams INDEXED BY idx_ngrams_lookup WHERE entity=? AND gram IN ({}) AND entity_id IN (SELECT id FROM {} WHERE scope=?)), rarity AS (SELECT gram,1.0/COUNT(*) AS weight FROM matched GROUP BY gram) SELECT matched.entity_id FROM matched JOIN rarity USING(gram) GROUP BY matched.entity_id ORDER BY SUM(rarity.weight) DESC,COUNT(*) DESC,matched.entity_id DESC LIMIT ?", marks, table);
         let mut values: Vec<rusqlite::types::Value> = vec![entity.to_string().into()];
         values.extend(grams.into_iter().map(Into::into));
+        values.push(scope.to_string().into());
         values.push((limit as i64).into());
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt
@@ -436,8 +488,53 @@ impl Store {
         Ok(rows)
     }
 
+    fn score_recall(&self, entity: &str, scope: &str, mut rows: Vec<RecallItem>, query: &str) -> Result<Vec<RecallItem>> {
+        if rows.is_empty() {
+            return Ok(rows);
+        }
+        let query_grams = recall_ngrams(query);
+        let mut grams: Vec<_> = query_grams.iter().cloned().collect();
+        grams.sort();
+        grams.truncate(48);
+        let table = match entity {
+            "memory" => "memories",
+            "episode" => "episodes",
+            "knowledge" => "knowledge",
+            _ => anyhow::bail!("unknown ngram entity"),
+        };
+        let total: f64 = self.conn.query_row(&format!("SELECT COUNT(*) FROM {} WHERE scope=?", table), [scope], |r| r.get::<_,i64>(0))? as f64;
+        let sql = format!("SELECT gram,COUNT(*) FROM ngrams INDEXED BY idx_ngrams_lookup WHERE entity=? AND gram IN ({}) AND entity_id IN (SELECT id FROM {} WHERE scope=?) GROUP BY gram", placeholders(grams.len()), table);
+        let mut values: Vec<rusqlite::types::Value> = vec![entity.to_string().into()];
+        values.extend(grams.into_iter().map(Into::into));
+        values.push(scope.to_string().into());
+        let mut stmt = self.conn.prepare(&sql)?;
+        let weights = stmt.query_map(params_from_iter(values), |r| {
+            let frequency = r.get::<_,i64>(1)? as f64;
+            Ok((r.get::<_,String>(0)?, (((total + 1.0) / (frequency + 1.0)).ln() + 1.0, frequency)))
+        })?.collect::<rusqlite::Result<HashMap<_,_>>>()?;
+        // Unknown phrasing is not negative evidence; common words carry less weight.
+        let available_weight: f64 = weights.values().map(|(weight, _)| weight).sum();
+        rows.retain_mut(|item| {
+            item.content = clip(authored_text(&item.content), MAX_REFERENCE_CONTENT);
+            let content_grams = recall_ngrams(&item.content);
+            let matched: Vec<_> = content_grams.iter().filter_map(|gram| weights.get(gram)).collect();
+            let specific_term = matched.iter().any(|(_, frequency)| *frequency * 10.0 <= total);
+            let literal_coverage = matched.len() as f64 / query_grams.len().max(1) as f64;
+            let coverage = matched.iter().map(|(weight, _)| weight).sum::<f64>() / available_weight.max(1.0);
+            if total >= 10.0 && query_grams.len() > 2 && !specific_term && literal_coverage < 0.80 {
+                return false;
+            }
+            if matched.is_empty() || (query_grams.len() > 2 && matched.len() < 2 && !specific_term) || coverage < 0.30 {
+                return false;
+            }
+            item.score *= coverage;
+            true
+        });
+        Ok(rows)
+    }
+
     fn search_memories(&self, scope: &str, query: &str, limit: usize) -> Result<Vec<RecallItem>> {
-        let ids = self.entity_ids("memory", query, limit * 3)?;
+        let ids = self.entity_ids("memory", scope, query, limit * 3)?;
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -449,11 +546,11 @@ impl Store {
         let rows = stmt
             .query_map(params_from_iter(vals), recall_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        self.score_recall("memory", scope, rows, query)
     }
 
     fn search_episodes(&self, scope: &str, query: &str, limit: usize) -> Result<Vec<RecallItem>> {
-        let ids = self.entity_ids("episode", query, limit * 3)?;
+        let ids = self.entity_ids("episode", scope, query, limit * 3)?;
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -465,23 +562,23 @@ impl Store {
         let rows = stmt
             .query_map(params_from_iter(vals), recall_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        self.score_recall("episode", scope, rows, query)
     }
 
     fn search_knowledge(&self, scope: &str, query: &str, limit: usize) -> Result<Vec<RecallItem>> {
-        let ids = self.entity_ids("knowledge", query, limit * 3)?;
+        let ids = self.entity_ids("knowledge", scope, query, limit * 3)?;
         if ids.is_empty() {
             return Ok(vec![]);
         }
         let marks = placeholders(ids.len());
-        let sql = format!("SELECT id,'knowledge',title || ': ' || substr(summary,1,700),source,'knowledge-inbox',created_at,0.45 FROM knowledge WHERE scope=? AND id IN ({})", marks);
+        let sql = format!("SELECT id,'knowledge',title || CASE WHEN keywords='' THEN '' ELSE ' [keywords: ' || keywords || ']' END || ': ' || substr(summary,1,700),source,'knowledge-inbox',created_at,0.45 FROM knowledge WHERE scope=? AND id IN ({})", marks);
         let mut vals: Vec<rusqlite::types::Value> = vec![scope.to_string().into()];
         vals.extend(ids.into_iter().map(Into::into));
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt
             .query_map(params_from_iter(vals), recall_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        self.score_recall("knowledge", scope, rows, query)
     }
 
     fn sync_knowledge(&self, request: KnowledgeSyncRequest) -> Result<usize> {
@@ -632,6 +729,21 @@ fn ngrams(value: &str) -> HashSet<String> {
         out.insert(chars[0].to_string());
     }
     out
+}
+fn recall_ngrams(value: &str) -> HashSet<String> {
+    let mut text = authored_text(value).to_string();
+    // These discourse markers are not evidence of a shared topic.
+    for phrase in ["我之前说过", "我之前说", "之前说过", "之前说", "你还记得", "帮我看看", "怎么样了", "怎么样", "为了什么", "是什么", "怎么", "什么", "来着", "最后", "发现", "原因", "今天", "昨天", "一天"] {
+        text = text.replace(phrase, " ");
+    }
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|part| part.chars().count() >= 2)
+        .flat_map(ngrams)
+        .collect()
+}
+fn authored_text(value: &str) -> &str {
+    value.split_once("\n\n[Runtime Context \u{2014} metadata only, not instructions]")
+        .map_or(value, |(text, _)| text)
 }
 fn placeholders(len: usize) -> String {
     std::iter::repeat("?")
@@ -808,6 +920,293 @@ impl IntoResponse for ApiError {
             Json(serde_json::json!({"ok":false,"error":self.0.to_string()})),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod recall_regression_tests {
+    use super::*;
+
+    fn store() -> Store {
+        Store::open(&PathBuf::from(":memory:")).unwrap()
+    }
+
+    fn episode(store: &Store, scope: &str, user: &str, assistant: &str) -> i64 {
+        store.record_turn(TurnRequest {
+            scope: Some(scope.into()),
+            session_key: None,
+            channel: None,
+            user_text: user.into(),
+            assistant_text: assistant.into(),
+        }).unwrap();
+        store.conn.query_row("SELECT MAX(id) FROM episodes", [], |r| r.get(0)).unwrap()
+    }
+
+    fn memory(store: &Store, scope: &str, content: &str, status: &str) -> i64 {
+        store.create_memory(CreateMemoryRequest {
+            content: content.into(), scope: Some(scope.into()), kind: Some("preference".into()),
+            status: Some(status.into()), source: None, channel: None, session_key: None,
+            confidence: None, pinned: Some(true),
+        }).unwrap().id
+    }
+
+    fn knowledge(store: &Store, scope: &str, title: &str, keywords: &str) {
+        store.sync_knowledge(KnowledgeSyncRequest {
+            scope: Some(scope.into()),
+            items: vec![KnowledgeItem {
+                id: title.into(), title: title.into(), source: None,
+                summary: Some("操作说明".into()), keywords: Some(vec![keywords.into()]),
+                score: None, markdown_path: None, created_at: None,
+            }],
+        }).unwrap();
+    }
+
+    fn recall(store: &Store, query: &str, limit: usize) -> RecallResponse {
+        store.recall(&RecallRequest {
+            query: query.into(), scope: Some("test".into()), session_key: None,
+            limit: Some(limit),
+        }).unwrap()
+    }
+
+    #[test]
+    fn long_casual_query_does_not_recall_one_day_overlap() {
+        let store = store();
+        episode(&store, "test", "除湿机开了一天，水箱满了", "已记录");
+        episode(&store, "test", "杯子放了一天，已经洗过", "已记录");
+        episode(&store, "test", "胃肠检查预约在周三", "已记录");
+        assert!(recall(&store, "忙什么吗，摸摸鱼又过一天呗", 8).results.is_empty());
+    }
+
+    #[test]
+    fn relevance_score_and_order_do_not_follow_episode_ids() {
+        let query = "保险续费材料清单";
+        let strong = "保险续费材料清单已经整理完毕";
+        let weak = "保险续费日期尚未确定";
+        for strong_first in [true, false] {
+            let store = store();
+            let (first, second) = if strong_first { (strong, weak) } else { (weak, strong) };
+            episode(&store, "test", first, "收到");
+            episode(&store, "test", second, "收到");
+            let response = recall(&store, query, 8);
+            assert_eq!(response.results.len(), 2);
+            assert_eq!(response.results[0].content, strong);
+            assert!(response.results[0].score > response.results[1].score);
+            assert!((response.results[0].score - 0.55).abs() < 1e-9);
+            assert_eq!(recall(&store, query, 1).results[0].content, strong);
+        }
+    }
+
+    #[test]
+    fn assistant_only_overlap_does_not_inject_user_text() {
+        let store = store();
+        episode(&store, "test", "杯子放在书架上", "保险续费材料清单需要整理");
+        // Also checks pre-existing combined user/assistant indexes.
+        assert!(store.entity_ids("episode", "test", "保险续费材料清单", 8).unwrap().is_empty());
+        assert!(recall(&store, "保险续费材料清单", 8).results.is_empty());
+    }
+
+    #[test]
+    fn duplicate_content_is_filtered_without_deleting_episodes() {
+        let store = store();
+        let first = episode(&store, "test", "保险续费材料清单", "收到");
+        let second = episode(&store, "test", "保险续费 材料清单!", "收到");
+        assert_ne!(first, second);
+        episode(&store, "test", "保险续费材料清单已提交", "收到");
+        let response = recall(&store, "保险续费材料清单", 2);
+        assert_eq!(response.results.len(), 2);
+        let keys: HashSet<_> = response.results.iter()
+            .map(|item| (item.kind.clone(), normalize(&item.content))).collect();
+        assert_eq!(keys.len(), 2);
+        assert!(response.results.iter().any(|item| item.content.ends_with("已提交")));
+        assert_eq!(store.stats().unwrap().episodes, 3);
+    }
+
+    #[test]
+    fn short_chinese_topic_excludes_unrelated_and_other_scope() {
+        let store = store();
+        let wanted = episode(&store, "test", "保险续费材料已经备齐", "收到");
+        episode(&store, "test", "烤箱清洁完毕", "保险需要放松心态");
+        for _ in 0..30 {
+            episode(&store, "other", "保险续费材料已经备齐", "收到");
+        }
+        let response = recall(&store, "保险", 1);
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, wanted);
+        assert!((response.results[0].score - 0.55).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exact_preference_recall_and_hot_confirmed_are_preserved() {
+        let store = store();
+        let preference = "我希望默认用中文回复，先给结论再给理由";
+        let id = memory(&store, "test", preference, "confirmed");
+        memory(&store, "test", "我喜欢绿茶", "candidate");
+        memory(&store, "other", "我喜欢红茶", "confirmed");
+        let response = recall(&store, preference, 8);
+        // Hot takes precedence over a duplicate in results, but must not disappear.
+        let items: Vec<_> = response.hot.iter().chain(response.results.iter())
+            .filter(|item| item.id == id && item.kind == "preference").collect();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].content, preference);
+        let scored = store.search_memories("test", preference, 8).unwrap();
+        assert_eq!(scored.len(), 1);
+        assert!((scored[0].score - 0.95).abs() < 1e-9);
+        let casual = recall(&store, "随便聊聊", 8);
+        assert_eq!(casual.hot.len(), 1);
+        assert_eq!(casual.hot[0].id, id);
+        assert_eq!(casual.hot[0].score, 1.0);
+        assert!(casual.results.is_empty());
+    }
+
+    #[test]
+    fn conversational_scaffolding_is_not_topic_evidence() {
+        let store = store();
+        episode(&store, "test", "我之前说过杯子放在柜子里", "收到");
+        assert!(recall(&store, "我之前说过保险续费材料清单", 8).results.is_empty());
+        assert!(recall(&store, "我之前说", 8).results.is_empty());
+        assert!(recall(&store, "，。！？", 8).results.is_empty());
+    }
+
+    #[test]
+    fn knowledge_keywords_are_recalled_as_explicit_metadata() {
+        let store = store();
+        knowledge(&store, "test", "烤箱清洁", "保险续费材料清单");
+        let by_keyword = store.search_knowledge("test", "保险续费材料清单", 8).unwrap();
+        assert_eq!(by_keyword.len(), 1);
+        assert!(by_keyword[0].content.contains("[keywords: 保险续费材料清单]"));
+        let response = store.search_knowledge("test", "烤箱清洁", 8).unwrap();
+        assert_eq!(response.len(), 1);
+        assert!((response[0].score - 0.45).abs() < 1e-9);
+    }
+
+    #[test]
+    fn matching_text_beyond_injected_excerpt_is_not_evidence() {
+        let store = store();
+        let user = format!("{}保险续费材料清单", "山".repeat(710));
+        episode(&store, "test", &user, "收到");
+        assert!(recall(&store, "保险续费材料清单", 8).results.is_empty());
+    }
+
+    #[test]
+    fn same_text_in_different_kinds_is_not_a_duplicate() {
+        let store = store();
+        let text = "保险续费材料清单";
+        memory(&store, "test", text, "confirmed");
+        episode(&store, "test", text, "收到");
+        let response = recall(&store, text, 8);
+        let kinds: HashSet<_> = response.hot.iter().chain(response.results.iter())
+            .map(|item| item.kind.as_str()).collect();
+        assert!(kinds.contains("preference"));
+        assert!(kinds.contains("episode"));
+    }
+
+    #[test]
+    fn candidate_ties_and_ngram_caps_are_deterministic() {
+        let store = store();
+        let first = episode(&store, "test", "保险续费", "收到");
+        let second = episode(&store, "test", "保险续费", "收到");
+        let third = episode(&store, "test", "保险续费", "收到");
+        for _ in 0..8 {
+            assert_eq!(store.entity_ids("episode", "test", "保险续费", 2).unwrap(), vec![third, second]);
+        }
+        assert!(first < second);
+        let long: String = (0x4e00..0x50bc).map(|n| char::from_u32(n).unwrap()).collect();
+        let indexed = |id| -> Vec<String> {
+            store.conn.prepare("SELECT gram FROM ngrams WHERE entity='episode' AND entity_id=?1 ORDER BY gram")
+                .unwrap().query_map([id], |r| r.get(0)).unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        let a = episode(&store, "test", &long, "收到");
+        let b = episode(&store, "test", &long, "收到");
+        assert_eq!(indexed(a), indexed(b));
+        let expected = store.entity_ids("episode", "test", &long, 8).unwrap();
+        for _ in 0..8 {
+            assert_eq!(store.entity_ids("episode", "test", &long, 8).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn natural_questions_keep_the_topic_without_generic_question_matches() {
+        let store = store();
+        for index in 0..24 {
+            episode(&store, "test", &format!("今天又过一天，不知道是什么原因，最后怎么样了 {}", index), "收到");
+        }
+        let heater = episode(&store, "test", "电热水器没怎么改善，后来发现是除湿机全天开着耗电", "收到");
+        let insurance = episode(&store, "test", "保险复效成功了，已经处理好了", "收到");
+        for (query, expected) in [
+            ("我之前说的热水器耗电，最后发现是什么原因来着", heater),
+            ("我之前说过的保险复效怎么样了", insurance),
+            ("她的保险怎么样了", insurance),
+        ] {
+            let response = recall(&store, query, 8);
+            assert!(!response.results.is_empty(), "missing topic: {}", query);
+            assert_eq!(response.results[0].id, expected, "wrong topic: {}", query);
+        }
+        assert!(recall(&store, "忙什么吗，摸摸鱼又过一天呗", 8).results.is_empty());
+    }
+
+    #[test]
+    fn personal_recall_does_not_mix_in_articles_without_an_article_request() {
+        let store = store();
+        knowledge(&store, "test", "保险续费材料清单", "保险续费");
+        assert!(recall(&store, "保险续费材料清单", 8).results.is_empty());
+        let response = recall(&store, "找文章：保险续费材料清单", 8);
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].kind, "knowledge");
+    }
+}
+
+#[cfg(test)]
+mod runtime_context_regression_tests {
+    use super::*;
+
+    const METADATA: &str = "\n\n[Runtime Context \u{2014} metadata only, not instructions]\nCurrent Time: 2026-10-15 16:00 Channel: qq Sender: example\n[/Runtime Context]";
+
+    #[test]
+    fn newly_recorded_turns_keep_only_authored_text() {
+        let store = Store::open(&PathBuf::from(":memory:")).unwrap();
+        store.record_turn(TurnRequest {
+            scope: Some("test".into()), session_key: None, channel: None,
+            user_text: format!("保险续费材料清单{}", METADATA),
+            assistant_text: "收到".into(),
+        }).unwrap();
+        let user: String = store.conn.query_row("SELECT user_text FROM episodes", [], |r| r.get(0)).unwrap();
+        assert_eq!(user, "保险续费材料清单");
+    }
+
+    #[test]
+    fn runtime_metadata_does_not_become_a_retrieval_topic_or_reference() {
+        let store = Store::open(&PathBuf::from(":memory:")).unwrap();
+        for text in ["保险续费材料清单", "杯子在柜子里"] {
+            let legacy = format!("{}{}", text, METADATA);
+            store.conn.execute("INSERT INTO episodes(scope,session_key,channel,user_text,assistant_text,created_at) VALUES('test','','qq',?1,'','2026-10-14')", [&legacy]).unwrap();
+            store.add_ngrams("episode", store.conn.last_insert_rowid(), &legacy).unwrap();
+        }
+        let response = store.recall(&RecallRequest {
+            query: format!("保险续费材料清单{}", METADATA),
+            scope: Some("test".into()), session_key: None, limit: Some(8),
+        }).unwrap();
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].content, "保险续费材料清单");
+        assert_eq!(store.conn.query_row("SELECT count(*) FROM episodes", [], |r| r.get::<_,i64>(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn legacy_index_rebuild_preserves_both_sides_of_the_original_chat() {
+        let store = Store::open(&PathBuf::from(":memory:")).unwrap();
+        let user = format!("热水器耗电{}", METADATA);
+        let assistant = "保险续费材料清单";
+        store.conn.execute("INSERT INTO episodes(scope,session_key,channel,user_text,assistant_text,created_at) VALUES('test','','qq',?1,?2,'2026-10-14')", params![user,assistant]).unwrap();
+        let id = store.conn.last_insert_rowid();
+        store.add_ngrams("episode", id, &format!("{} {}", user, assistant)).unwrap();
+        store.conn.pragma_update(None, "user_version", 0).unwrap();
+        store.migrate_episode_index().unwrap();
+        assert!(store.entity_ids("episode", "test", "保险续费材料清单", 8).unwrap().is_empty());
+        assert_eq!(store.entity_ids("episode", "test", "热水器耗电", 8).unwrap(), vec![id]);
+        let original: (String,String) = store.conn.query_row("SELECT user_text,assistant_text FROM episodes WHERE id=?1", [id], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(original, (user, assistant.into()));
+        store.migrate_episode_index().unwrap();
+        assert_eq!(store.entity_ids("episode", "test", "热水器耗电", 8).unwrap(), vec![id]);
     }
 }
 

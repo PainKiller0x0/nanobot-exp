@@ -36,6 +36,49 @@ def test_explicit_tool_marker_keeps_tools() -> None:
     assert reason == "tool marker"
 
 
+def test_explicit_english_delegation_keeps_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": "Delegate this inspection"}],
+    )
+
+    assert tools == TOOLS
+    assert reason == "tool marker"
+
+
+def test_english_workspace_operation_keeps_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": "Check the current directory and read marker.txt"}],
+    )
+
+    assert tools == TOOLS
+    assert reason == "tool marker"
+
+
+def test_casual_english_check_does_not_keep_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS,
+        [{"role": "user", "content": "Check this out, it looks odd"}],
+    )
+
+    assert tools is None
+    assert reason == "short standalone turn"
+
+
+def test_goal_continuation_keeps_task_tools_without_exposing_ha_or_image_tools() -> None:
+    tools, reason = tool_definitions_for_turn(
+        TOOLS_WITH_IMAGE + [
+            {"type": "function", "function": {"name": "mcp_home_assistant_light", "parameters": {}}}
+        ],
+        [{"role": "user", "content": "verify the migration"}],
+        force_tools=True,
+    )
+
+    assert tools == TOOLS
+    assert reason == "goal continuation"
+
+
 def test_non_explicit_task_turn_hides_image_generation_tool() -> None:
     tools, reason = tool_definitions_for_turn(
         TOOLS_WITH_IMAGE,
@@ -208,3 +251,10 @@ def test_active_tool_context_hides_image_tool_without_explicit_request() -> None
 
     assert tools == TOOLS
     assert reason == "active tool context"
+def test_common_english_task_requests_keep_tools() -> None:
+    for text in ("do task", "inspect the files", "which files are still pending?"):
+        tools, _ = tool_definitions_for_turn(
+            TOOLS,
+            [{"role": "user", "content": text}],
+        )
+        assert tools == TOOLS

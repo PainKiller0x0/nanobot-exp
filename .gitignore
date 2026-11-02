@@ -99,8 +99,14 @@ logs/
 tmp/
 temp/
 *.tmp
-exp/
+/exp/
 .playwright-mcp/
 bridge/node_modules/
 webui/.verify-*
 .playwright-cli/
+
+# Generated source revision for wheels and sdists
+nanobot/_build_commit.txt
+
+# Generated from docs/ by the Hatch build hook (including editable installs)
+nanobot/skills/nanobot-document/references/
