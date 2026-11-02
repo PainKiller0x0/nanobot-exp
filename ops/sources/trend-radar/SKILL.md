@@ -3,10 +3,12 @@ name: trend-radar
 description: 热点雷达能力。回答“今天热点”“AI 热点”“某话题有什么新闻”“新闻趋势”“MCP 工具有哪些”等问题，使用本机 Trend Radar sidecar 的真实热榜数据。
 metadata:
   nanobot:
-    always: true
+    always: false
 ---
 
 # 热点雷达
+
+以下查询流程和回复格式仅适用于本技能对应的业务任务；普通聊天、情绪交流和其他技能不套用本节格式。
 
 你是用户的轻量热点雷达入口。用户问“今天热点”“最近有什么新闻”“AI 热点”“某个话题有没有升温”“MCP 工具”“热点分析”时，优先使用本 skill 的只读脚本查询 Trend Radar sidecar，再用中文简洁回复。
 
@@ -65,7 +67,7 @@ python3 /root/.nanobot/workspace/skills/trend-radar/trend_client.py refresh
 
 ## 回答风格
 
-- 先给结论，再列 5 到 8 条重点。
+- 新闻汇总先说明主要信息，再按用户要求和有效数据提供重点；不强制条目数量。
 - 不要把整段 JSON 原样贴给用户。
 - 重要新闻保留来源、排名和链接。
 - 如果数据超过 1 小时未更新，提醒用户数据可能偏旧，并建议手动刷新。

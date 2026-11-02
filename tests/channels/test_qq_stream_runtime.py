@@ -87,6 +87,48 @@ async def test_send_delta_flushes_first_frame_and_final_reset() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_delta_flushes_first_frame_after_interval_without_boundary(monkeypatch) -> None:
+    frames = []
+    states: dict[str, dict] = {}
+    clock = [100.0]
+    monkeypatch.setattr(
+        stream_runtime,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock[0]),
+    )
+    cfg = _cfg()
+    cfg.stream_min_chars = 5
+    cfg.stream_first_flush_chars = 5
+    cfg.stream_delta_flush_interval_sec = 0.5
+
+    async def fake_frame(**kwargs):
+        frames.append(kwargs)
+        return "qq-stream"
+
+    async def fake_text(**kwargs):
+        raise AssertionError("first frame should use QQ streaming")
+
+    send_kwargs = {
+        "config": cfg,
+        "stream_states": states,
+        "chat_type_cache": {},
+        "send_stream_frame": fake_frame,
+        "send_text_only": fake_text,
+        "chat_id": "user1",
+        "metadata": {"message_id": "msg1", "_stream_id": "s1"},
+    }
+    await stream_runtime.send_delta(delta="abcde", **send_kwargs)
+    assert frames == []
+    clock[0] = 100.49
+    await stream_runtime.send_delta(delta="f", **send_kwargs)
+    assert frames == []
+
+    clock[0] = 100.5
+    await stream_runtime.send_delta(delta="g", **send_kwargs)
+    assert [frame["content"] for frame in frames] == ["abcdefg"]
+
+
+@pytest.mark.asyncio
 async def test_send_delta_splits_oversized_coalesced_frames() -> None:
     frames = []
     texts = []

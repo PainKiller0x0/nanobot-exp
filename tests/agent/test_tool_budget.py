@@ -1,6 +1,7 @@
 from nanobot.exp.agent.tool_budget import tool_definitions_for_turn
 
 TOOLS = [{"type": "function", "function": {"name": "exec", "parameters": {}}}]
+READ_FILE_TOOL = {"type": "function", "function": {"name": "read_file", "parameters": {}}}
 TOOLS_WITH_IMAGE = TOOLS + [
     {"type": "function", "function": {"name": "generate_image", "parameters": {}}}
 ]
@@ -258,3 +259,36 @@ def test_common_english_task_requests_keep_tools() -> None:
             [{"role": "user", "content": text}],
         )
         assert tools == TOOLS
+
+
+def test_personal_archive_request_keeps_only_read_file() -> None:
+    tools, reason = tool_definitions_for_turn(
+        [*TOOLS, READ_FILE_TOOL, *TOOLS_WITH_IMAGE[1:]],
+        [{"role": "user", "content": "我看到你已经建立了261014人生存档点，请基于里面的资料回答"}],
+    )
+
+    assert tools == [READ_FILE_TOOL]
+    assert reason == "personal archive context"
+
+
+def test_unrelated_short_chat_does_not_advertise_read_file() -> None:
+    tools, reason = tool_definitions_for_turn(
+        [*TOOLS, READ_FILE_TOOL],
+        [{"role": "user", "content": "天气好热，咋办"}],
+    )
+
+    assert tools is None
+    assert reason == "short standalone turn"
+
+
+def test_lamp_control_keeps_only_home_assistant_tools() -> None:
+    ha_tools = [
+        {"type": "function", "function": {"name": "mcp_home_assistant_light", "parameters": {}}}
+    ]
+    tools, reason = tool_definitions_for_turn(
+        [*TOOLS, READ_FILE_TOOL, *TOOLS_WITH_IMAGE[1:], *ha_tools],
+        [{"role": "user", "content": "打开米家显示器挂灯2"}],
+    )
+
+    assert tools == ha_tools
+    assert reason == "home assistant control"

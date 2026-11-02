@@ -4,6 +4,7 @@
     "officialLabel": "開啟 QQ 機器人後台",
     "sections": {
       "credentials": "手動憑證",
+      "behavior": "行為",
       "advanced": "進階"
     },
     "fields": {
@@ -44,7 +45,29 @@
           "true": "開",
           "false": "關"
         }
-      }
+      },
+      "textChunkMaxLen": { "label": "單則文字最大長度" },
+      "signatureAlertEnabled": { "label": "簽章驗證異常提醒" },
+      "signatureAlertChatId": { "label": "簽章異常提醒會話 ID" },
+      "botpyHttpTimeoutSec": { "label": "QQ API 逾時（秒）" },
+      "sendRetryOnEmptyResponse": { "label": "空回應時重試傳送" },
+      "sendRetryAttempts": { "label": "額外傳送重試次數" },
+      "sendRetryDelaySec": { "label": "重試間隔（秒）" },
+      "streamEnabled": { "label": "啟用 QQ 串流回覆" },
+      "streamRequiresMsgId": { "label": "串流回覆需有訊息 ID" },
+      "streamMinChars": { "label": "串流回覆最短長度" },
+      "streamMaxChars": { "label": "串流回覆最大長度" },
+      "streamChunkChars": { "label": "串流分塊長度" },
+      "streamIntervalSec": { "label": "串流發送間隔（秒）" },
+      "streamFirstFlushChars": { "label": "首次串流刷新長度" },
+      "streamDeferFirstFrameUntilEnd": { "label": "生成完成後再傳送首個串流片段" },
+      "streamDeltaFlushChars": { "label": "增量刷新長度" },
+      "streamDeltaFlushIntervalSec": { "label": "增量刷新間隔（秒）" },
+      "ttsEnabled": { "label": "啟用語音回覆" },
+      "ttsVoice": { "label": "語音名稱" },
+      "ttsTimeoutSec": { "label": "語音請求逾時（秒）" },
+      "ttsMaxChars": { "label": "語音回覆最大長度" },
+      "ttsApiUrl": { "label": "語音 API 位址" }
     }
   },
   "custom": {
