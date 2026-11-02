@@ -126,7 +126,7 @@ def _load_runtime_config(config: str | None = None, workspace: str | None = None
             console.print(f"[red]Error: Config file not found: {config_path}[/red]")
             raise typer.Exit(1)
         set_config_path(config_path)
-        typer.echo(f"Using config: {config_path}")
+        console.print(Text(f"Using config: {config_path}"))
 
     loaded = _load_config_for_cli(config_path, resolve_env=True)
     if workspace:
