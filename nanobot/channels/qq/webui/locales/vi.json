@@ -3,6 +3,7 @@
     "docsLabel": "Mở hướng dẫn QQ",
     "officialLabel": "Mở bảng điều khiển bot QQ",
     "sections": {
+      "behavior": "Hành vi",
       "credentials": "Thông tin xác thực nhập thủ công",
       "advanced": "Nâng cao"
     },
@@ -44,7 +45,29 @@
           "true": "Bật",
           "false": "Tắt"
         }
-      }
+      },
+      "textChunkMaxLen": { "label": "Độ dài đoạn văn bản tối đa" },
+      "signatureAlertEnabled": { "label": "Cảnh báo xác thực chữ ký" },
+      "signatureAlertChatId": { "label": "ID cuộc trò chuyện cảnh báo chữ ký" },
+      "botpyHttpTimeoutSec": { "label": "Thời gian chờ API QQ (giây)" },
+      "sendRetryOnEmptyResponse": { "label": "Thử gửi lại nếu QQ trả về phản hồi trống" },
+      "sendRetryAttempts": { "label": "Số lần gửi thử lại bổ sung" },
+      "sendRetryDelaySec": { "label": "Độ trễ thử lại (giây)" },
+      "streamEnabled": { "label": "Bật trả lời dạng luồng QQ" },
+      "streamRequiresMsgId": { "label": "Yêu cầu ID tin nhắn để trả lời dạng luồng" },
+      "streamMinChars": { "label": "Độ dài tối thiểu của câu trả lời dạng luồng" },
+      "streamMaxChars": { "label": "Độ dài tối đa của câu trả lời dạng luồng" },
+      "streamChunkChars": { "label": "Kích thước đoạn dữ liệu dạng luồng" },
+      "streamIntervalSec": { "label": "Khoảng thời gian gửi dạng luồng (giây)" },
+      "streamFirstFlushChars": { "label": "Độ dài lần gửi dạng luồng đầu tiên" },
+      "streamDeferFirstFrameUntilEnd": { "label": "Chờ câu trả lời cuối trước khi gửi khung đầu tiên" },
+      "streamDeltaFlushChars": { "label": "Độ dài phần cập nhật dạng luồng" },
+      "streamDeltaFlushIntervalSec": { "label": "Khoảng thời gian gửi phần cập nhật (giây)" },
+      "ttsEnabled": { "label": "Bật trả lời bằng giọng nói" },
+      "ttsVoice": { "label": "Tên giọng nói" },
+      "ttsTimeoutSec": { "label": "Thời gian chờ yêu cầu giọng nói (giây)" },
+      "ttsMaxChars": { "label": "Độ dài tối đa của câu trả lời bằng giọng nói" },
+      "ttsApiUrl": { "label": "URL API giọng nói" }
     }
   },
   "custom": {

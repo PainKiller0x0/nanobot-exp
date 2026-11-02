@@ -3,6 +3,7 @@
     "docsLabel": "QQ 設定ガイドを開く",
     "officialLabel": "QQ ボットコンソールを開く",
     "sections": {
+      "behavior": "動作",
       "credentials": "手動入力の認証情報",
       "advanced": "詳細設定"
     },
@@ -44,7 +45,29 @@
           "true": "オン",
           "false": "オフ"
         }
-      }
+      },
+      "textChunkMaxLen": { "label": "テキストチャンクの最大長" },
+      "signatureAlertEnabled": { "label": "署名検証アラート" },
+      "signatureAlertChatId": { "label": "署名アラートのチャット ID" },
+      "botpyHttpTimeoutSec": { "label": "QQ API タイムアウト（秒）" },
+      "sendRetryOnEmptyResponse": { "label": "QQ の空の応答時に再送" },
+      "sendRetryAttempts": { "label": "追加送信リトライ回数" },
+      "sendRetryDelaySec": { "label": "再試行間隔（秒）" },
+      "streamEnabled": { "label": "QQ ストリーミング返信を有効化" },
+      "streamRequiresMsgId": { "label": "ストリーミングにメッセージ ID を必須にする" },
+      "streamMinChars": { "label": "ストリーミング返信の最小長" },
+      "streamMaxChars": { "label": "ストリーミング返信の最大長" },
+      "streamChunkChars": { "label": "ストリーミングの分割文字数" },
+      "streamIntervalSec": { "label": "ストリーミング間隔（秒）" },
+      "streamFirstFlushChars": { "label": "最初のストリーミング送信文字数" },
+      "streamDeferFirstFrameUntilEnd": { "label": "最初のフレームを最終回答まで待機" },
+      "streamDeltaFlushChars": { "label": "差分送信の文字数" },
+      "streamDeltaFlushIntervalSec": { "label": "差分送信の間隔（秒）" },
+      "ttsEnabled": { "label": "音声返信を有効化" },
+      "ttsVoice": { "label": "音声名" },
+      "ttsTimeoutSec": { "label": "音声リクエストのタイムアウト（秒）" },
+      "ttsMaxChars": { "label": "音声返信の最大長" },
+      "ttsApiUrl": { "label": "音声 API URL" }
     }
   },
   "custom": {

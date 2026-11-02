@@ -3,6 +3,7 @@
     "docsLabel": "QQ 설정 가이드 열기",
     "officialLabel": "QQ 봇 콘솔 열기",
     "sections": {
+      "behavior": "동작",
       "credentials": "수동 인증 정보",
       "advanced": "고급"
     },
@@ -44,7 +45,29 @@
           "true": "켜기",
           "false": "끄기"
         }
-      }
+      },
+      "textChunkMaxLen": { "label": "텍스트 청크 최대 길이" },
+      "signatureAlertEnabled": { "label": "서명 검증 알림" },
+      "signatureAlertChatId": { "label": "서명 알림 채팅 ID" },
+      "botpyHttpTimeoutSec": { "label": "QQ API 시간 초과(초)" },
+      "sendRetryOnEmptyResponse": { "label": "QQ 빈 응답 시 재전송" },
+      "sendRetryAttempts": { "label": "추가 전송 재시도 횟수" },
+      "sendRetryDelaySec": { "label": "재시도 간격(초)" },
+      "streamEnabled": { "label": "QQ 스트리밍 답장 사용" },
+      "streamRequiresMsgId": { "label": "스트리밍에 메시지 ID 필요" },
+      "streamMinChars": { "label": "스트리밍 답장 최소 길이" },
+      "streamMaxChars": { "label": "스트리밍 답장 최대 길이" },
+      "streamChunkChars": { "label": "스트리밍 청크 크기" },
+      "streamIntervalSec": { "label": "스트리밍 간격(초)" },
+      "streamFirstFlushChars": { "label": "첫 스트리밍 전송 길이" },
+      "streamDeferFirstFrameUntilEnd": { "label": "최종 답변까지 첫 프레임 전송 대기" },
+      "streamDeltaFlushChars": { "label": "스트리밍 증분 전송 길이" },
+      "streamDeltaFlushIntervalSec": { "label": "스트리밍 증분 전송 간격(초)" },
+      "ttsEnabled": { "label": "음성 답장 사용" },
+      "ttsVoice": { "label": "음성 이름" },
+      "ttsTimeoutSec": { "label": "음성 요청 시간 초과(초)" },
+      "ttsMaxChars": { "label": "음성 답장 최대 길이" },
+      "ttsApiUrl": { "label": "음성 API URL" }
     }
   },
   "custom": {

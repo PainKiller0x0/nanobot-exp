@@ -3,6 +3,7 @@
     "docsLabel": "Abrir guia do QQ",
     "officialLabel": "Abrir console do bot QQ",
     "sections": {
+      "behavior": "Comportamento",
       "credentials": "Credenciais manuais",
       "advanced": "Avançado"
     },
@@ -44,7 +45,29 @@
           "true": "Ativado",
           "false": "Desativado"
         }
-      }
+      },
+      "textChunkMaxLen": { "label": "Comprimento máximo do trecho de texto" },
+      "signatureAlertEnabled": { "label": "Alertas de validação de assinatura" },
+      "signatureAlertChatId": { "label": "ID do chat de alerta de assinatura" },
+      "botpyHttpTimeoutSec": { "label": "Tempo limite da API QQ (segundos)" },
+      "sendRetryOnEmptyResponse": { "label": "Tentar novamente se a resposta do QQ estiver vazia" },
+      "sendRetryAttempts": { "label": "Tentativas extras de envio" },
+      "sendRetryDelaySec": { "label": "Intervalo entre tentativas (segundos)" },
+      "streamEnabled": { "label": "Ativar respostas em streaming do QQ" },
+      "streamRequiresMsgId": { "label": "Exigir ID da mensagem para streaming" },
+      "streamMinChars": { "label": "Comprimento mínimo da resposta em streaming" },
+      "streamMaxChars": { "label": "Comprimento máximo da resposta em streaming" },
+      "streamChunkChars": { "label": "Tamanho do trecho de streaming" },
+      "streamIntervalSec": { "label": "Intervalo do streaming (segundos)" },
+      "streamFirstFlushChars": { "label": "Comprimento do primeiro envio em streaming" },
+      "streamDeferFirstFrameUntilEnd": { "label": "Aguardar a resposta final antes do primeiro trecho" },
+      "streamDeltaFlushChars": { "label": "Comprimento do envio incremental" },
+      "streamDeltaFlushIntervalSec": { "label": "Intervalo do envio incremental (segundos)" },
+      "ttsEnabled": { "label": "Ativar respostas de voz" },
+      "ttsVoice": { "label": "Nome da voz" },
+      "ttsTimeoutSec": { "label": "Tempo limite da solicitação de voz (segundos)" },
+      "ttsMaxChars": { "label": "Comprimento máximo da resposta de voz" },
+      "ttsApiUrl": { "label": "URL da API de voz" }
     }
   },
   "custom": {

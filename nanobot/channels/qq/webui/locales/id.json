@@ -3,6 +3,7 @@
     "docsLabel": "Buka panduan QQ",
     "officialLabel": "Buka konsol bot QQ",
     "sections": {
+      "behavior": "Perilaku",
       "credentials": "Kredensial manual",
       "advanced": "Lanjutan"
     },
@@ -44,7 +45,29 @@
           "true": "Aktif",
           "false": "Nonaktif"
         }
-      }
+      },
+      "textChunkMaxLen": { "label": "Panjang maksimum potongan teks" },
+      "signatureAlertEnabled": { "label": "Peringatan validasi tanda tangan" },
+      "signatureAlertChatId": { "label": "ID chat untuk peringatan tanda tangan" },
+      "botpyHttpTimeoutSec": { "label": "Batas waktu API QQ (detik)" },
+      "sendRetryOnEmptyResponse": { "label": "Coba lagi jika respons QQ kosong" },
+      "sendRetryAttempts": { "label": "Percobaan ulang pengiriman tambahan" },
+      "sendRetryDelaySec": { "label": "Jeda percobaan ulang (detik)" },
+      "streamEnabled": { "label": "Aktifkan balasan streaming QQ" },
+      "streamRequiresMsgId": { "label": "Wajibkan ID pesan untuk streaming" },
+      "streamMinChars": { "label": "Panjang minimum balasan streaming" },
+      "streamMaxChars": { "label": "Panjang maksimum balasan streaming" },
+      "streamChunkChars": { "label": "Ukuran potongan streaming" },
+      "streamIntervalSec": { "label": "Interval streaming (detik)" },
+      "streamFirstFlushChars": { "label": "Panjang pengiriman streaming pertama" },
+      "streamDeferFirstFrameUntilEnd": { "label": "Tunggu jawaban akhir sebelum potongan pertama" },
+      "streamDeltaFlushChars": { "label": "Panjang pengiriman delta streaming" },
+      "streamDeltaFlushIntervalSec": { "label": "Interval pengiriman delta streaming (detik)" },
+      "ttsEnabled": { "label": "Aktifkan balasan suara" },
+      "ttsVoice": { "label": "Nama suara" },
+      "ttsTimeoutSec": { "label": "Batas waktu permintaan suara (detik)" },
+      "ttsMaxChars": { "label": "Panjang maksimum balasan suara" },
+      "ttsApiUrl": { "label": "URL API suara" }
     }
   },
   "custom": {

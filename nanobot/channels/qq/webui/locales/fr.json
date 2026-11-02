@@ -3,6 +3,7 @@
     "docsLabel": "Ouvrir le guide QQ",
     "officialLabel": "Ouvrir la console du bot QQ",
     "sections": {
+      "behavior": "Comportement",
       "credentials": "Identifiants (saisie manuelle)",
       "advanced": "Avancé"
     },
@@ -44,7 +45,29 @@
           "true": "Activé",
           "false": "Désactivé"
         }
-      }
+      },
+      "textChunkMaxLen": { "label": "Longueur maximale des segments de texte" },
+      "signatureAlertEnabled": { "label": "Alertes de validation de signature" },
+      "signatureAlertChatId": { "label": "ID de conversation des alertes de signature" },
+      "botpyHttpTimeoutSec": { "label": "Délai d'attente de l'API QQ (secondes)" },
+      "sendRetryOnEmptyResponse": { "label": "Réessayer si la réponse QQ est vide" },
+      "sendRetryAttempts": { "label": "Tentatives d'envoi supplémentaires" },
+      "sendRetryDelaySec": { "label": "Délai entre les tentatives (secondes)" },
+      "streamEnabled": { "label": "Activer les réponses en streaming QQ" },
+      "streamRequiresMsgId": { "label": "Exiger un ID de message pour le streaming" },
+      "streamMinChars": { "label": "Longueur minimale de réponse en streaming" },
+      "streamMaxChars": { "label": "Longueur maximale de réponse en streaming" },
+      "streamChunkChars": { "label": "Taille des segments de streaming" },
+      "streamIntervalSec": { "label": "Intervalle de streaming (secondes)" },
+      "streamFirstFlushChars": { "label": "Longueur du premier envoi en streaming" },
+      "streamDeferFirstFrameUntilEnd": { "label": "Attendre la réponse finale avant le premier segment" },
+      "streamDeltaFlushChars": { "label": "Longueur des envois incrémentaux" },
+      "streamDeltaFlushIntervalSec": { "label": "Intervalle des envois incrémentaux (secondes)" },
+      "ttsEnabled": { "label": "Activer les réponses vocales" },
+      "ttsVoice": { "label": "Nom de la voix" },
+      "ttsTimeoutSec": { "label": "Délai d'attente de la requête vocale (secondes)" },
+      "ttsMaxChars": { "label": "Longueur maximale de la réponse vocale" },
+      "ttsApiUrl": { "label": "URL de l'API vocale" }
     }
   },
   "custom": {
