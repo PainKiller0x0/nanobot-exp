@@ -2,7 +2,7 @@
 
 Use this page when you want to understand nanobot before changing advanced settings. It explains the moving parts without requiring you to read the source first.
 
-If you want source-file ownership and extension points, read [`architecture.md`](./architecture.md) after this page.
+If you want source-file ownership and extension points, read [`upstream-architecture.md`](./upstream-architecture.md) after this page.
 
 ## Runtime Shape
 

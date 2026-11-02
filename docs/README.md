@@ -87,7 +87,7 @@ These pages explain implementation and extension points. You do not need them to
 
 | Goal | Read |
 |---|---|
-| Understand source ownership and runtime flow | [Architecture](./architecture.md) |
+| Understand source ownership and runtime flow | [Architecture](./upstream-architecture.md) |
 | Set up a development environment | [Development](./development.md) and [CONTRIBUTING.md](../CONTRIBUTING.md) |
 | Add a channel package | [Channel Package Guide](./channel-package-guide.md) |
 | Build the WebUI source | [WebUI Development](../webui/README.md) |
