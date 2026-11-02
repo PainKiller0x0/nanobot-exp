@@ -111,7 +111,7 @@ def format_duration(seconds: int) -> str:
     days, rem = divmod(seconds, 86_400)
     hours, rem = divmod(rem, 3_600)
     minutes, _ = divmod(rem, 60)
-    parts = []
+    parts: list[str] = []
     if days:
         parts.append(f"{days}天")
     if hours:

@@ -630,7 +630,8 @@ def _parse_home_assistant_context(rendered: str) -> list[dict[str, str]]:
     except (TypeError, ValueError):
         payload = rendered
     if isinstance(payload, dict):
-        payload = payload.get("result", payload.get("text", ""))
+        payload_data = cast(dict[str, Any], payload)
+        payload = payload_data.get("result", payload_data.get("text", ""))
     if not isinstance(payload, str):
         return []
 
@@ -926,7 +927,7 @@ class MCPToolWrapper(_MCPWrapperBase):
         entities = _parse_home_assistant_context(context)
         wanted_name = _normalize_home_assistant_value(requested_name)
         wanted_area = _normalize_home_assistant_value(requested_area)
-        wanted_domains = domain if isinstance(domain, list) else [domain]
+        wanted_domains = cast(list[Any], domain) if isinstance(domain, list) else [domain]
         wanted_domains = {
             _normalize_home_assistant_value(item)
             for item in wanted_domains

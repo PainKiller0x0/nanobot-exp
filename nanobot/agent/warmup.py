@@ -8,7 +8,7 @@ import contextlib
 import os
 import time
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Generator, cast
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tools.registry import ToolRegistry
@@ -70,7 +70,7 @@ def split_session_key(key: str) -> tuple[str, str]:
 def _history_for(loop: AgentLoop, session: Session) -> list[dict[str, Any]]:
     return session.get_history(
         max_messages=light_replay_max_messages(0),
-        max_tokens=loop._replay_token_budget(),
+        max_tokens=loop._replay_token_budget(),  # pyright: ignore[reportPrivateUsage]
     )
 
 
@@ -114,7 +114,8 @@ async def warm_session(
         timeout=timeout_s,
     )
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    usage = getattr(response, "usage", None) or {}
+    raw_usage = getattr(response, "usage", None)
+    usage = cast(dict[str, Any], raw_usage) if isinstance(raw_usage, dict) else {}
     return {
         "session": session.key,
         "elapsed_ms": elapsed_ms,
@@ -141,7 +142,7 @@ def make_loop(config: Any) -> AgentLoop:
 
 
 @contextlib.contextmanager
-def _single_process_lock(path: str) -> Iterator[bool]:
+def _single_process_lock(path: str) -> Generator[bool, None, None]:
     """Best-effort non-blocking lock; no-op on platforms without fcntl."""
     lock_path = Path(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +164,7 @@ def _single_process_lock(path: str) -> Iterator[bool]:
 
 
 async def run_warmup(args: argparse.Namespace) -> int:
-    from nanobot.cli.commands import _load_runtime_config
+    from nanobot.cli.commands import _load_runtime_config  # pyright: ignore[reportPrivateUsage]
 
     with _single_process_lock(args.lock_file) as acquired:
         if not acquired:
@@ -186,8 +187,8 @@ async def run_warmup(args: argparse.Namespace) -> int:
                     print("LLM warmup skipped: no eligible sessions")
                 return 0
 
-            results = []
-            failures = []
+            results: list[dict[str, Any]] = []
+            failures: list[str] = []
             for key in keys:
                 session = session_manager.get_existing(key)
                 if session is None or not session.messages:

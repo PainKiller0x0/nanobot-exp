@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from nanobot.agent.direct_reply_common import short_text
 
@@ -39,8 +39,9 @@ def format_memory_status(stats: dict[str, Any], recent: list[Any]) -> str:
         lines.append("最近记住：")
         for item in recent[:5]:
             if isinstance(item, dict):
+                item_data = cast(dict[str, Any], item)
                 lines.append(
-                    f"- {short_text(item.get('content'), 44)}（{item.get('kind', item.get('category', 'note'))}）"
+                    f"- {short_text(item_data.get('content'), 44)}（{item_data.get('kind', item_data.get('category', 'note'))}）"
                 )
     else:
         lines.append("最近记住：暂无")
@@ -55,8 +56,9 @@ def format_memory_search(query: str, results: list[Any]) -> str:
     else:
         for item in results[:8]:
             if isinstance(item, dict):
+                item_data = cast(dict[str, Any], item)
                 lines.append(
-                    f"- #{item.get('id', '-')} {short_text(item.get('content'), 54)}（{item.get('category', 'note')}，{item.get('created_at', '-')})"
+                    f"- #{item_data.get('id', '-')} {short_text(item_data.get('content'), 54)}（{item_data.get('category', 'note')}，{item_data.get('created_at', '-')})"
                 )
     lines.append(f"看板：{DASHBOARD_URL}")
     return "\n".join(lines)

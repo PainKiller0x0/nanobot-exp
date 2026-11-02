@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, cast
 
 from nanobot.utils.http import request_json
 
@@ -48,7 +48,7 @@ def memory_status() -> tuple[dict[str, Any], list[Any]]:
     except AssertionError:
         stats, recent = {}, []
     if (stats or recent) or not LEGACY_MEMORY_FALLBACK:
-        return stats, recent if isinstance(recent, list) else []
+        return stats, as_list(recent)
     return _legacy_memory_status()
 
 
@@ -68,14 +68,15 @@ def search_memories(query: str, *, limit: int = 8) -> list[Any]:
             {},
         )
         if isinstance(legacy, list):
-            return legacy[:limit]
+            return as_list(legacy)[:limit]
         data = as_dict(legacy)
-    rows = [*(data.get("hot") or []), *(data.get("results") or [])]
+    rows = [*as_list(data.get("hot")), *as_list(data.get("results"))]
     seen: set[tuple[str, int]] = set()
     result: list[Any] = []
-    for row in rows:
-        if not isinstance(row, dict):
+    for value in rows:
+        if not isinstance(value, dict):
             continue
+        row = cast(dict[str, Any], value)
         key = (str(row.get("kind") or ""), int(row.get("id") or 0))
         if key in seen:
             continue
@@ -112,7 +113,7 @@ def _save_legacy_memory(
 def _legacy_memory_status() -> tuple[dict[str, Any], list[Any]]:
     stats = as_dict(get_json("/reflexio/api/stats", {}))
     recent = get_json("/reflexio/api/memories?limit=5", [])
-    return stats, recent if isinstance(recent, list) else []
+    return stats, as_list(recent)
 
 
 def _legacy_search_memories(query: str, *, limit: int) -> list[Any]:
@@ -122,10 +123,10 @@ def _legacy_search_memories(query: str, *, limit: int) -> list[Any]:
         {},
     )
     if isinstance(legacy, list):
-        return legacy[:limit]
+        return as_list(legacy)[:limit]
     data = as_dict(legacy)
     results = data.get("results")
-    return results[:limit] if isinstance(results, list) else []
+    return as_list(results)[:limit]
 
 
 def get_json(path: str, default: Any) -> Any:
@@ -139,4 +140,8 @@ def post_json(path: str, payload: dict[str, Any], default: Any) -> Any:
 
 
 def as_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+def as_list(value: Any) -> list[Any]:
+    return cast(list[Any], value) if isinstance(value, list) else []
