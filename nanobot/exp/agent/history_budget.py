@@ -185,7 +185,7 @@ def replay_history(
     if max_messages > 0 and session.last_archived > 0:
         from nanobot.session.summary import is_summary_checkpoint
 
-        recent = []
+        recent: list[dict[str, Any]] = []
         for index in range(len(session.messages) - 1, -1, -1):
             message = session.messages[index]
             if message.get("_command") or is_summary_checkpoint(message):

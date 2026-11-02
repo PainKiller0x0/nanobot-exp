@@ -9,7 +9,7 @@ when the Rust API is unreachable.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 
@@ -81,7 +81,7 @@ async def _get_json(
                     last_error = RuntimeError(f"http {resp.status}")
                     continue
                 data = await resp.json(content_type=None)
-                return data if isinstance(data, dict) else None
+                return cast(dict[str, Any], data) if isinstance(data, dict) else None
         except Exception as exc:  # pragma: no cover - live network fallback path
             last_error = exc
             continue

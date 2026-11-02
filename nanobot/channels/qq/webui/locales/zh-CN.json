@@ -4,6 +4,7 @@
     "officialLabel": "打开 QQ 机器人后台",
     "sections": {
       "credentials": "手动凭据",
+      "behavior": "行为",
       "advanced": "高级"
     },
     "fields": {
@@ -44,7 +45,29 @@
           "true": "开",
           "false": "关"
         }
-      }
+      },
+      "textChunkMaxLen": { "label": "单条文字最大长度" },
+      "signatureAlertEnabled": { "label": "签名校验异常提醒" },
+      "signatureAlertChatId": { "label": "签名异常提醒会话 ID" },
+      "botpyHttpTimeoutSec": { "label": "QQ API 超时（秒）" },
+      "sendRetryOnEmptyResponse": { "label": "空响应时重试发送" },
+      "sendRetryAttempts": { "label": "额外发送重试次数" },
+      "sendRetryDelaySec": { "label": "重试间隔（秒）" },
+      "streamEnabled": { "label": "启用 QQ 流式回复" },
+      "streamRequiresMsgId": { "label": "流式回复要求消息 ID" },
+      "streamMinChars": { "label": "流式回复最短长度" },
+      "streamMaxChars": { "label": "流式回复最大长度" },
+      "streamChunkChars": { "label": "流式分块长度" },
+      "streamIntervalSec": { "label": "流式发送间隔（秒）" },
+      "streamFirstFlushChars": { "label": "首次流式刷新长度" },
+      "streamDeferFirstFrameUntilEnd": { "label": "生成完毕后再发送首个流式片段" },
+      "streamDeltaFlushChars": { "label": "增量刷新长度" },
+      "streamDeltaFlushIntervalSec": { "label": "增量刷新间隔（秒）" },
+      "ttsEnabled": { "label": "启用语音回复" },
+      "ttsVoice": { "label": "语音名称" },
+      "ttsTimeoutSec": { "label": "语音请求超时（秒）" },
+      "ttsMaxChars": { "label": "语音回复最大长度" },
+      "ttsApiUrl": { "label": "语音 API 地址" }
     }
   },
   "custom": {

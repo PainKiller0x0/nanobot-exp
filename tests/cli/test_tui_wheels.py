@@ -202,7 +202,7 @@ def complete_candidate(tmp_path, candidate):
     from hatch_build import WebUIBuildHook
 
     root = tmp_path / "checkout"
-    subprocess.run(["git", "clone", "--shared", str(packager.ROOT), str(root)],
+    subprocess.run(["git", "-c", "core.autocrlf=false", "clone", "--shared", str(packager.ROOT), str(root)],
                    check=True, capture_output=True)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     metadata = tomllib.loads((root / "pyproject.toml").read_text())["project"]

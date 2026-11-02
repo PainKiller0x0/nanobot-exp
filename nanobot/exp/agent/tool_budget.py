@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
+from typing import Any, cast
 
 from nanobot.exp.agent.history_budget import (
     replay_budget_for_message,
@@ -101,7 +101,7 @@ def _explicit_image_generation_request(text: str) -> bool:
 def _tool_name(definition: dict[str, Any]) -> str:
     function = definition.get("function")
     if isinstance(function, dict):
-        return str(function.get("name") or "").strip().lower()
+        return str(cast(dict[str, Any], function).get("name") or "").strip().lower()
     return str(definition.get("name") or "").strip().lower()
 
 
@@ -220,13 +220,14 @@ def _content_to_text(content: Any) -> str:
         return content
     if isinstance(content, list):
         parts: list[str] = []
-        for item in content:
+        for item in cast(list[Any], content):
             if not isinstance(item, dict):
                 parts.append(str(item))
                 continue
-            if item.get("type") in {"text", "input_text", "output_text"}:
-                parts.append(str(item.get("text") or ""))
-            elif item.get("type") in {"image_url", "input_image", "file", "input_file"}:
+            item_data = cast(dict[str, Any], item)
+            if item_data.get("type") in {"text", "input_text", "output_text"}:
+                parts.append(str(item_data.get("text") or ""))
+            elif item_data.get("type") in {"image_url", "input_image", "file", "input_file"}:
                 parts.append("[attachment]")
         return "\n".join(part for part in parts if part)
     return str(content)

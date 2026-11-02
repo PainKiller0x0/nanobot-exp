@@ -4,7 +4,7 @@ import asyncio
 import os
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -88,7 +88,13 @@ class HomeAssistantClimateControlTool(Tool):
     def exclusive(self) -> bool:
         return True
 
-    async def execute(self, action: str, value: str | None = None) -> ToolResult:
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        action = kwargs.get("action")
+        value = kwargs.get("value")
+        if not isinstance(action, str):
+            return ToolResult.error("空调操作缺少有效 action；未发送请求。")
+        if value is not None and not isinstance(value, str):
+            return ToolResult.error("空调操作的 value 必须是文本；未发送请求。")
         if action not in {"read_state", *_ACTIONS}:
             return ToolResult.error("不支持的空调操作；未发送请求。")
         if action == "read_state" and value not in (None, ""):
@@ -128,6 +134,7 @@ class HomeAssistantClimateControlTool(Tool):
                 )
                 response.raise_for_status()
 
+                observed: Any = None
                 for attempt in range(5):
                     state = await self._read_state(client, token)
                     observed = (
@@ -184,13 +191,16 @@ class HomeAssistantClimateControlTool(Tool):
         response = await client.get(url, headers=self._headers(token))
         response.raise_for_status()
         payload = response.json()
-        if not isinstance(payload, dict) or payload.get("entity_id") != ENTITY_ID:
+        if not isinstance(payload, dict):
             raise ValueError("Unexpected Home Assistant entity response")
-        attributes = payload.get("attributes")
+        payload_data = cast(dict[str, Any], payload)
+        if payload_data.get("entity_id") != ENTITY_ID:
+            raise ValueError("Unexpected Home Assistant entity response")
+        attributes = payload_data.get("attributes")
         if not isinstance(attributes, dict):
             raise ValueError("Home Assistant entity attributes are unavailable")
-        payload["attributes"] = attributes
-        return payload
+        payload_data["attributes"] = cast(dict[str, Any], attributes)
+        return payload_data
 
     @staticmethod
     def _canonical_value(action: str, value: str) -> str:

@@ -7,6 +7,7 @@ These helpers intentionally avoid LLM calls for short operational requests such 
 from __future__ import annotations
 
 import re
+from typing import Any, cast
 from urllib.parse import urlparse
 
 _GENERIC_URL_RE = re.compile(r"https?://[^\s<>\]）)\"']+")
@@ -127,7 +128,8 @@ def match_knowledge_inbox_command(content: str) -> list[str] | None:
     if not compact:
         return None
 
-    urls = [u.rstrip("。.,，、；;!！?？") for u in _GENERIC_URL_RE.findall(text)]
+    matches: list[str] = _GENERIC_URL_RE.findall(text)
+    urls = [u.rstrip("。.,，、；;!！?？") for u in matches]
     if not urls:
         rating = re.search(r"(?:收件箱评分|收件箱打分)\s*([A-Za-z0-9_-]{8,})\s*(\d{1,3})", text)
         if rating:
@@ -151,7 +153,7 @@ def match_knowledge_inbox_command(content: str) -> list[str] | None:
         return None
 
     url = urls[0]
-    host = urlparse(url).netloc.lower()
+    host = str(cast(Any, urlparse(url)).netloc).lower()
     explicit_inbox = any(
         k in compact
         for k in (

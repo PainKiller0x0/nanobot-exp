@@ -4,6 +4,7 @@
     "officialLabel": "Open QQ bot console",
     "sections": {
       "credentials": "Manual credentials",
+      "behavior": "Behavior",
       "advanced": "Advanced"
     },
     "fields": {
@@ -44,7 +45,29 @@
           "true": "On",
           "false": "Off"
         }
-      }
+      },
+      "textChunkMaxLen": { "label": "Maximum text chunk length" },
+      "signatureAlertEnabled": { "label": "Signature validation alerts" },
+      "signatureAlertChatId": { "label": "Signature alert chat ID" },
+      "botpyHttpTimeoutSec": { "label": "QQ API timeout (seconds)" },
+      "sendRetryOnEmptyResponse": { "label": "Retry empty QQ responses" },
+      "sendRetryAttempts": { "label": "Additional send retries" },
+      "sendRetryDelaySec": { "label": "Retry delay (seconds)" },
+      "streamEnabled": { "label": "Enable QQ streaming replies" },
+      "streamRequiresMsgId": { "label": "Require message ID for streaming" },
+      "streamMinChars": { "label": "Minimum streaming reply length" },
+      "streamMaxChars": { "label": "Maximum streaming reply length" },
+      "streamChunkChars": { "label": "Streaming chunk size" },
+      "streamIntervalSec": { "label": "Streaming interval (seconds)" },
+      "streamFirstFlushChars": { "label": "First streaming flush length" },
+      "streamDeferFirstFrameUntilEnd": { "label": "Wait for final answer before first stream frame" },
+      "streamDeltaFlushChars": { "label": "Streaming delta flush length" },
+      "streamDeltaFlushIntervalSec": { "label": "Streaming delta flush interval (seconds)" },
+      "ttsEnabled": { "label": "Enable voice replies" },
+      "ttsVoice": { "label": "Voice name" },
+      "ttsTimeoutSec": { "label": "Voice request timeout (seconds)" },
+      "ttsMaxChars": { "label": "Maximum voice reply length" },
+      "ttsApiUrl": { "label": "Voice API URL" }
     }
   },
   "custom": {

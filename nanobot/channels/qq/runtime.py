@@ -16,6 +16,8 @@ Notes:
 - Attachment structures differ across botpy versions; we try multiple field candidates.
 """
 
+# pyright: reportConstantRedefinition=false, reportMissingTypeStubs=false, reportPrivateUsage=false
+
 from __future__ import annotations
 
 import asyncio
@@ -29,7 +31,7 @@ from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import Any, Literal, cast
 from urllib.parse import unquote, urlparse
 
 import aiohttp
@@ -69,10 +71,6 @@ except ImportError:  # pragma: no cover
     botpy = None
     BotWebSocket = None
     Route = None
-
-if TYPE_CHECKING:
-    from botpy.message import BaseMessage, C2CMessage, GroupMessage
-    from botpy.types.message import Media
 
 
 # QQ rich media file_type: 1=image, 4=file
@@ -116,7 +114,7 @@ def _is_image_name(name: str) -> bool:
     return Path(name).suffix.lower() in _IMAGE_EXTS
 
 
-def _parse_qq_timestamp(ts: str | None) -> datetime | None:
+def _parse_qq_timestamp(ts: str | None) -> datetime | None:  # pyright: ignore[reportUnusedFunction]
     """Parse QQ API timestamp string to UTC datetime.
 
     QQ returns timestamps as Unix epoch in seconds (or ms), e.g. '1743890400'.
@@ -236,18 +234,22 @@ def _extract_generated_image_media(content: str) -> tuple[str, list[str]]:
     return cleaned, urls
 
 
-def _make_bot_class(channel: QQChannel) -> type[botpy.Client]:
+def _make_bot_class(channel: QQChannel) -> type[Any]:
     """Create a botpy Client subclass bound to the given channel."""
-    intents = botpy.Intents(public_messages=True, direct_message=True)
+    botpy_sdk = cast(Any, botpy)
+    intents = botpy_sdk.Intents(public_messages=True, direct_message=True)
 
-    class _Bot(botpy.Client):
+    class _Bot(botpy_sdk.Client):
         def __init__(self):
             # Disable botpy's file log — nanobot uses loguru; default "botpy.log" fails on read-only fs
-            super().__init__(intents=intents, ext_handlers=False)
+            super().__init__(  # pyright: ignore[reportUnknownMemberType]
+                intents=intents,
+                ext_handlers=False,
+            )
             self._ws_backoff: dict[int, int] = {}
             self._ws_retry_at: dict[int, float] = {}
 
-        async def bot_connect(self, session):
+        async def bot_connect(self, session: object) -> None:
             """Connect one gateway session with per-session exponential backoff."""
             session_id = id(session)
             retry_at = self._ws_retry_at.pop(session_id, None)
@@ -256,7 +258,8 @@ def _make_bot_class(channel: QQChannel) -> type[botpy.Client]:
                 if remaining > 0:
                     await asyncio.sleep(remaining)
 
-            client = BotWebSocket(session, self._connection)
+            websocket_class = cast(Any, BotWebSocket)
+            client = websocket_class(session, self._connection)
             backoff = self._ws_backoff.get(session_id, _RECONNECT_BACKOFF_START)
             try:
                 await client.ws_connect()
@@ -281,10 +284,10 @@ def _make_bot_class(channel: QQChannel) -> type[botpy.Client]:
             logger.info("QQ bot ready: {}", self.robot.name)
             await channel._check_greeting_trigger()
 
-        async def on_c2c_message_create(self, message: C2CMessage):
+        async def on_c2c_message_create(self, message: object) -> None:
             await channel._on_message(message, is_group=False)
 
-        async def on_group_at_message_create(self, message: GroupMessage):
+        async def on_group_at_message_create(self, message: object) -> None:
             await channel._on_message(message, is_group=True)
 
     return _Bot
@@ -495,7 +498,7 @@ class QQChannel(BaseChannel):
         # ChannelManager resolves global inheritance from the original section.
         self.show_compaction_notices = bool(config.show_compaction_notices)
 
-        self._client: botpy.Client | None = None
+        self._client: Any | None = None
         self._http: aiohttp.ClientSession | None = None
 
         self._processed_ids: deque[str] = deque(maxlen=1000)
@@ -566,7 +569,8 @@ class QQChannel(BaseChannel):
         """Run the bot connection with auto-reconnect."""
         while self._running:
             try:
-                await self._client.start(appid=self.config.app_id, secret=self.config.secret)
+                client = cast(Any, self._client)
+                await client.start(appid=self.config.app_id, secret=self.config.secret)
                 # Bot connected successfully - greeting is now triggered in on_ready
             except Exception as e:
                 logger.warning("QQ bot error: {}", e)
@@ -950,11 +954,11 @@ class QQChannel(BaseChannel):
     def _schedule_delivery_ack(
         self,
         signed_payload: str,
-        ack_url: str | None,
+        wechat_ack: tuple[int, int] | None,
         *,
         chat_id: str,
     ) -> None:
-        if not ack_url:
+        if not wechat_ack:
             return
 
         async def _run() -> None:
@@ -962,7 +966,7 @@ class QQChannel(BaseChannel):
                 await qq_signed_delivery.ack_delivery(
                     self._http,
                     signed_payload,
-                    ack_url,
+                    wechat_ack,
                     chat_id=chat_id,
                     logger=logger,
                 )
@@ -1025,8 +1029,10 @@ class QQChannel(BaseChannel):
             is_group=is_group,
             payload=payload,
         )
-        if isinstance(result, dict) and result.get("id"):
-            return str(result["id"])
+        if isinstance(result, dict):
+            result_data = cast(dict[str, Any], result)
+            if result_data.get("id"):
+                return str(result_data["id"])
         return None
 
     async def send_delta(
@@ -1155,7 +1161,8 @@ class QQChannel(BaseChannel):
     ) -> Any | None:
         """Post QQ stream payload through raw botpy HTTP to avoid SDK kwarg filtering."""
         self._apply_botpy_http_timeout()
-        if not self._client or not getattr(self._client.api, "_http", None) or Route is None:
+        client = cast(Any, self._client)
+        if not client or not getattr(client.api, "_http", None) or Route is None:
             raise RuntimeError("QQ raw HTTP client is not available for streaming")
 
         if is_group:
@@ -1165,8 +1172,9 @@ class QQChannel(BaseChannel):
             endpoint = "/v2/users/{openid}/messages"
             id_key = "openid"
 
-        route = Route("POST", endpoint, **{id_key: chat_id})
-        return await self._client.api._http.request(route, json=payload)
+        route_class = cast(Any, Route)
+        route = route_class("POST", endpoint, **{id_key: chat_id})
+        return await client.api._http.request(route, json=payload)
 
     def _apply_botpy_http_timeout(self) -> None:
         """Keep botpy sends from hanging longer than our QQ channel budget."""
@@ -1195,12 +1203,13 @@ class QQChannel(BaseChannel):
         attempts = 1 + max(0, retry_attempts if can_retry else 0)
         delay = max(0.0, float(getattr(self.config, "send_retry_delay_sec", 0.0) or 0.0))
 
+        client = cast(Any, self._client)
         for attempt in range(1, attempts + 1):
             try:
                 if is_group:
-                    result = await self._client.api.post_group_message(group_openid=chat_id, **payload)
+                    result = await client.api.post_group_message(group_openid=chat_id, **payload)
                 else:
-                    result = await self._client.api.post_c2c_message(openid=chat_id, **payload)
+                    result = await client.api.post_c2c_message(openid=chat_id, **payload)
                 if can_retry and result is None:
                     raise asyncio.TimeoutError("QQ API returned no response")
                 return result
@@ -1298,6 +1307,8 @@ class QQChannel(BaseChannel):
         if not api_key:
             logger.error("TTS failed: MIMO_API_KEY not set")
             return False
+        http = cast(aiohttp.ClientSession, self._http)
+        client = cast(Any, self._client)
 
         # Split text at sentence boundaries
         raw_text = text.strip()
@@ -1306,7 +1317,7 @@ class QQChannel(BaseChannel):
         if not sentences:
             sentences = [raw_text[:500]]
 
-        chunks = []
+        chunks: list[str] = []
         cur = ""
         mc = 1500
         for s in sentences:
@@ -1330,9 +1341,9 @@ class QQChannel(BaseChannel):
             logger.info("TTS split into {} chunks", len(chunks))
         logger.info("TTS chunks={}", len(chunks))
 
-        async def _send_one(chunk_text, idx):
+        async def _send_one(chunk_text: str, idx: int) -> bool:
             logger.info("TTS chunk[{}]: {} chars", idx, len(chunk_text))
-            async with self._http.post(
+            async with http.post(
                 self.config.tts_api_url,
                 json={"model": "mimo-v2.5-tts", "messages": [{"role": "user", "content": "用温暖亲切的中文女性声音朗读"}, {"role": "assistant", "content": chunk_text}], "audio": {"format": "mp3", "voice": self.config.tts_voice}, "stream": False},
                 headers={"api-key": api_key},
@@ -1353,9 +1364,9 @@ class QQChannel(BaseChannel):
             )
             seq = self._msg_seq + idx
             if is_group:
-                await self._client.api.post_group_message(group_openid=chat_id, msg_type=7, msg_id=msg_id, msg_seq=seq, media=media_obj)
+                await client.api.post_group_message(group_openid=chat_id, msg_type=7, msg_id=msg_id, msg_seq=seq, media=media_obj)
             else:
-                await self._client.api.post_c2c_message(openid=chat_id, msg_type=7, msg_id=msg_id, msg_seq=seq, media=media_obj)
+                await client.api.post_c2c_message(openid=chat_id, msg_type=7, msg_id=msg_id, msg_seq=seq, media=media_obj)
             logger.info("TTS chunk[{}] sent ({} chars)", idx, len(chunk_text))
             return True
 
@@ -1430,7 +1441,7 @@ class QQChannel(BaseChannel):
         file_data: str,
         file_name: str | None = None,
         srv_send_msg: bool = False,
-    ) -> Media:
+    ) -> dict[str, Any]:
         """Upload base64-encoded file and return Media object."""
         if not self._client:
             raise RuntimeError("QQ client not initialized")
@@ -1451,11 +1462,14 @@ class QQChannel(BaseChannel):
         if file_type != QQ_FILE_TYPE_IMAGE and file_name:
             payload["file_name"] = file_name
 
-        route = Route("POST", endpoint, **{id_key: chat_id})
-        result = await self._client.api._http.request(route, json=payload)
+        route_class = cast(Any, Route)
+        route = route_class("POST", endpoint, **{id_key: chat_id})
+        client = self._client
+        result: object = await client.api._http.request(route, json=payload)
         if isinstance(result, dict) and "file_info" in result:
-            return {"file_info": result["file_info"]}
-        return result
+            result_data = cast(dict[str, Any], result)
+            return {"file_info": result_data["file_info"]}
+        return cast(dict[str, Any], result)
 
 
     async def _try_handle_personal_ops_query(
@@ -1499,7 +1513,8 @@ class QQChannel(BaseChannel):
     # Inbound (receive)
     # ---------------------------
 
-    async def _on_message(self, data: C2CMessage | GroupMessage, is_group: bool = False) -> None:
+    async def _on_message(self, data: object, is_group: bool = False) -> None:
+        data = cast(Any, data)
         try:
             await self._process_inbound_message(data, is_group)
         except Exception:
@@ -1507,7 +1522,7 @@ class QQChannel(BaseChannel):
 
     async def _process_inbound_message(
         self,
-        data: C2CMessage | GroupMessage,
+        data: Any,
         is_group: bool = False,
     ) -> None:
         """Parse inbound message, download attachments, and publish to the bus."""
@@ -1595,7 +1610,7 @@ class QQChannel(BaseChannel):
 
         # the data used by tests don't contain attachments property
         # so we use getattr with a default of [] to avoid AttributeError in tests
-        attachments = getattr(data, "attachments", None) or []
+        attachments = cast(list[object], getattr(data, "attachments", None) or [])
         if user_content and not attachments:
             if await self._try_handle_personal_ops_query(
                 chat_id=chat_id,
@@ -1657,7 +1672,7 @@ class QQChannel(BaseChannel):
 
     async def _handle_attachments(
         self,
-        attachments: list[BaseMessage._Attachments],
+        attachments: list[object],
     ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
         """Extract, download (chunked), and format attachments for agent consumption."""
         media_paths: list[str] = []
@@ -1668,7 +1683,9 @@ class QQChannel(BaseChannel):
             return media_paths, recv_lines, att_meta
 
         for att in attachments:
-            url, filename, ctype = att.url, att.filename, att.content_type
+            url = getattr(att, "url", None) or ""
+            filename = getattr(att, "filename", None) or ""
+            ctype = getattr(att, "content_type", None) or ""
 
             logger.info("Downloading file from QQ: {}", filename or url)
             local_path = await self._download_to_media_dir_chunked(url, filename_hint=filename)
@@ -1732,7 +1749,7 @@ class QQChannel(BaseChannel):
                 },
             ) as resp:
                 data = await resp.json()
-                if isinstance(data, dict) and data.get("success"):
+                if isinstance(data, dict) and cast(dict[str, Any], data).get("success"):
                     logger.info("QQ file saved via sidecar: {}", str(target))
                     return str(target)
                 logger.warning("QQ sidecar download failed, falling back: {}", data)

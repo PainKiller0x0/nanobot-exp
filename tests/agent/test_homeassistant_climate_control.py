@@ -75,6 +75,11 @@ def _prepare(monkeypatch, tmp_path, *, ignore_post: bool = False) -> FakeClient:
     token_path.write_text("not-a-real-token", encoding="utf-8")
     token_path.chmod(0o600)
     monkeypatch.setattr(homeassistant_climate, "TOKEN_PATH", token_path)
+    monkeypatch.setattr(
+        HomeAssistantClimateControlTool,
+        "_read_token",
+        staticmethod(lambda: "not-a-real-token"),
+    )
     client = FakeClient(ignore_post=ignore_post)
     monkeypatch.setattr(
         homeassistant_climate.httpx,

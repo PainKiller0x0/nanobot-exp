@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 from collections import deque
-from typing import Any
+from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -53,7 +53,7 @@ class MemoryHook(AgentHook):
         )
         if not isinstance(payload, dict):
             return
-        block = _format_reference(payload)
+        block = _format_reference(cast(dict[str, Any], payload))
         if block:
             _append_reference(context.messages, block)
 
@@ -130,9 +130,12 @@ def _text_content(content: Any) -> str:
         return _strip_reference(content).strip()
     if isinstance(content, list):
         parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") in {"text", "input_text"}:
-                parts.append(str(item.get("text") or item.get("content") or ""))
+        for item in cast(list[Any], content):
+            if not isinstance(item, dict):
+                continue
+            item_data = cast(dict[str, Any], item)
+            if item_data.get("type") in {"text", "input_text"}:
+                parts.append(str(item_data.get("text") or item_data.get("content") or ""))
         return _strip_reference("\n".join(parts)).strip()
     return ""
 
@@ -145,12 +148,16 @@ def _append_reference(messages: list[dict[str, Any]], block: str) -> None:
         if isinstance(content, str):
             message["content"] = f"{_strip_reference(content).rstrip()}\n\n{block}"
         elif isinstance(content, list):
+            content_items = cast(list[Any], content)
             message["content"] = [
                 item
-                for item in content
-                if not (isinstance(item, dict) and str(item.get("text") or "").startswith(_MARKER))
+                for item in content_items
+                if not (
+                    isinstance(item, dict)
+                    and str(cast(dict[str, Any], item).get("text") or "").startswith(_MARKER)
+                )
             ]
-            message["content"].append({"type": "text", "text": block})
+            cast(list[Any], message["content"]).append({"type": "text", "text": block})
         return
 
 
@@ -162,15 +169,20 @@ def _strip_reference(value: str) -> str:
 def _format_reference(payload: dict[str, Any]) -> str:
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
-    for item in [*(payload.get("hot") or []), *(payload.get("results") or [])]:
+    items = [
+        *cast(list[Any], payload.get("hot") or []),
+        *cast(list[Any], payload.get("results") or []),
+    ]
+    for item in items:
         if not isinstance(item, dict):
             continue
-        key = (str(item.get("kind") or ""), int(item.get("id") or 0))
-        content = str(item.get("content") or "").strip()
+        item_data = cast(dict[str, Any], item)
+        key = (str(item_data.get("kind") or ""), int(item_data.get("id") or 0))
+        content = str(item_data.get("content") or "").strip()
         if not content or key in seen:
             continue
         seen.add(key)
-        rows.append(item)
+        rows.append(item_data)
         if len(rows) >= 7:
             break
     if not rows:
