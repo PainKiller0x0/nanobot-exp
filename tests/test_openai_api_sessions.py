@@ -164,14 +164,14 @@ async def test_old_history_survives_route_fix_restart_and_rollback(tmp_path, ses
     old_provider = RouteProvider()
     async with runtime(workspace, old_provider) as (agent, _):
         await agent.process_direct(
-            "LEGACY_HISTORY", session_key=old_key, channel="api", chat_id=API_CHAT_ID,
+            "LEGACY_HISTORY inspect workspace files", session_key=old_key, channel="api", chat_id=API_CHAT_ID,
         )
 
     upgraded = RouteProvider()
     async with runtime(workspace, upgraded) as (_, client):
-        result = await post(client, session_id, "UPGRADED_TURN")
+        result = await post(client, session_id, "UPGRADED_TURN inspect workspace files")
         assert_route(result, session_id or "default")
-        assert "LEGACY_HISTORY" in json.dumps(upgraded.calls[0]["messages"])
+        assert "LEGACY_HISTORY inspect workspace files" in json.dumps(upgraded.calls[0]["messages"])
         # The ordinary prefix is byte-stable; replay also keeps structured tool history.
         assert_prefix(old_provider.calls[0], upgraded.calls[0])
         old_tool_prefix = old_provider.calls[1]["messages"]
@@ -181,12 +181,14 @@ async def test_old_history_survives_route_fix_restart_and_rollback(tmp_path, ses
 
     reopened = RouteProvider()
     async with runtime(workspace, reopened) as (agent, client):
-        assert_route(await post(client, session_id, "AFTER_RESTART"), session_id or "default")
+        assert_route(await post(client, session_id, "AFTER_RESTART inspect workspace files"), session_id or "default")
         replay = json.dumps(reopened.calls[0]["messages"])
-        assert "LEGACY_HISTORY" in replay and "UPGRADED_TURN" in replay
+        assert "LEGACY_HISTORY inspect workspace files" in replay and "UPGRADED_TURN inspect workspace files" in replay
         # Restoring the old adapter route still reads all post-upgrade messages.
         await agent.process_direct(
-            "ROLLBACK_TURN", session_key=old_key, channel="api", chat_id=API_CHAT_ID,
+            "ROLLBACK_TURN inspect workspace files", session_key=old_key, channel="api", chat_id=API_CHAT_ID,
         )
         replay = json.dumps(reopened.calls[-1]["messages"])
-        assert all(text in replay for text in ("LEGACY_HISTORY", "UPGRADED_TURN", "AFTER_RESTART"))
+        assert all(text in replay for text in ("UPGRADED_TURN inspect workspace files", "AFTER_RESTART inspect workspace files"))
+        stored = json.dumps(agent.sessions.get_or_create(old_key).messages)
+        assert "LEGACY_HISTORY inspect workspace files" in stored

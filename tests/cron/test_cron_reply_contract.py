@@ -108,10 +108,10 @@ async def test_moved_cron_keeps_reply_send_and_prompt_prefix_contract(tmp_path, 
             assert all(m.media == [str(attachment)] for m in extra)
             assert all("message_thread_id" not in m.metadata for m in extra)
 
-        # Ordinary turns, separate cron runs and tool continuations use the same
-        # system/tools prefix. Per-run instructions and runtime data stay at the end.
+        # Adaptive tools vary by intent; the system prompt remains stable.
+        # Tool continuations within a run keep the same advertised schema.
         def stable(row):
-            return json.dumps([row["tools"], row["messages"][0]], ensure_ascii=False)
+            return json.dumps(row["messages"][0], ensure_ascii=False)
 
         assert all(stable(row) == stable(requests[0]) for row in requests)
         assert len(runs) == 2
@@ -120,6 +120,7 @@ async def test_moved_cron_keeps_reply_send_and_prompt_prefix_contract(tmp_path, 
             assert turn[0]["messages"][-1]["role"] == "user"
             assert instructions[delivery] in turn[0]["messages"][-1]["content"]
             if len(turn) > 1:
+                assert turn[1]["tools"] == turn[0]["tools"]
                 original = turn[0]["messages"]
                 assert turn[1]["messages"][:len(original)] == original
                 appended = turn[1]["messages"][len(original):]

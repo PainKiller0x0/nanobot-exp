@@ -9,7 +9,6 @@ from mcp import types as mcp_types
 from nanobot.agent.tools.mcp import MCPToolWrapper, _parse_home_assistant_context
 from nanobot.agent.tools.registry import is_tool_error_result
 
-
 LAMP_NAME = "米家显示器挂灯2  灯"
 LAMP_AREA = "深圳泊寓 客厅"
 AC_NAME = "\u7c73\u5bb6\u7a7a\u8c03\u4f34\u4fa3\u0032  \u7a7a\u8c03"

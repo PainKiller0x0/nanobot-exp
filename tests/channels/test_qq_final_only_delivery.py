@@ -11,8 +11,8 @@ pytest.importorskip("botpy")
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.qq.runtime import QQChannel, QQConfig
 from nanobot.channels.manager import ChannelManager
+from nanobot.channels.qq.runtime import QQChannel, QQConfig
 from nanobot.config.schema import Config
 from nanobot.providers.openai_compat_provider import OpenAICompatProvider
 

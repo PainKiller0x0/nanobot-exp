@@ -1,15 +1,15 @@
 """Recent chat survives a summary checkpoint without changing durable history."""
 
 import asyncio
-from copy import deepcopy
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.context import ContextBuilder
 from nanobot.agent.autocompact import AutoCompact
+from nanobot.agent.context import ContextBuilder
 from nanobot.agent.loop import AgentLoop, TurnKind
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
