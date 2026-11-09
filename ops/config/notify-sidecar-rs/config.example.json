@@ -77,6 +77,15 @@
       "timezone": "Asia/Shanghai",
       "command": "NANOBOT_OBP_MONTHLY_BUDGET_CNY=${NANOBOT_OBP_MONTHLY_BUDGET_CNY:-10} /root/nanobot-ops/scripts/nanobot-ops-guard.py --mode obp-budget",
       "timeout_secs": 45
+    },
+    {
+      "id": "wxread-actions-monitor",
+      "name": "微信读书每日任务状态检查",
+      "enabled": false,
+      "schedule": "15 9 * * *",
+      "timezone": "Asia/Shanghai",
+      "command": "python3 /root/nanobot-ops/scripts/wxread_actions_monitor.py",
+      "timeout_secs": 30
     }
   ]
 }
