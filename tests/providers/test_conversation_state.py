@@ -1,8 +1,6 @@
-"""Tests for provider-owned conversation-state lifecycle coordination."""
-
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -146,6 +144,32 @@ def test_controller_uses_governed_messages_for_provider_state_delta() -> None:
     assert governed_checkpoint.pending_messages[-1]["content"] == "compacted result"
 
 
+def test_controller_does_not_duplicate_supplemental_message_already_in_delta() -> None:
+    provider = _provider()
+    current_message = {"role": "user", "content": "Continue."}
+    messages = [
+        {"role": "user", "content": "do task", "_meta": {"provider_state_boundary": True}},
+    ]
+    controller = ProviderConversationStateController(
+        provider=provider,
+        model="gpt-5.6",
+        messages=messages,
+        state=_state("saved"),
+    )
+    messages.append(current_message)
+
+    provider_context = controller.prepare_request(
+        messages,
+        context_window_tokens=200_000,
+        model_messages=None,
+        supplemental_messages=[current_message],
+    )
+
+    assert provider_context is not None
+    assert provider_context.conversation_state is not None
+    assert provider_context.conversation_state.pending_messages == [current_message]
+
+
 def test_controller_estimates_active_state_plus_pending_delta(monkeypatch) -> None:
     provider = _provider()
     current_message = {"role": "user", "content": "new delta"}
@@ -191,8 +215,10 @@ def test_controller_estimates_active_state_plus_pending_delta(monkeypatch) -> No
     }
 
 
-def test_transient_response_preserves_only_durable_request_messages() -> None:
+@pytest.mark.parametrize("compacted", [False, True])
+async def test_transient_response_preserves_only_durable_request_messages(compacted) -> None:
     provider = _provider()
+    checkpoint = AsyncMock()
     current_message = {"role": "user", "content": "continue"}
     supplemental = {"role": "user", "content": "internal finalization retry"}
     messages = [{"role": "system", "content": "system"}, current_message]
@@ -204,7 +230,10 @@ def test_transient_response_preserves_only_durable_request_messages() -> None:
             {"role": "tool", "content": "prior"},
             current_message,
         ]),
+        checkpoint_callback=checkpoint,
     )
+    followup = {"role": "user", "content": "durable follow-up"}
+    messages.append(dict(followup))
 
     provider_context = controller.prepare_request(
         messages,
@@ -216,8 +245,18 @@ def test_transient_response_preserves_only_durable_request_messages() -> None:
     assert provider_context.conversation_state.pending_messages == [
         {"role": "tool", "content": "prior"},
         current_message,
+        followup,
         supplemental,
     ]
+    if compacted:
+        assert provider_context.on_native_compaction is not None
+        await provider_context.on_native_compaction(_state(
+            "compacted", pending=provider_context.conversation_state.pending_messages,
+        ))
+        checkpoint.assert_awaited_once()
+        assert checkpoint.await_args.args[0].pending_messages == [
+            {"role": "tool", "content": "prior"}, current_message, followup,
+        ]
 
     controller.observe_response(
         LLMResponse(
@@ -235,8 +274,10 @@ def test_transient_response_preserves_only_durable_request_messages() -> None:
     assert state.pending_messages == [
         {"role": "tool", "content": "prior"},
         current_message,
+        followup,
         placeholder,
     ]
+    assert state.payload == _state("compacted" if compacted else "saved").payload
 
 
 def test_non_retryable_response_discards_saved_state() -> None:

@@ -1,5 +1,3 @@
-"""Manual context compaction command behavior."""
-
 import asyncio
 import sqlite3
 import threading
@@ -197,14 +195,14 @@ async def test_compacted_session_waits_for_new_input_without_continuation(
     loop.provider.chat_stream_with_retry.assert_awaited_once()
     sent = loop.provider.chat_stream_with_retry.call_args.kwargs["messages"]
     expected_summary = reloaded.metadata["_last_summary"] if summary != "(nothing)" else None
-    assert sent[0] == {
-        "role": "system",
-        "content": loop.context.build_system_prompt(channel="cli", session_summary=expected_summary),
-    }
+    assert sent[0]["role"] == "system"
+    assert sent[0]["content"] == loop.context.build_system_prompt(channel="cli", session_summary=expected_summary)
+    # This fork intentionally keeps the bounded recent-chat tail after a
+    # summary checkpoint, while still requiring a fresh user message to resume.
     assert [message["role"] for message in sent] == ["system", "user", "assistant", "user"]
-    assert "Inspect the checkpoint" in sent[1]["content"]
+    assert sent[1]["content"].endswith("Inspect the checkpoint")
     assert sent[2]["content"] == "Inspection complete."
-    assert "hi" in sent[3]["content"]
+    assert sent[3]["content"].startswith("hi\n\n")
     assert "File access: no workspace restriction." in sent[3]["content"]
 
     loop.sessions.invalidate(key)

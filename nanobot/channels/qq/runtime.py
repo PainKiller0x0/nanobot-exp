@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import mimetypes
 import os
 import re
@@ -31,7 +32,7 @@ from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, BinaryIO, Literal, cast
 from urllib.parse import unquote, urlparse
 
 import aiohttp
@@ -82,6 +83,47 @@ _RECONNECT_BACKOFF_START = 5
 _RECONNECT_BACKOFF_MAX = 300
 
 
+_TTS_ERROR_REPLY_PREFIXES = (
+    "error:",
+    "error calling llm:",
+    "exception:",
+    "traceback (most recent call last):",
+    "gemini request failed:",
+    "image generation failed:",
+    "ai 调用失败:",
+    "ai 调用失败：",
+    "生图失败:",
+    "生图失败：",
+    "i encountered an error doing what you asked.",
+    "i'm having a hard time fulfilling your request.",
+    "i seem to be encountering an error.",
+    "sorry, i encountered an error",
+)
+
+
+def _is_obvious_error_reply(text: str | None) -> bool:
+    """Keep raw provider failures from being read aloud as normal replies."""
+    return (text or "").lstrip().casefold().startswith(_TTS_ERROR_REPLY_PREFIXES)
+
+
+def _unwrap_text_envelope(text: str) -> str:
+    """Unwrap only the exact text envelope occasionally leaked by the model."""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    if not isinstance(value, dict):
+        return text
+    payload = cast(dict[str, object], value)
+    if (
+        set(payload) == {"status", "content"}
+        and payload["status"] == "text"
+        and isinstance(payload["content"], str)
+    ):
+        return payload["content"]
+    return text
+
+
 def _is_network_error(exc: BaseException) -> bool:
     return isinstance(exc, (aiohttp.ClientConnectorError, OSError))
 
@@ -98,12 +140,10 @@ _IMAGE_EXTS = {
     ".svg",
 }
 
-# Replace unsafe characters with "_", keep Chinese and common safe punctuation.
 _SAFE_NAME_RE = re.compile(r"[^\w.\-()\[\]（）【】\u4e00-\u9fff]+", re.UNICODE)
 
 
 def _sanitize_filename(name: str) -> str:
-    """Sanitize filename to avoid traversal and problematic chars."""
     name = (name or "").strip()
     name = Path(name).name
     name = _SAFE_NAME_RE.sub("_", name).strip("._ ")
@@ -134,7 +174,6 @@ def _parse_qq_timestamp(ts: str | None) -> datetime | None:  # pyright: ignore[r
 
 
 def _guess_send_file_type(filename: str) -> int:
-    """Conservative send type: images -> 1, else -> 4."""
     ext = Path(filename).suffix.lower()
     mime, _ = mimetypes.guess_type(filename)
     if ext in _IMAGE_EXTS or (mime and mime.startswith("image/")):
@@ -293,9 +332,6 @@ def _make_bot_class(channel: QQChannel) -> type[Any]:
     return _Bot
 
 
-# ---------------------------------------------------------------------------
-# Quoted messages
-#
 # QQ's C2C/group events do not carry ``message_reference``; botpy models that
 # field because the object is shared with guild messages, but QQ never sends it
 # here.  The quoted original arrives in ``msg_elements``, linked from
@@ -305,7 +341,6 @@ def _make_bot_class(channel: QQChannel) -> type[Any]:
 # it is discarded.  If a future botpy exposes those fields on the message
 # object, ``_quoted_content_for`` prefers that copy and the hook becomes dead
 # weight rather than a correctness dependency.
-# ---------------------------------------------------------------------------
 
 QQ_QUOTED_CONTEXT_MAX_CHARS = 4_000
 QQ_RAW_PAYLOAD_CACHE = 200
@@ -314,7 +349,6 @@ _qq_raw_payloads: dict[str, dict[str, Any]] = {}
 
 
 def _flatten_scene_ext(scene: Any) -> dict[str, str]:
-    """Turn QQ's ``message_scene.ext`` (``["key=value", ...]``) into a mapping."""
     if not isinstance(scene, Mapping):
         return {}
     ext = cast("Mapping[str, Any]", scene).get("ext")
@@ -398,7 +432,6 @@ def _install_qq_payload_capture() -> None:
 
 
 def _quoted_content_for(message: Any) -> str | None:
-    """Resolve the quoted text for one inbound QQ message."""
     scene = getattr(message, "message_scene", None)
     elements = getattr(message, "msg_elements", None)
     if scene is not None or elements is not None:
@@ -418,9 +451,8 @@ class QQConfig(Base):
     # Optional: directory to save inbound attachments. If empty, use nanobot get_media_dir("qq").
     media_dir: str = ""
 
-    # Download tuning
-    download_chunk_size: int = 1024 * 256  # 256KB
-    download_max_bytes: int = 1024 * 1024 * 200  # 200MB safety limit
+    download_chunk_size: int = 1024 * 256
+    download_max_bytes: int = 1024 * 1024 * 200
 
     # QQ's C2C/group message API has no edit or recall endpoint, so automatic
     # notices would land as separate permanent messages (#5784). Unset inherits
@@ -511,17 +543,12 @@ class QQChannel(BaseChannel):
         self._tts_enabled: dict[str, bool] = {}
         self._tts_accumulated: dict[str, str] = {}
 
-        # QQ delivers the quoted original in a payload field botpy discards.
         _install_qq_payload_capture()
 
         self._media_root: Path = self._init_media_root()
 
-    # ---------------------------
-    # Lifecycle
-    # ---------------------------
 
     def _init_media_root(self) -> Path:
-        """Choose a directory for saving inbound attachments."""
         if self.config.media_dir:
             root = Path(self.config.media_dir).expanduser()
         elif get_media_dir:
@@ -566,17 +593,22 @@ class QQChannel(BaseChannel):
         await self._run_bot()
 
     async def _run_bot(self) -> None:
-        """Run the bot connection with auto-reconnect."""
+        backoff = 5
+        max_backoff = 300
         while self._running:
             try:
                 client = cast(Any, self._client)
                 await client.start(appid=self.config.app_id, secret=self.config.secret)
-                # Bot connected successfully - greeting is now triggered in on_ready
+                backoff = 5
             except Exception as e:
-                logger.warning("QQ bot error: {}", e)
+                if _is_network_error(e):
+                    logger.warning("QQ bot network error (retry in {}s): {}", backoff, e)
+                else:
+                    logger.warning("QQ bot error: {}", e)
             if self._running:
-                logger.info("Reconnecting QQ bot in 5 seconds...")
-                await asyncio.sleep(5)
+                logger.info("Reconnecting QQ bot in {} seconds...", backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
 
     async def _check_greeting_trigger(self) -> None:
         """Check for gateway restart greeting trigger and send a greeting."""
@@ -681,9 +713,6 @@ class QQChannel(BaseChannel):
 
         logger.info("QQ bot stopped")
 
-    # ---------------------------
-    # Outbound (send)
-    # ---------------------------
 
 
     async def send(self, msg: OutboundMessage) -> None:
@@ -700,7 +729,7 @@ class QQChannel(BaseChannel):
         trace_id = str(msg.metadata.get("_trace_id") or msg.metadata.get("_turn_id") or "")
         queue_wait_ms = _elapsed_perf_ms(msg.metadata.get("_send_queued_perf"), send_started)
         status = "ok"
-        content = msg.content or ""
+        content = _unwrap_text_envelope(msg.content or "")
         logger.info("🔍 SEND called content_len={} chat_id={} tts_enabled={}",
                      len(content), msg.chat_id, self._tts_enabled.get(msg.chat_id, True))
         auto_media: list[str] = []
@@ -824,7 +853,10 @@ class QQChannel(BaseChannel):
                         chunks_sent += 1
                         logger.info("📢 TTS CHECK chat_id={} enabled={}",
                                      msg.chat_id, self._tts_enabled.get(msg.chat_id, True))
-                        if self._tts_enabled.get(msg.chat_id, True):
+                        if (
+                            self._tts_enabled.get(msg.chat_id, True)
+                            and not _is_obvious_error_reply(safe_content)
+                        ):
                             await self._send_tts_audio(
                                 chat_id=msg.chat_id, is_group=is_group, msg_id=msg_id, text=safe_content,
                             )
@@ -858,7 +890,12 @@ class QQChannel(BaseChannel):
                     self._schedule_delivery_ack(safe_content, wechat_ack, chat_id=msg.chat_id)
 
             # 3) TTS: if enabled for this user, generate audio and send
-            if content and content.strip() and self._tts_enabled.get(msg.chat_id, True):
+            if (
+                content
+                and content.strip()
+                and self._tts_enabled.get(msg.chat_id, True)
+                and not _is_obvious_error_reply(content)
+            ):
                 try:
                     await self._send_tts_audio(
                         chat_id=msg.chat_id, is_group=is_group, msg_id=msg_id, text=content,
@@ -925,7 +962,6 @@ class QQChannel(BaseChannel):
         msg_id: str | None,
         content: str,
     ) -> None:
-        """Send a plain/markdown text message."""
         if not self._client:
             return
         content = _strip_silent_marker(content)
@@ -1125,7 +1161,7 @@ class QQChannel(BaseChannel):
                 self._tts_accumulated[stream_key] = (self._tts_accumulated.get(stream_key) or "") + delta
             if meta.get("_stream_end"):
                 full_text = (self._tts_accumulated.pop(stream_key, None) or "").strip()
-                if full_text:
+                if full_text and not _is_obvious_error_reply(full_text):
                     is_group = self._chat_type_cache.get(str(chat_id), "c2c") == "group"
                     msg_id = meta.get("message_id") or meta.get("msg_id")
                     msg_id = str(msg_id) if msg_id else None
@@ -1241,7 +1277,6 @@ class QQChannel(BaseChannel):
         msg_id: str | None,
         is_group: bool,
     ) -> bool:
-        """Read bytes -> base64 upload -> msg_type=7 send."""
         if not self._client:
             return False
 
@@ -1376,12 +1411,10 @@ class QQChannel(BaseChannel):
         return ok > 0
 
     async def _read_media_bytes(self, media_ref: str) -> tuple[bytes | None, str | None]:
-        """Read bytes from http(s) or local file path; return (data, filename)."""
         media_ref = (media_ref or "").strip()
         if not media_ref:
             return None, None
 
-        # Local file: plain path or file:// URI
         if not media_ref.startswith("http://") and not media_ref.startswith("https://"):
             try:
                 if media_ref.startswith("file://"):
@@ -1442,7 +1475,6 @@ class QQChannel(BaseChannel):
         file_name: str | None = None,
         srv_send_msg: bool = False,
     ) -> dict[str, Any]:
-        """Upload base64-encoded file and return Media object."""
         if not self._client:
             raise RuntimeError("QQ client not initialized")
 
@@ -1674,7 +1706,6 @@ class QQChannel(BaseChannel):
         self,
         attachments: list[object],
     ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
-        """Extract, download (chunked), and format attachments for agent consumption."""
         media_paths: list[str] = []
         recv_lines: list[str] = []
         att_meta: list[dict[str, Any]] = []
@@ -1714,7 +1745,7 @@ class QQChannel(BaseChannel):
         url: str,
         filename_hint: str = "",
     ) -> str | None:
-        """Download an inbound attachment safely, preferring the QQ sidecar."""
+        """Download a bounded attachment safely, preferring the QQ sidecar."""
         if url.startswith("//"):
             url = "https:" + url
         ts = int(time.time() * 1000)
@@ -1756,7 +1787,7 @@ class QQChannel(BaseChannel):
         except Exception as exc:
             logger.debug("QQ sidecar download unavailable, falling back: {}", exc)
 
-        tmp_path = target.with_suffix(target.suffix + ".part")
+        tmp_path: Path | None = None
         try:
             async with self._http.get(
                 url,
@@ -1767,12 +1798,17 @@ class QQChannel(BaseChannel):
                     logger.warning("QQ attachment download returned status={} url={}", resp.status, url)
                     return None
 
-                if target.suffix == ".bin":
-                    content_type = str(resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
-                    detected_ext = mimetypes.guess_extension(content_type) if content_type else None
-                    if detected_ext:
-                        target = target.with_suffix(detected_ext)
-                        tmp_path = target.with_suffix(target.suffix + ".part")
+                content_type = str(resp.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+                if ext == ".bin" and content_type:
+                    ext = mimetypes.guess_extension(content_type) or ext
+                filename = (
+                    safe if safe and Path(safe).suffix
+                    else f"{safe}{ext}" if safe
+                    else f"qq_file_{ts}{ext}"
+                )
+                target = self._media_root / filename
+                if target.exists():
+                    target = self._media_root / f"{target.stem}_{ts}{target.suffix}"
 
                 content_length = resp.headers.get("Content-Length")
                 if content_length:
@@ -1783,10 +1819,15 @@ class QQChannel(BaseChannel):
                     except ValueError:
                         pass
 
-                self._media_root.mkdir(parents=True, exist_ok=True)
+                tmp_path = target.with_suffix(target.suffix + ".part")
                 downloaded = 0
                 chunk_size = max(1024, int(getattr(self.config, "download_chunk_size", 262144) or 262144))
-                with tmp_path.open("wb") as handle:
+                def _open_tmp(path: Path) -> BinaryIO:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    return path.open("wb")
+
+                handle = await asyncio.to_thread(_open_tmp, tmp_path)
+                try:
                     async for chunk in resp.content.iter_chunked(chunk_size):
                         if not chunk:
                             continue
@@ -1794,8 +1835,12 @@ class QQChannel(BaseChannel):
                         if downloaded > max_bytes:
                             logger.warning("QQ attachment exceeded max_bytes={} url={}", max_bytes, url)
                             return None
-                        handle.write(chunk)
-                os.replace(tmp_path, target)
+                        await asyncio.to_thread(handle.write, chunk)
+                finally:
+                    await asyncio.to_thread(handle.close)
+
+                await asyncio.to_thread(os.replace, tmp_path, target)
+                tmp_path = None
                 logger.info("QQ file saved: {}", str(target))
                 return str(target)
         except asyncio.CancelledError:
@@ -1804,5 +1849,6 @@ class QQChannel(BaseChannel):
             logger.warning("QQ attachment download failed url={} err={}", url, exc)
             return None
         finally:
-            with suppress(OSError):
-                tmp_path.unlink()
+            if tmp_path is not None:
+                with suppress(OSError):
+                    tmp_path.unlink(missing_ok=True)

@@ -1,10 +1,9 @@
-"""Turn-local permission for explicit sustained-goal mutations."""
-
 from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from typing import Self
 
 from nanobot.bus.events import InboundMessage
 from nanobot.session.automation_turns import automation_history_overrides
@@ -41,7 +40,7 @@ class GoalInputScope(ExitStack):
         super().__init__()
         self._initial_message = initial_message
 
-    def __enter__(self) -> GoalInputScope:
+    def __enter__(self) -> Self:
         super().__enter__()
         self.enter_context(goal_mutation_permission(False))
         if self._initial_message is not None:
