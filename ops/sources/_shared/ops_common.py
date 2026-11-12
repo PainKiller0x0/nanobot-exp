@@ -398,6 +398,20 @@ def clean_article_markdown(markdown: str, title: str = "") -> str:
     return strip_duplicate_title(text, title)
 
 
+def deduplicate_article_links(markdown: str) -> str:
+    """Keep the first inline link per target without removing any visible text."""
+    seen: set[str] = set()
+
+    def replace(match: re.Match[str]) -> str:
+        label, url = match.groups()
+        if url in seen:
+            return label
+        seen.add(url)
+        return match.group(0)
+
+    return re.sub(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)", replace, markdown)
+
+
 def format_article_push_body(article: dict[str, Any]) -> str:
     raw_markdown = str(article.get("article_markdown") or "").strip()
     if is_wechat_paid_teaser(raw_markdown):
@@ -409,7 +423,7 @@ def format_article_push_body(article: dict[str, Any]) -> str:
     published = str(article.get("published_at_local") or article.get("published_at") or "").strip()
 
     head = title or "未命名文章"
-    markdown = clean_article_markdown(raw_markdown, title)
+    markdown = deduplicate_article_links(clean_article_markdown(raw_markdown, title))
     meta = "\n".join(article_meta_lines(source, published)).strip()
 
     parts = [head]
