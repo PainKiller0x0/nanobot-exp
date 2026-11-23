@@ -1,6 +1,6 @@
 # Nanobot Exp
 
-这是 [HKUDS/nanobot](https://github.com/HKUDS/nanobot) 的生产维护 fork，当前基线为上游 **v0.3.5**。
+这是 [HKUDS/nanobot](https://github.com/HKUDS/nanobot) 的生产维护 fork，当前基线为上游 **v0.4.2**。
 
 本仓库服务于 PainKiller0x0 的 Nanobot 部署，重点是：
 

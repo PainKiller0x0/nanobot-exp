@@ -196,7 +196,9 @@ async def test_compacted_session_waits_for_new_input_without_continuation(
     sent = loop.provider.chat_stream_with_retry.call_args.kwargs["messages"]
     expected_summary = reloaded.metadata["_last_summary"] if summary != "(nothing)" else None
     assert sent[0]["role"] == "system"
-    assert sent[0]["content"] == loop.context.build_system_prompt(channel="cli", session_summary=expected_summary)
+    assert sent[0]["content"] == loop.context.build_system_prompt(
+        channel="cli", session_summary=expected_summary, has_cron=False,
+    )
     # This fork intentionally keeps the bounded recent-chat tail after a
     # summary checkpoint, while still requiring a fresh user message to resume.
     assert [message["role"] for message in sent] == ["system", "user", "assistant", "user"]
@@ -261,7 +263,7 @@ async def test_compact_during_active_turn_waits_for_the_session_lock(loop, comma
     )
     lock = loop._get_session_lock(key)
     async with lock:
-        await loop._dispatch_command_inline(msg, key, msg.content, loop.commands.dispatch)
+        await loop._dispatch_command_inline(msg, msg.content, loop.commands.dispatch)
         tasks = list(loop._active_tasks[key])
         assert len(tasks) == 1
         await asyncio.sleep(0)
@@ -289,7 +291,7 @@ async def test_stop_completes_a_compact_command_waiting_for_the_session_lock(loo
     completions = []
     loop.bus.subscribe(completions.append, TurnCompleted)
     async with loop._get_session_lock(key):
-        await loop._dispatch_command_inline(msg, key, msg.content, loop.commands.dispatch)
+        await loop._dispatch_command_inline(msg, msg.content, loop.commands.dispatch)
         reply = await cmd_stop(CommandContext(
             msg=msg, session=None, key=key, raw="/stop", loop=loop,
         ))
@@ -334,7 +336,7 @@ async def test_compact_is_a_fifo_barrier_during_an_active_turn(loop, command_tex
             channel="cli", sender_id="u", chat_id="test", content="before compaction",
         )))
         command = InboundMessage(channel="cli", sender_id="u", chat_id="test", content=command_text)
-        await loop._dispatch_command_inline(command, key, command.content, loop.commands.dispatch)
+        await loop._dispatch_command_inline(command, command.content, loop.commands.dispatch)
         (await loop._enqueue_session_message(InboundMessage(
             channel="cli", sender_id="u", chat_id="test", content="after compaction",
         )))
@@ -379,7 +381,7 @@ async def test_stop_completes_compact_queued_behind_an_active_turn(loop, command
         channel="websocket", sender_id="u", chat_id="test", content=command_text,
         metadata={"webui_turn_id": "queued-compact"},
     )
-    await loop._dispatch_command_inline(command, key, command.content, loop.commands.dispatch)
+    await loop._dispatch_command_inline(command, command.content, loop.commands.dispatch)
     await cmd_stop(CommandContext(msg=command, session=None, key=key, raw="/stop", loop=loop))
 
     assert task.cancelled()
