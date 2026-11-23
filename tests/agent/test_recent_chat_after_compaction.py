@@ -38,7 +38,12 @@ async def _assemble(session, current, tmp_path, monkeypatch, *, tokens=10_000, s
         session_key=session.key, kind=TurnKind.SYSTEM if subagent else TurnKind.USER,
         on_runtime_admitted=None, ephemeral=False,
         commit_session=False,
-        msg=SimpleNamespace(content=current, media=[], sender_id="subagent", metadata={}),
+        msg=InboundMessage(
+            channel="qq",
+            sender_id="subagent" if subagent else "user",
+            chat_id="offline-test",
+            content=current,
+        ),
         delivery=SimpleNamespace(runtime_admitted=AsyncMock()),
         pending_summary=session.metadata.get("_last_summary"),
         runtime_context_blocks=[],

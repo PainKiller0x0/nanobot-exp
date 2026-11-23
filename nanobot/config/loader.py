@@ -153,15 +153,72 @@ def _collapse_equal_aliases(value: object, location: str, path: Path) -> object:
     return collapsed
 
 
-def _unknown_entries(raw: object, dumped: object) -> list[dict[str, Any]]:
-    present = {_canon_path(path) for path, _value in _iter_leaves(dumped)}
-    retained: list[dict[str, Any]] = []
-    for path, value in _iter_leaves(raw):
-        canon = _canon_path(path)
-        if not path or canon in present or _is_legacy_canon(canon):
+def _alias_canons(field_name: str, field: Any) -> set[str]:
+    canons = {_canon_key(field_name)}
+    for attr in ("alias", "serialization_alias"):
+        value = getattr(field, attr, None)
+        if isinstance(value, str):
+            canons.add(_canon_key(value))
+    validation = getattr(field, "validation_alias", None)
+    if isinstance(validation, str):
+        canons.add(_canon_key(validation))
+    for choice in getattr(validation, "choices", ()) or ():
+        if isinstance(choice, str):
+            canons.add(_canon_key(choice))
+    return canons
+
+
+def _unknown_entries(
+    data: object,
+    model: Any,
+    removed_canons: set[tuple[str, ...]],
+    prefix: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Keep values a model would ignore, not aliases or migrated keys.
+
+    Dict fields such as model presets and MCP servers own their keys, so
+    removing one is an edit. ``extra="allow"`` values already survive in the
+    model dump and are not copied again.
+    """
+    if not isinstance(data, dict) or not isinstance(model, BaseModel):
+        return []
+    by_canon: dict[str, str] = {}
+    for name, field in type(model).model_fields.items():
+        for canon in _alias_canons(name, field):
+            by_canon.setdefault(canon, name)
+    dumped = model.model_dump(mode="json", by_alias=True)
+    dumped_canons = {_canon_key(key) for key in dumped} if isinstance(dumped, dict) else set()
+    found: list[dict[str, Any]] = []
+    for key, value in data.items():
+        if not isinstance(key, str):
             continue
-        retained.append({"path": list(path), "value": copy.deepcopy(value)})
-    return retained
+        path = prefix + (key,)
+        canon = _canon_key(key)
+        canon_path = _canon_path(path)
+        if canon_path in removed_canons or _is_legacy_canon(canon_path):
+            continue
+        if canon in by_canon:
+            child = getattr(model, by_canon[canon], None)
+            if isinstance(child, BaseModel) and isinstance(value, dict):
+                found.extend(_unknown_entries(value, child, removed_canons, path))
+            elif isinstance(child, dict) and isinstance(value, dict):
+                for item_key, item_value in value.items():
+                    if not isinstance(item_key, str) or not isinstance(item_value, dict):
+                        continue
+                    item = child.get(item_key)
+                    if isinstance(item, BaseModel):
+                        found.extend(_unknown_entries(
+                            item_value, item, removed_canons, path + (item_key,),
+                        ))
+            continue
+        if canon in dumped_canons:
+            continue
+        for leaf_path, leaf_value in _iter_leaves(value, path):
+            leaf_canon = _canon_path(leaf_path)
+            if leaf_canon in removed_canons or _is_legacy_canon(leaf_canon):
+                continue
+            found.append({"path": list(leaf_path), "value": copy.deepcopy(leaf_value)})
+    return found
 
 
 def _merge_unknowns(data: dict[str, Any], entries: list[dict[str, Any]]) -> None:
@@ -200,15 +257,52 @@ def dump_config(config: Config) -> dict[str, Any]:
     return data
 
 
+def _unmodeled_leaf_canons(existing: dict[str, Any], path: Path) -> set[tuple[str, ...]]:
+    """Leaf paths the schema does not represent, plus explicit legacy keys.
+
+    Known settings may change or be removed. Only paths the model would drop
+    are protected.
+    """
+    try:
+        collapsed = _collapse_equal_aliases(dict(existing), "", path)
+        migrated = _migrate_config(collapsed if isinstance(collapsed, dict) else dict(existing))
+    except ConfigLoadError as exc:
+        raise ConfigWriteError(str(exc)) from exc
+    if isinstance(migrated, dict) and "api" in migrated:
+        migrated = {key: value for key, value in migrated.items() if key != "api"}
+    try:
+        modeled = Config.model_validate(migrated)
+    except ValidationError as exc:
+        raise ConfigWriteError(
+            f"Refusing to write {path} because the existing file could not be compared safely."
+        ) from exc
+    removed = {
+        _canon_path(item_path)
+        for item_path, _value in _iter_leaves(existing)
+        if _canon_path(item_path) not in {
+            _canon_path(migrated_path) for migrated_path, _migrated in _iter_leaves(migrated)
+        }
+    }
+    canons = {
+        _canon_path(tuple(entry["path"]))
+        for entry in _unknown_entries(existing, modeled, removed)
+    }
+    for item_path, _value in _iter_leaves(existing):
+        canon = _canon_path(item_path)
+        if _is_legacy_canon(canon):
+            canons.add(canon)
+        if len(canon) >= 2 and canon[:2] in _CREDENTIAL_PROVIDER_CANONS:
+            canons.discard(canon)
+    return canons
+
+
 def _reject_lossy_write(path: Path, existing: dict[str, Any], written: dict[str, Any]) -> None:
+    protected = _unmodeled_leaf_canons(existing, path)
     written_canons = {_canon_path(item_path) for item_path, _value in _iter_leaves(written)}
     missing = []
     for item_path, _value in _iter_leaves(existing):
         canon = _canon_path(item_path)
-        if not item_path or canon in written_canons:
-            continue
-        # OAuth providers already persist only non-credential request settings.
-        if len(canon) >= 2 and canon[:2] in _CREDENTIAL_PROVIDER_CANONS:
+        if not item_path or canon in written_canons or canon not in protected:
             continue
         missing.append(".".join(item_path))
     if not missing:
@@ -353,7 +447,14 @@ def load_config(config_path: Path | None = None) -> Config:
         ) from exc
 
     config._retained_legacy = retained
-    config._retained_unknowns = _unknown_entries(raw, config.model_dump(mode="json", by_alias=True))
+    removed = {
+        _canon_path(item_path)
+        for item_path, _value in _iter_leaves(raw)
+        if _canon_path(item_path) not in {
+            _canon_path(migrated_path) for migrated_path, _migrated in _iter_leaves(data)
+        }
+    }
+    config._retained_unknowns = _unknown_entries(raw, config, removed)
     _warn_retained_legacy(retained)
     config.bind_source_path(path)
     _apply_ssrf_whitelist(config)

@@ -363,6 +363,7 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX SIGTERM smoke; Windows CI does not report /health in time")
 def test_gateway_smoke_starts_and_stops_with_channels_disabled(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"

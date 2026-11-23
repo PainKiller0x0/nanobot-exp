@@ -62,7 +62,7 @@ NANOBOT_CHANNEL_ALLOWLIST=qq,weixin
 
 详细设计见：
 
-- [架构说明](docs/ARCHITECTURE.md)
+- [架构说明](docs/exp-architecture.md)
 - [扩展胶水层](docs/EXTENSIONS_GLUE.md)
 - [运行时补丁脚本](docs/RUNTIME_PATCH_SCRIPTS.md)
 - [memory-rs](docs/memory-rs.md)

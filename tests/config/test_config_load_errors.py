@@ -191,6 +191,8 @@ def test_loads_pre_removal_config_without_the_retired_service_secret(tmp_path, m
     stored.gateway.port = 18792
     save_config(stored, config_path)
     saved = json.loads(config_path.read_text(encoding="utf-8"))
-    assert "api" not in saved
+    # The retired serve block is kept so the file is not silently rewritten,
+    # and it is not applied, so the missing token is not required.
+    assert saved["api"]["apiKey"] == "${REMOVED_SERVE_TOKEN}"
     assert saved["gateway"]["port"] == 18792
     assert saved["providers"]["custom"]["apiBase"] == "http://model:8000/v1"
