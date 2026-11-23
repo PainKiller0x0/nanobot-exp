@@ -254,7 +254,15 @@ def _pick_heartbeat_target_from_sessions(
     enabled_channels: Iterable[str],
     sessions: Iterable[dict[str, Any]],
     archived_keys: Iterable[str],
+    delivery_channel: str | None = None,
+    delivery_chat_id: str | None = None,
 ) -> tuple[str, str]:
+    pinned_channel = (delivery_channel or "").strip()
+    pinned_chat = (delivery_chat_id or "").strip()
+    # A configured pair is the delivery target. Do not fall back to the most
+    # recent session, which can be a different channel such as WeChat.
+    if pinned_channel and pinned_chat:
+        return pinned_channel, pinned_chat
     enabled = set(enabled_channels)
     archived = set(archived_keys)
     for item in sessions:
@@ -765,6 +773,8 @@ def _run_claimed_gateway(
             enabled_channels=channels.enabled_channels,
             sessions=await session_manager.state.list_sessions(),
             archived_keys=archived_keys,
+            delivery_channel=config.gateway.heartbeat.delivery_channel,
+            delivery_chat_id=config.gateway.heartbeat.delivery_chat_id,
         )
 
     if channels.enabled_channels:

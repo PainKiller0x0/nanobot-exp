@@ -1969,6 +1969,20 @@ def test_heartbeat_target_skips_archived_webui_sessions():
     assert target == ("websocket", "active")
 
 
+def test_heartbeat_target_uses_configured_chat_instead_of_recent_session():
+    from nanobot.cli.gateway_runtime import _pick_heartbeat_target_from_sessions
+
+    target = _pick_heartbeat_target_from_sessions(
+        enabled_channels=["qq", "weixin"],
+        archived_keys=[],
+        sessions=[{"key": "weixin:recent"}],
+        delivery_channel="qq",
+        delivery_chat_id="pinned",
+    )
+
+    assert target == ("qq", "pinned")
+
+
 def _write_instance_config(tmp_path: Path) -> Path:
     config_file = tmp_path / "instance" / "config.json"
     config_file.parent.mkdir(parents=True)

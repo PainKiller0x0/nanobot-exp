@@ -26,7 +26,8 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.qq.runtime import QQChannel, QQConfig
 from nanobot.channels.websocket.runtime import WebSocketChannel
 from nanobot.channels.weixin.runtime import WeixinChannel, WeixinConfig
-from nanobot.config.loader import ConfigWriteError, load_config, save_config
+from nanobot.config.errors import ConfigLoadError
+from nanobot.config.loader import ConfigWriteError, dump_config, load_config, save_config
 from nanobot.config.schema import Config
 from nanobot.exp.qq.signatures import verify_and_unwrap_signed_payload
 from nanobot.exp.qq.streaming import should_stream_text, supports_streaming
@@ -455,3 +456,183 @@ def test_gateway_smoke_starts_and_stops_with_channels_disabled(tmp_path: Path) -
     assert proc.returncode == 0, output[-2000:]
     assert "Heartbeat: disabled" in output
     assert "Dream: disabled" in output
+
+
+_PRODUCTION_FIELD_PATHS = (
+    "tools.ssrf_whitelist",
+    "tools.mcpServers.home_assistant.type",
+    "tools.mcpServers.home_assistant.url",
+    "tools.mcpServers.home_assistant.auth",
+    "tools.mcpServers.home_assistant.toolTimeout",
+    "tools.mcpServers.home_assistant.enabledTools",
+    "tools.ssrfWhitelist",
+    "agents.defaults.workspace",
+    "agents.defaults.model",
+    "agents.defaults.provider",
+    "agents.defaults.maxTokens",
+    "agents.defaults.contextWindowTokens",
+    "agents.defaults.temperature",
+    "agents.defaults.maxToolIterations",
+    "agents.defaults.timezone",
+    "agents.defaults.persona",
+    "agents.defaults.disabled_skills",
+    "providers.minimax.apiKey",
+    "providers.minimax.apiBase",
+    "providers.longcat.apiKey",
+    "providers.longcat.apiBase",
+    "providers.custom.apiKey",
+    "providers.custom.apiBase",
+    "providers.custom.extraHeaders.X-OBP-Source",
+    "providers.custom.conversationTrial",
+    "channels.qq.enabled",
+    "channels.qq.app_id",
+    "channels.qq.secret",
+    "channels.qq.allow_from",
+    "channels.qq.msg_format",
+    "channels.qq.botpy_http_timeout_sec",
+    "channels.qq.send_retry_on_empty_response",
+    "channels.qq.send_retry_attempts",
+    "channels.qq.send_retry_delay_sec",
+    "channels.qq.stream_enabled",
+    "channels.qq.stream_requires_msg_id",
+    "channels.qq.stream_min_chars",
+    "channels.qq.stream_max_chars",
+    "channels.qq.stream_chunk_chars",
+    "channels.qq.stream_interval_sec",
+    "channels.qq.stream_first_flush_chars",
+    "channels.qq.stream_delta_flush_chars",
+    "channels.qq.stream_delta_flush_interval_sec",
+    "channels.qq.stream_defer_first_frame_until_end",
+    "channels.qq.send_progress",
+    "channels.qq.send_tool_hints",
+    "channels.qq.show_reasoning",
+    "channels.weixin.enabled",
+    "channels.weixin.allow_from",
+    "channels.weixin.state_dir",
+    "channels.websocket.enabled",
+    "channels.websocket.host",
+    "channels.websocket.port",
+    "channels.websocket.path",
+    "channels.websocket.tokenIssueSecret",
+    "channels.websocket.websocketRequiresToken",
+    "channels.websocket.allowFrom",
+    "channels.websocket.streaming",
+    "gateway.host",
+    "gateway.port",
+    "gateway.heartbeat.deliveryChannel",
+    "gateway.heartbeat.deliveryChatId",
+)
+
+
+def _canon_path(path: str) -> str:
+    return ".".join(part.replace("_", "").lower() for part in path.split("."))
+
+
+def _synthetic_leaf(path: str) -> object:
+    leaf = path.rsplit(".", 1)[-1].replace("_", "").lower()
+    if leaf in {
+        "enabled", "conversationtrial", "sendretryonemptyresponse", "streamenabled",
+        "streamrequiresmsgid", "streamdeferfirstframeuntilend", "sendprogress",
+        "sendtoolhints", "showreasoning", "websocketrequirestoken", "streaming",
+    }:
+        return False
+    if leaf in {
+        "port", "tooltimeout", "maxtokens", "contextwindowtokens", "maxtooliterations",
+        "streamminchars", "streammaxchars", "streamchunkchars", "streamfirstflushchars",
+        "streamdeltaflushchars", "sendretryattempts",
+    }:
+        return 1
+    if leaf in {
+        "temperature", "botpyhttptimeoutsec", "sendretrydelaysec", "streamintervalsec",
+        "streamdeltaflushintervalsec",
+    }:
+        return 0.1
+    if leaf in {"allowfrom", "disabledskills", "ssrfwhitelist", "enabledtools"}:
+        return ["synthetic"]
+    if leaf == "auth":
+        return "oauth"
+    if leaf == "msgformat":
+        return "plain"
+    if leaf == "type":
+        return "streamableHttp"
+    if leaf == "timezone":
+        return "UTC"
+    return "synthetic"
+
+
+def _put_path(doc: dict[str, object], path: str, value: object) -> None:
+    node = doc
+    parts = path.split(".")
+    for part in parts[:-1]:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            node[part] = child
+        node = child
+    node[parts[-1]] = value
+
+
+def _leaves(value: object, path: str = "") -> set[str]:
+    if isinstance(value, dict) and value:
+        found: set[str] = set()
+        for key, item in value.items():
+            child = f"{path}.{key}" if path else key
+            found.update(_leaves(item, child))
+        return found
+    return {path} if path else set()
+
+
+def test_production_field_inventory_survives_load_and_save(tmp_path: Path) -> None:
+    raw: dict[str, object] = {}
+    for path in _PRODUCTION_FIELD_PATHS:
+        _put_path(raw, path, _synthetic_leaf(path))
+    _put_path(raw, "gateway.heartbeat.futureKnob", "keep-me")
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    loaded = load_config(path)
+    assert loaded.gateway.heartbeat.delivery_channel == "synthetic"
+    assert loaded.gateway.heartbeat.delivery_chat_id == "synthetic"
+    saved_view = dump_config(loaded)
+    assert saved_view["gateway"]["heartbeat"]["deliveryChannel"] == "synthetic"
+    assert saved_view["gateway"]["heartbeat"]["futureKnob"] == "keep-me"
+    assert "futureKnob" not in loaded.model_dump(mode="json", by_alias=True)["gateway"]["heartbeat"]
+    save_config(loaded, path)
+    again = json.loads(path.read_text(encoding="utf-8"))
+    before = {_canon_path(item) for item in _leaves(raw)}
+    after = {_canon_path(item) for item in _leaves(again)}
+    assert before - after == set()
+
+
+def test_alias_collision_is_rejected_and_equal_spellings_round_trip(tmp_path: Path) -> None:
+    conflicted = tmp_path / "conflict.json"
+    conflicted.write_text(json.dumps({
+        "gateway": {"heartbeat": {"deliveryChannel": "qq", "delivery_channel": "weixin"}},
+    }), encoding="utf-8")
+    before = conflicted.read_bytes()
+    with pytest.raises(ConfigLoadError, match="Conflicting aliases"):
+        load_config(conflicted)
+    assert conflicted.read_bytes() == before
+
+    agreed = tmp_path / "agreed.json"
+    agreed.write_text(json.dumps({
+        "agents": {"defaults": {"timezone": "UTC"}},
+        "gateway": {"heartbeat": {"delivery_channel": "qq", "deliveryChannel": "qq", "deliveryChatId": "chat"}},
+    }), encoding="utf-8")
+    loaded = load_config(agreed)
+    assert loaded.gateway.heartbeat.delivery_channel == "qq"
+    save_config(loaded, agreed)
+    saved = json.loads(agreed.read_text(encoding="utf-8"))
+    heartbeat = saved["gateway"]["heartbeat"]
+    assert heartbeat["deliveryChannel"] == "qq"
+    assert heartbeat["deliveryChatId"] == "chat"
+    assert "delivery_channel" not in heartbeat
+
+
+def test_save_rejects_unknown_nested_loss_before_writing(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    original = {"gateway": {"heartbeat": {"futureKnob": "keep-me", "enabled": False}}}
+    path.write_text(json.dumps(original), encoding="utf-8")
+    before = path.read_bytes()
+    with pytest.raises(ConfigWriteError, match="futureKnob"):
+        save_config(Config.model_validate({"gateway": {"heartbeat": {"enabled": False}}}), path)
+    assert path.read_bytes() == before

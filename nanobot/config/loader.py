@@ -67,25 +67,160 @@ def _warn_retained_legacy(retained: dict[str, Any]) -> None:
     )
 
 
-def _reject_unretained_legacy(path: Path, disk: dict[str, Any], retained: dict[str, Any]) -> None:
-    missing: list[str] = []
-    if "api" in disk and "api" not in retained:
-        missing.append("api")
-    disk_defaults = disk.get("agents.defaults")
-    retained_defaults = retained.get("agents.defaults")
-    if isinstance(disk_defaults, dict):
-        kept = retained_defaults if isinstance(retained_defaults, dict) else {}
-        missing.extend(
-            f"agents.defaults.{key}" for key in disk_defaults if key not in kept
-        )
+_CREDENTIAL_PROVIDER_CANONS = {("providers", "openaicodex"), ("providers", "xaigrok")}
+
+
+def _canon_key(key: str) -> str:
+    return key.replace("_", "").lower()
+
+
+def _canon_path(path: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(_canon_key(part) for part in path)
+
+
+def _is_legacy_canon(canon: tuple[str, ...]) -> bool:
+    """Paths owned by the explicit api / unifiedSession retention."""
+    if not canon:
+        return False
+    if canon[0] == "api":
+        return True
+    return len(canon) >= 3 and canon[:3] == ("agents", "defaults", "unifiedsession")
+
+
+def _iter_leaves(value: object, path: tuple[str, ...] = ()) -> Any:
+    if isinstance(value, dict) and any(isinstance(key, str) for key in value):
+        for key, item in value.items():
+            if isinstance(key, str):
+                yield from _iter_leaves(item, path + (key,))
+        return
+    yield path, value
+
+
+def _json_token(value: object) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _collapse_equal_aliases(value: object, location: str, path: Path) -> object:
+    """Reject different values that share a snake/camel spelling.
+
+    Equal values keep the first spelling so validation sees one field.
+    The original document is still what retention compares.
+    """
+    if isinstance(value, list):
+        return [
+            _collapse_equal_aliases(item, f"{location}[{index}]", path)
+            for index, item in enumerate(value)
+        ]
+    if not isinstance(value, dict):
+        return value
+    grouped: dict[str, list[tuple[str, object]]] = {}
+    for key, item in value.items():
+        if isinstance(key, str):
+            grouped.setdefault(_canon_key(key), []).append((key, item))
+    for canon, items in grouped.items():
+        if len(items) < 2:
+            continue
+        # Both legacy spellings are retained even when their values differ.
+        # They are not one applied setting.
+        if location == "agents.defaults" and canon == "unifiedsession":
+            continue
+        tokens = {_json_token(item) for _, item in items}
+        if len(tokens) > 1:
+            shown = ", ".join(
+                f"{location}.{key}" if location else key for key, _ in items
+            )
+            raise ConfigLoadError(
+                path,
+                kind="invalid_schema",
+                summary=(
+                    f"Conflicting aliases have different values: {shown}. "
+                    "Keep one spelling, or make the values identical, before loading."
+                ),
+            )
+    collapsed: dict[str, object] = {}
+    seen: set[str] = set()
+    for key, item in value.items():
+        if not isinstance(key, str):
+            collapsed[str(key)] = item
+            continue
+        canon = _canon_key(key)
+        keep_both = location == "agents.defaults" and canon == "unifiedsession"
+        if canon in seen and not keep_both:
+            continue
+        seen.add(canon)
+        child = f"{location}.{key}" if location else key
+        collapsed[key] = _collapse_equal_aliases(item, child, path)
+    return collapsed
+
+
+def _unknown_entries(raw: object, dumped: object) -> list[dict[str, Any]]:
+    present = {_canon_path(path) for path, _value in _iter_leaves(dumped)}
+    retained: list[dict[str, Any]] = []
+    for path, value in _iter_leaves(raw):
+        canon = _canon_path(path)
+        if not path or canon in present or _is_legacy_canon(canon):
+            continue
+        retained.append({"path": list(path), "value": copy.deepcopy(value)})
+    return retained
+
+
+def _merge_unknowns(data: dict[str, Any], entries: list[dict[str, Any]]) -> None:
+    present = {_canon_path(path) for path, _value in _iter_leaves(data)}
+    for entry in entries:
+        raw_path = entry.get("path")
+        if not isinstance(raw_path, list) or not all(isinstance(part, str) for part in raw_path):
+            continue
+        path = tuple(raw_path)
+        if not path or _canon_path(path) in present:
+            continue
+        node: dict[str, Any] = data
+        for key in path[:-1]:
+            child = node.get(key)
+            if not isinstance(child, dict):
+                child = {}
+                node[key] = child
+            node = child
+        node[path[-1]] = copy.deepcopy(entry.get("value"))
+        present.add(_canon_path(path))
+
+
+def dump_config(config: Config) -> dict[str, Any]:
+    """JSON document written by save_config, including retained values.
+
+    ``Config.model_dump()`` still omits ``api``, ``unifiedSession``, and
+    unknown nested keys. This function is the lossless save view.
+    """
+    data = config.model_dump(mode="json", by_alias=True)
+    if not isinstance(data, dict):
+        return {}
+    retained = config._retained_legacy if isinstance(config._retained_legacy, dict) else {}
+    _merge_retained_legacy(data, retained)
+    unknowns = config._retained_unknowns if isinstance(config._retained_unknowns, list) else []
+    _merge_unknowns(data, unknowns)
+    return data
+
+
+def _reject_lossy_write(path: Path, existing: dict[str, Any], written: dict[str, Any]) -> None:
+    written_canons = {_canon_path(item_path) for item_path, _value in _iter_leaves(written)}
+    missing = []
+    for item_path, _value in _iter_leaves(existing):
+        canon = _canon_path(item_path)
+        if not item_path or canon in written_canons:
+            continue
+        # OAuth providers already persist only non-credential request settings.
+        if len(canon) >= 2 and canon[:2] in _CREDENTIAL_PROVIDER_CANONS:
+            continue
+        missing.append(".".join(item_path))
     if not missing:
         return
-    listed = ", ".join(missing)
+    preview = ", ".join(missing[:12])
+    if len(missing) > 12:
+        preview = f"{preview}, ..."
     raise ConfigWriteError(
-        f"Refusing to write {path} because it would drop legacy keys that were not "
-        f"loaded: {listed}. Load that file with load_config before saving, or remove "
-        "those keys in an explicit edit. They are not applied: nanobot serve has been "
-        "removed, and unifiedSession does not select a shared session."
+        f"Refusing to write {path} because it would drop {preview}. "
+        "Load that file with load_config before saving. "
+        "api and unifiedSession are kept but not applied: nanobot serve is removed "
+        "and unifiedSession does not select a shared session."
     )
 
 
@@ -201,7 +336,8 @@ def load_config(config_path: Path | None = None) -> Config:
     retained = legacy_config_keys(raw)
     # The root model rejects unknown keys. Drop only the retained `api` copy
     # from the validated document; save_config writes that copy back.
-    migrated = _migrate_config(dict(raw))
+    collapsed = _collapse_equal_aliases(dict(raw), "", path)
+    migrated = _migrate_config(collapsed if isinstance(collapsed, dict) else dict(raw))
     if isinstance(migrated, dict) and "api" in migrated:
         migrated = {key: value for key, value in migrated.items() if key != "api"}
     data = migrated
@@ -217,6 +353,7 @@ def load_config(config_path: Path | None = None) -> Config:
         ) from exc
 
     config._retained_legacy = retained
+    config._retained_unknowns = _unknown_entries(raw, config.model_dump(mode="json", by_alias=True))
     _warn_retained_legacy(retained)
     config.bind_source_path(path)
     _apply_ssrf_whitelist(config)
@@ -239,22 +376,18 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     """
     path = config_path or get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    retained = config._retained_legacy if isinstance(config._retained_legacy, dict) else {}
+    data = dump_config(config)
     if path.is_file():
         try:
-            existing_text = path.read_text(encoding="utf-8")
-            existing = json.loads(existing_text)
+            existing = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ConfigWriteError(
                 f"Refusing to write {path} because the existing file could not be parsed. "
-                "A save would risk dropping legacy api or unifiedSession keys."
+                "A save would risk dropping configuration values."
             ) from exc
         if isinstance(existing, dict):
-            _reject_unretained_legacy(path, legacy_config_keys(existing), retained)
+            _reject_lossy_write(path, existing, data)
 
-    data = config.model_dump(mode="json", by_alias=True)
-    if isinstance(data, dict):
-        _merge_retained_legacy(data, retained)
     # OAuth credentials live in dedicated token stores. Persist only the
     # non-credential request settings consumed by these provider backends.
     for alias, provider in (

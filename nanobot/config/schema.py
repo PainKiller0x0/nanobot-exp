@@ -430,6 +430,16 @@ class HeartbeatConfig(Base):
 
     enabled: bool = True
     interval_s: int = 30 * 60
+    # When both are set, heartbeat reports go to this chat instead of the
+    # most recently active channel. Empty means the session picker still runs.
+    delivery_channel: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    delivery_chat_id: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class GatewayConfig(Base):
@@ -533,6 +543,7 @@ class Config(BaseSettings):
 
     _source_path: Path | None = PrivateAttr(default=None)
     _retained_legacy: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _retained_unknowns: list[dict[str, Any]] = PrivateAttr(default_factory=list)
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
