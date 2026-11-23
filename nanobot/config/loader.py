@@ -5,7 +5,8 @@ import re
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, TypeVar, cast, overload
+from types import UnionType
+from typing import Annotated, Any, TypeVar, Union, cast, get_args, get_origin, overload
 
 from pydantic import BaseModel, ValidationError
 from pydantic_settings import SettingsError
@@ -109,35 +110,99 @@ def _json_token(value: object) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
 
 
-def _collapse_equal_aliases(value: object, location: str, path: Path) -> object:
-    """Reject different values that share a snake/camel spelling.
+def _unwrap_annotation(annotation: object) -> object:
+    if get_origin(annotation) is Annotated:
+        args = get_args(annotation)
+        if args:
+            return _unwrap_annotation(args[0])
+    return annotation
 
-    Equal values keep the first spelling so validation sees one field.
+
+def _annotation_model(annotation: object) -> type[BaseModel] | None:
+    annotation = _unwrap_annotation(annotation)
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        for arg in get_args(annotation):
+            found = _annotation_model(arg)
+            if found is not None:
+                return found
+    return None
+
+
+def _field_shape(annotation: object) -> tuple[str, type[BaseModel]] | None:
+    """Return how a modeled field nests further models.
+
+    Plain dicts and ``extra="allow"`` values are not models. Their keys stay
+    independent even when one spelling is snake_case and another is camelCase.
+    """
+    annotation = _unwrap_annotation(annotation)
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        for arg in get_args(annotation):
+            found = _field_shape(arg)
+            if found is not None:
+                return found
+        return None
+    model = _annotation_model(annotation)
+    if model is not None and origin is None:
+        return ("model", model)
+    args = get_args(annotation)
+    if origin is list and args:
+        inner = _annotation_model(args[0])
+        if inner is not None:
+            return ("list", inner)
+    if origin is dict and len(args) >= 2:
+        inner = _annotation_model(args[1])
+        if inner is not None:
+            return ("dict", inner)
+    return None
+
+
+def _preferred_alias(field_name: str, field: Any, present: list[str]) -> str:
+    preferred: list[str] = []
+    for attr in ("serialization_alias", "alias"):
+        alias = getattr(field, attr, None)
+        if isinstance(alias, str):
+            preferred.append(alias)
+    preferred.append(field_name)
+    for key in preferred:
+        if key in present:
+            return key
+    return present[0]
+
+
+def _collapse_equal_aliases(
+    value: object, model: type[BaseModel], location: str, path: Path,
+) -> object:
+    """Reject different values for one schema field's spellings.
+
+    Equal spellings keep the schema alias so validation sees one field.
+    Keys that are not aliases of that model, including channel extras such as
+    Feishu ``allowFrom`` and ``allow_from``, stay as separate stored values.
     The original document is still what retention compares.
     """
-    if isinstance(value, list):
-        items = cast(list[object], value)
-        return [
-            _collapse_equal_aliases(item, f"{location}[{index}]", path)
-            for index, item in enumerate(items)
-        ]
     mapping = _dict(value)
     if mapping is None:
         return value
-    grouped: dict[str, list[tuple[str, object]]] = {}
-    for key, item in mapping.items():
-        grouped.setdefault(_canon_key(key), []).append((key, item))
-    for canon, items in grouped.items():
-        if len(items) < 2:
+    fields = model.model_fields
+    canon_field: dict[str, str] = {}
+    for name, field in fields.items():
+        for canon in _alias_canons(name, field):
+            canon_field.setdefault(canon, name)
+    grouped: dict[str, list[str]] = {}
+    for key in mapping:
+        grouped.setdefault(_canon_key(key), []).append(key)
+    drop: set[str] = set()
+    for canon, keys in grouped.items():
+        field_name = canon_field.get(canon)
+        if field_name is None or len(keys) < 2:
             continue
-        # Both legacy spellings are retained even when their values differ.
-        # They are not one applied setting.
-        if location == "agents.defaults" and canon == "unifiedsession":
-            continue
-        tokens = {_json_token(item) for _, item in items}
+        tokens = {_json_token(mapping[key]) for key in keys}
         if len(tokens) > 1:
             shown = ", ".join(
-                f"{location}.{key}" if location else key for key, _ in items
+                f"{location}.{key}" if location else key for key in keys
             )
             raise ConfigLoadError(
                 path,
@@ -147,16 +212,61 @@ def _collapse_equal_aliases(value: object, location: str, path: Path) -> object:
                     "Keep one spelling, or make the values identical, before loading."
                 ),
             )
+        keep = _preferred_alias(field_name, fields[field_name], keys)
+        drop.update(key for key in keys if key != keep)
     collapsed: dict[str, object] = {}
-    seen: set[str] = set()
     for key, item in mapping.items():
-        canon = _canon_key(key)
-        keep_both = location == "agents.defaults" and canon == "unifiedsession"
-        if canon in seen and not keep_both:
+        if key in drop:
             continue
-        seen.add(canon)
+        field_name = canon_field.get(_canon_key(key))
+        if field_name is None:
+            collapsed[key] = item
+            continue
+        shape = _field_shape(fields[field_name].annotation)
         child = f"{location}.{key}" if location else key
-        collapsed[key] = _collapse_equal_aliases(item, child, path)
+        if shape is None:
+            collapsed[key] = item
+            continue
+        kind, child_model = shape
+        if kind == "list":
+            collapsed[key] = _collapse_model_list(item, child_model, child, path)
+        elif kind == "dict":
+            collapsed[key] = _collapse_model_dict(item, child_model, child, path)
+        else:
+            collapsed[key] = _collapse_equal_aliases(item, child_model, child, path)
+    return collapsed
+
+
+def _collapse_model_list(
+    value: object, model: type[BaseModel], location: str, path: Path,
+) -> object:
+    if not isinstance(value, list):
+        return value
+    items = cast(list[object], value)
+    collapsed: list[object] = []
+    for index, item in enumerate(items):
+        if _dict(item) is None:
+            collapsed.append(item)
+            continue
+        collapsed.append(
+            _collapse_equal_aliases(item, model, f"{location}[{index}]", path)
+        )
+    return collapsed
+
+
+def _collapse_model_dict(
+    value: object, model: type[BaseModel], location: str, path: Path,
+) -> object:
+    mapping = _dict(value)
+    if mapping is None:
+        return value
+    collapsed: dict[str, object] = {}
+    for key, item in mapping.items():
+        child = f"{location}.{key}" if location else key
+        if _dict(item) is None:
+            collapsed[key] = item
+            continue
+        collapsed[key] = _collapse_equal_aliases(item, model, child, path)
     return collapsed
 
 
@@ -277,7 +387,7 @@ def _unmodeled_leaf_canons(existing: dict[str, Any], path: Path) -> set[tuple[st
     are protected.
     """
     try:
-        collapsed = _dict(_collapse_equal_aliases(dict(existing), "", path)) or dict(existing)
+        collapsed = _dict(_collapse_equal_aliases(dict(existing), Config, "", path)) or dict(existing)
         migrated = _dict(_migrate_config(collapsed)) or collapsed
     except ConfigLoadError as exc:
         raise ConfigWriteError(str(exc)) from exc
@@ -443,7 +553,7 @@ def load_config(config_path: Path | None = None) -> Config:
     retained = legacy_config_keys(raw)
     # The root model rejects unknown keys. Drop only the retained `api` copy
     # from the validated document; save_config writes that copy back.
-    collapsed = _dict(_collapse_equal_aliases(dict(raw), "", path)) or dict(raw)
+    collapsed = _dict(_collapse_equal_aliases(dict(raw), Config, "", path)) or dict(raw)
     migrated = _dict(_migrate_config(collapsed)) or collapsed
     if "api" in migrated:
         migrated = {key: value for key, value in migrated.items() if key != "api"}
