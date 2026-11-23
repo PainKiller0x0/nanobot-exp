@@ -363,6 +363,22 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _http_response(port: int, request: bytes) -> str:
+    with socket.create_connection(("127.0.0.1", port), timeout=2) as sock:
+        sock.sendall(request)
+        chunks: list[bytes] = []
+        sock.settimeout(2)
+        while True:
+            try:
+                piece = sock.recv(4096)
+            except TimeoutError:
+                break
+            if not piece:
+                break
+            chunks.append(piece)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX SIGTERM smoke; Windows CI does not report /health in time")
 def test_gateway_smoke_starts_and_stops_with_channels_disabled(tmp_path: Path) -> None:
     home = tmp_path / "home"
@@ -443,6 +459,11 @@ def test_gateway_smoke_starts_and_stops_with_channels_disabled(tmp_path: Path) -
             except OSError:
                 time.sleep(0.1)
         assert "\"ready\": true" in health or '"ready": true' in health, health
+        # This port is the health listener. It has no UI mount; GET / is 404
+        # even when nanobot/web/dist is packaged. The HTML index is served by
+        # the local websocket channel on channels.websocket.port.
+        root = _http_response(port, b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        assert root.startswith("HTTP/1.0 404"), root
         proc.send_signal(signal.SIGTERM)
         try:
             output = proc.communicate(timeout=20)[0]
@@ -457,6 +478,124 @@ def test_gateway_smoke_starts_and_stops_with_channels_disabled(tmp_path: Path) -
     assert proc.returncode == 0, output[-2000:]
     assert "Heartbeat: disabled" in output
     assert "Dream: disabled" in output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX SIGTERM smoke; Windows CI does not report /health in time")
+def test_local_websocket_serves_ui_index_off_the_health_port(tmp_path: Path) -> None:
+    """HTML is served by the loopback websocket channel, not gateway /health.
+
+    ``webui_static_dist=True`` only mounts ``nanobot/web/dist`` on that channel.
+    ``webui_bundle_mode='skip'`` skips a frontend rebuild and does not publish
+    a route. QQ, Weixin, dream, heartbeat, and MCP stay disabled.
+    """
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    dist = tmp_path / "dist"
+    home.mkdir()
+    workspace.mkdir()
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><title>offline-ui</title>", encoding="utf-8")
+    health_port = _free_port()
+    ui_port = _free_port()
+    config_path = home / "config.json"
+    config_path.write_text(json.dumps({
+        "agents": {"defaults": {
+            "workspace": str(workspace),
+            "model": "synthetic-model",
+            "provider": "custom",
+            "timezone": "UTC",
+            "dream": {"enabled": False},
+        }},
+        "providers": {"custom": {
+            "apiKey": "synthetic-not-a-secret",
+            "apiBase": "https://invalid.invalid/v1",
+        }},
+        "channels": {
+            "qq": {"enabled": False, "app_id": "synthetic-app", "secret": "synthetic-not-a-secret"},
+            "weixin": {"enabled": False, "state_dir": str(tmp_path / "weixin")},
+            "websocket": {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": ui_port,
+                "allowFrom": ["synthetic-client"],
+                "token": "synthetic-not-a-secret",
+            },
+        },
+        "gateway": {"host": "127.0.0.1", "port": health_port, "heartbeat": {"enabled": False}},
+        "tools": {"mcpServers": {}},
+    }), encoding="utf-8")
+    env = {
+        "HOME": str(home),
+        "PATH": os.environ.get("PATH", ""),
+        "NANOBOT_CONFIG": str(config_path),
+        "NANOBOT_UI_DIST": str(dist),
+        "NANOBOT_CHANNEL_ALLOWLIST": "websocket",
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if os.environ.get("PYTHONPATH"):
+        env["PYTHONPATH"] = os.environ["PYTHONPATH"]
+    script = (
+        "import os; from pathlib import Path;"
+        "from nanobot.channels import manager as channel_manager;"
+        "from nanobot.cli.gateway_runtime import _run_gateway;"
+        "from nanobot.config.loader import load_config, set_config_path;"
+        "channel_manager._default_webui_dist = lambda: Path(os.environ['NANOBOT_UI_DIST']);"
+        "path = Path(os.environ['NANOBOT_CONFIG']); set_config_path(path);"
+        "config = load_config(path);"
+        "_run_gateway(config, port=config.gateway.port, webui_static_dist=True, "
+        "webui_bundle_mode='skip')"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    deadline = time.monotonic() + 40
+    health = ""
+    page = ""
+    try:
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                health = _http_response(
+                    health_port,
+                    b"GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n",
+                )
+                if "process" not in health:
+                    time.sleep(0.1)
+                    continue
+                page = _http_response(
+                    ui_port,
+                    b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+                )
+                if "offline-ui" in page:
+                    break
+            except OSError:
+                time.sleep(0.1)
+        assert "\"ready\": true" in health or '"ready": true' in health, health
+        health_root = _http_response(health_port, b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        assert health_root.startswith("HTTP/1.0 404"), health_root
+        assert page.startswith("HTTP/1.0 200") or page.startswith("HTTP/1.1 200"), page
+        assert "offline-ui" in page
+        proc.send_signal(signal.SIGTERM)
+        try:
+            output = proc.communicate(timeout=20)[0]
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            output = proc.communicate(timeout=5)[0]
+            raise AssertionError(output[-2000:])
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=5)
+    assert proc.returncode == 0, output[-2000:]
+    assert "Channels enabled: websocket" in output
+    assert "Heartbeat: disabled" in output
 
 
 _PRODUCTION_FIELD_PATHS = (
