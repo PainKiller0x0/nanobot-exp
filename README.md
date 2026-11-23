@@ -1,6 +1,6 @@
 # Nanobot Exp
 
-这是 [HKUDS/nanobot](https://github.com/HKUDS/nanobot) 的生产维护 fork，当前基线为上游 **v0.3.5**。
+这是 [HKUDS/nanobot](https://github.com/HKUDS/nanobot) 的生产维护 fork，当前基线为上游 **v0.4.2**。
 
 本仓库服务于 PainKiller0x0 的 Nanobot 部署，重点是：
 
@@ -62,7 +62,7 @@ NANOBOT_CHANNEL_ALLOWLIST=qq,weixin
 
 详细设计见：
 
-- [架构说明](docs/ARCHITECTURE.md)
+- [架构说明](docs/exp-architecture.md)
 - [扩展胶水层](docs/EXTENSIONS_GLUE.md)
 - [运行时补丁脚本](docs/RUNTIME_PATCH_SCRIPTS.md)
 - [memory-rs](docs/memory-rs.md)

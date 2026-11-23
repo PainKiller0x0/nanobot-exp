@@ -1294,7 +1294,6 @@ class QQChannel(BaseChannel):
                 file_type=file_type,
                 file_data=file_data_b64,
                 file_name=filename,
-                srv_send_msg=False,
             )
             if not media_obj:
                 logger.error("QQ media upload failed: empty response")
@@ -1395,7 +1394,7 @@ class QQChannel(BaseChannel):
             media_obj = await self._post_base64file(
                 chat_id=chat_id, is_group=is_group,
                 file_type=4, file_data=audio_b64,
-                file_name=f"voice_{idx}.mp3", srv_send_msg=False,
+                file_name=f"voice_{idx}.mp3",
             )
             seq = self._msg_seq + idx
             if is_group:
@@ -1473,7 +1472,6 @@ class QQChannel(BaseChannel):
         file_type: int,
         file_data: str,
         file_name: str | None = None,
-        srv_send_msg: bool = False,
     ) -> dict[str, Any]:
         if not self._client:
             raise RuntimeError("QQ client not initialized")
@@ -1489,7 +1487,7 @@ class QQChannel(BaseChannel):
             id_key: chat_id,
             "file_type": file_type,
             "file_data": file_data,
-            "srv_send_msg": srv_send_msg,
+            "srv_send_msg": False,
         }
         if file_type != QQ_FILE_TYPE_IMAGE and file_name:
             payload["file_name"] = file_name

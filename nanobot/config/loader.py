@@ -1,8 +1,12 @@
+import copy
 import json
 import os
 import re
+import warnings
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, cast, overload
+from types import UnionType
+from typing import Annotated, Any, TypeVar, Union, cast, get_args, get_origin, overload
 
 from pydantic import BaseModel, ValidationError
 from pydantic_settings import SettingsError
@@ -14,6 +18,443 @@ from nanobot.config.schema import Config
 from nanobot.utils.file_io import write_text_atomic
 
 _current_config_path: Path | None = None
+_LEGACY_DEFAULT_KEYS = ("unifiedSession", "unified_session")
+
+
+class ConfigWriteError(RuntimeError):
+    """Raised when saving would drop retained legacy configuration."""
+
+
+def legacy_config_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """Copy legacy values that this release does not apply.
+
+    ``api`` is the removed ``nanobot serve`` block. ``unifiedSession`` and
+    ``unified_session`` are the removed shared-session switch. The copies are
+    stored and written back unchanged. They do not start a server or merge sessions.
+    """
+    retained: dict[str, Any] = {}
+    if "api" in data:
+        retained["api"] = copy.deepcopy(data["api"])
+    agents = _dict(data.get("agents"))
+    if agents is not None:
+        defaults = _dict(agents.get("defaults"))
+        if defaults is not None:
+            kept = {
+                key: copy.deepcopy(defaults[key])
+                for key in _LEGACY_DEFAULT_KEYS
+                if key in defaults
+            }
+            if kept:
+                retained["agents.defaults"] = kept
+    return retained
+
+
+def _warn_retained_legacy(retained: dict[str, Any]) -> None:
+    if not retained:
+        return
+    names: list[str] = []
+    if "api" in retained:
+        names.append("api")
+    defaults = _dict(retained.get("agents.defaults"))
+    if defaults is not None:
+        names.extend(f"agents.defaults.{key}" for key in defaults)
+    warnings.warn(
+        "Retained legacy configuration "
+        + ", ".join(names)
+        + ". These values are written back unchanged and are not applied: "
+        + "nanobot serve has been removed, and unifiedSession does not select a "
+        + "shared session. Delete the keys in the file only when you intend to drop them.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+_CREDENTIAL_PROVIDER_CANONS = {("providers", "openaicodex"), ("providers", "xaigrok")}
+
+
+def _dict(value: object) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return cast(dict[str, Any], value)
+    return None
+
+
+def _canon_key(key: str) -> str:
+    return key.replace("_", "").lower()
+
+
+def _canon_path(path: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(_canon_key(part) for part in path)
+
+
+def _is_legacy_canon(canon: tuple[str, ...]) -> bool:
+    """Paths owned by the explicit api / unifiedSession retention."""
+    if not canon:
+        return False
+    if canon[0] == "api":
+        return True
+    return len(canon) >= 3 and canon[:3] == ("agents", "defaults", "unifiedsession")
+
+
+def _iter_leaves(
+    value: object, path: tuple[str, ...] = (),
+) -> Iterator[tuple[tuple[str, ...], object]]:
+    mapping = _dict(value)
+    if mapping:
+        for key, item in mapping.items():
+            yield from _iter_leaves(item, path + (key,))
+        return
+    yield path, value
+
+
+def _json_token(value: object) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _unwrap_annotation(annotation: object) -> object:
+    if get_origin(annotation) is Annotated:
+        args = get_args(annotation)
+        if args:
+            return _unwrap_annotation(args[0])
+    return annotation
+
+
+def _annotation_model(annotation: object) -> type[BaseModel] | None:
+    annotation = _unwrap_annotation(annotation)
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        for arg in get_args(annotation):
+            found = _annotation_model(arg)
+            if found is not None:
+                return found
+    return None
+
+
+def _field_shape(annotation: object) -> tuple[str, type[BaseModel]] | None:
+    """Return how a modeled field nests further models.
+
+    Plain dicts and ``extra="allow"`` values are not models. Their keys stay
+    independent even when one spelling is snake_case and another is camelCase.
+    """
+    annotation = _unwrap_annotation(annotation)
+    origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:
+        for arg in get_args(annotation):
+            found = _field_shape(arg)
+            if found is not None:
+                return found
+        return None
+    model = _annotation_model(annotation)
+    if model is not None and origin is None:
+        return ("model", model)
+    args = get_args(annotation)
+    if origin is list and args:
+        inner = _annotation_model(args[0])
+        if inner is not None:
+            return ("list", inner)
+    if origin is dict and len(args) >= 2:
+        inner = _annotation_model(args[1])
+        if inner is not None:
+            return ("dict", inner)
+    return None
+
+
+def _preferred_alias(field_name: str, field: Any, present: list[str]) -> str:
+    preferred: list[str] = []
+    for attr in ("serialization_alias", "alias"):
+        alias = getattr(field, attr, None)
+        if isinstance(alias, str):
+            preferred.append(alias)
+    preferred.append(field_name)
+    for key in preferred:
+        if key in present:
+            return key
+    return present[0]
+
+
+def _collapse_equal_aliases(
+    value: object, model: type[BaseModel], location: str, path: Path,
+) -> object:
+    """Reject different values for one schema field's spellings.
+
+    Equal spellings keep the schema alias so validation sees one field.
+    Keys that are not aliases of that model, including channel extras such as
+    Feishu ``allowFrom`` and ``allow_from``, stay as separate stored values.
+    The original document is still what retention compares.
+    """
+    mapping = _dict(value)
+    if mapping is None:
+        return value
+    fields = model.model_fields
+    canon_field: dict[str, str] = {}
+    for name, field in fields.items():
+        for canon in _alias_canons(name, field):
+            canon_field.setdefault(canon, name)
+    grouped: dict[str, list[str]] = {}
+    for key in mapping:
+        grouped.setdefault(_canon_key(key), []).append(key)
+    drop: set[str] = set()
+    for canon, keys in grouped.items():
+        field_name = canon_field.get(canon)
+        if field_name is None or len(keys) < 2:
+            continue
+        tokens = {_json_token(mapping[key]) for key in keys}
+        if len(tokens) > 1:
+            shown = ", ".join(
+                f"{location}.{key}" if location else key for key in keys
+            )
+            raise ConfigLoadError(
+                path,
+                kind="invalid_schema",
+                summary=(
+                    f"Conflicting aliases have different values: {shown}. "
+                    "Keep one spelling, or make the values identical, before loading."
+                ),
+            )
+        keep = _preferred_alias(field_name, fields[field_name], keys)
+        drop.update(key for key in keys if key != keep)
+    collapsed: dict[str, object] = {}
+    for key, item in mapping.items():
+        if key in drop:
+            continue
+        field_name = canon_field.get(_canon_key(key))
+        if field_name is None:
+            collapsed[key] = item
+            continue
+        shape = _field_shape(fields[field_name].annotation)
+        child = f"{location}.{key}" if location else key
+        if shape is None:
+            collapsed[key] = item
+            continue
+        kind, child_model = shape
+        if kind == "list":
+            collapsed[key] = _collapse_model_list(item, child_model, child, path)
+        elif kind == "dict":
+            collapsed[key] = _collapse_model_dict(item, child_model, child, path)
+        else:
+            collapsed[key] = _collapse_equal_aliases(item, child_model, child, path)
+    return collapsed
+
+
+def _collapse_model_list(
+    value: object, model: type[BaseModel], location: str, path: Path,
+) -> object:
+    if not isinstance(value, list):
+        return value
+    items = cast(list[object], value)
+    collapsed: list[object] = []
+    for index, item in enumerate(items):
+        if _dict(item) is None:
+            collapsed.append(item)
+            continue
+        collapsed.append(
+            _collapse_equal_aliases(item, model, f"{location}[{index}]", path)
+        )
+    return collapsed
+
+
+def _collapse_model_dict(
+    value: object, model: type[BaseModel], location: str, path: Path,
+) -> object:
+    mapping = _dict(value)
+    if mapping is None:
+        return value
+    collapsed: dict[str, object] = {}
+    for key, item in mapping.items():
+        child = f"{location}.{key}" if location else key
+        if _dict(item) is None:
+            collapsed[key] = item
+            continue
+        collapsed[key] = _collapse_equal_aliases(item, model, child, path)
+    return collapsed
+
+
+def _alias_canons(field_name: str, field: Any) -> set[str]:
+    canons = {_canon_key(field_name)}
+    for attr in ("alias", "serialization_alias"):
+        value = getattr(field, attr, None)
+        if isinstance(value, str):
+            canons.add(_canon_key(value))
+    validation = getattr(field, "validation_alias", None)
+    if isinstance(validation, str):
+        canons.add(_canon_key(validation))
+    for choice in getattr(validation, "choices", ()) or ():
+        if isinstance(choice, str):
+            canons.add(_canon_key(choice))
+    return canons
+
+
+def _unknown_entries(
+    data: object,
+    model: Any,
+    removed_canons: set[tuple[str, ...]],
+    prefix: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Keep values a model would ignore, not aliases or migrated keys.
+
+    Dict fields such as model presets and MCP servers own their keys, so
+    removing one is an edit. ``extra="allow"`` values already survive in the
+    model dump and are not copied again.
+    """
+    mapping = _dict(data)
+    if mapping is None or not isinstance(model, BaseModel):
+        return []
+    by_canon: dict[str, str] = {}
+    for name, field in type(model).model_fields.items():
+        for canon in _alias_canons(name, field):
+            by_canon.setdefault(canon, name)
+    dumped = _dict(model.model_dump(mode="json", by_alias=True)) or {}
+    dumped_canons = {_canon_key(key) for key in dumped}
+    found: list[dict[str, Any]] = []
+    for key, value in mapping.items():
+        path = prefix + (key,)
+        canon = _canon_key(key)
+        canon_path = _canon_path(path)
+        if canon_path in removed_canons or _is_legacy_canon(canon_path):
+            continue
+        if canon in by_canon:
+            child = getattr(model, by_canon[canon], None)
+            value_map = _dict(value)
+            child_map = _dict(child)
+            if isinstance(child, BaseModel) and value_map is not None:
+                found.extend(_unknown_entries(value_map, child, removed_canons, path))
+            elif child_map is not None and value_map is not None:
+                for item_key, item_value in value_map.items():
+                    item_map = _dict(item_value)
+                    item = child_map.get(item_key)
+                    if item_map is not None and isinstance(item, BaseModel):
+                        found.extend(_unknown_entries(
+                            item_map, item, removed_canons, path + (item_key,),
+                        ))
+            continue
+        if canon in dumped_canons:
+            continue
+        for leaf_path, leaf_value in _iter_leaves(value, path):
+            leaf_canon = _canon_path(leaf_path)
+            if leaf_canon in removed_canons or _is_legacy_canon(leaf_canon):
+                continue
+            found.append({"path": list(leaf_path), "value": copy.deepcopy(leaf_value)})
+    return found
+
+
+def _merge_unknowns(data: dict[str, Any], entries: list[dict[str, Any]]) -> None:
+    present = {_canon_path(path) for path, _value in _iter_leaves(data)}
+    for entry in entries:
+        raw_path = entry.get("path")
+        parts: list[str] = []
+        if isinstance(raw_path, list):
+            for part in cast(list[object], raw_path):
+                if not isinstance(part, str):
+                    parts = []
+                    break
+                parts.append(part)
+        if not parts:
+            continue
+        path = tuple(parts)
+        if not path or _canon_path(path) in present:
+            continue
+        node: dict[str, Any] = data
+        for key in path[:-1]:
+            child = _dict(node.get(key))
+            if child is None:
+                child = {}
+                node[key] = child
+            node = child
+        node[path[-1]] = copy.deepcopy(entry.get("value"))
+        present.add(_canon_path(path))
+
+
+def dump_config(config: Config) -> dict[str, Any]:
+    """JSON document written by save_config, including retained values.
+
+    ``Config.model_dump()`` still omits ``api``, ``unifiedSession``, and
+    unknown nested keys. This function is the lossless save view.
+    """
+    data = _dict(config.model_dump(mode="json", by_alias=True))
+    if data is None:
+        return {}
+    retained, unknowns = config.retained_document()
+    _merge_retained_legacy(data, retained)
+    _merge_unknowns(data, unknowns)
+    return data
+
+
+def _unmodeled_leaf_canons(existing: dict[str, Any], path: Path) -> set[tuple[str, ...]]:
+    """Leaf paths the schema does not represent, plus explicit legacy keys.
+
+    Known settings may change or be removed. Only paths the model would drop
+    are protected.
+    """
+    try:
+        collapsed = _dict(_collapse_equal_aliases(dict(existing), Config, "", path)) or dict(existing)
+        migrated = _dict(_migrate_config(collapsed)) or collapsed
+    except ConfigLoadError as exc:
+        raise ConfigWriteError(str(exc)) from exc
+    if "api" in migrated:
+        migrated = {key: value for key, value in migrated.items() if key != "api"}
+    try:
+        modeled = Config.model_validate(migrated)
+    except ValidationError as exc:
+        raise ConfigWriteError(
+            f"Refusing to write {path} because the existing file could not be compared safely."
+        ) from exc
+    removed = {
+        _canon_path(item_path)
+        for item_path, _value in _iter_leaves(existing)
+        if _canon_path(item_path) not in {
+            _canon_path(migrated_path) for migrated_path, _migrated in _iter_leaves(migrated)
+        }
+    }
+    canons = {
+        _canon_path(tuple(entry["path"]))
+        for entry in _unknown_entries(existing, modeled, removed)
+    }
+    for item_path, _value in _iter_leaves(existing):
+        canon = _canon_path(item_path)
+        if _is_legacy_canon(canon):
+            canons.add(canon)
+        if len(canon) >= 2 and canon[:2] in _CREDENTIAL_PROVIDER_CANONS:
+            canons.discard(canon)
+    return canons
+
+
+def _reject_lossy_write(path: Path, existing: dict[str, Any], written: dict[str, Any]) -> None:
+    protected = _unmodeled_leaf_canons(existing, path)
+    written_canons = {_canon_path(item_path) for item_path, _value in _iter_leaves(written)}
+    missing: list[str] = []
+    for item_path, _value in _iter_leaves(existing):
+        canon = _canon_path(item_path)
+        if not item_path or canon in written_canons or canon not in protected:
+            continue
+        missing.append(".".join(item_path))
+    if not missing:
+        return
+    preview = ", ".join(missing[:12])
+    if len(missing) > 12:
+        preview = f"{preview}, ..."
+    raise ConfigWriteError(
+        f"Refusing to write {path} because it would drop {preview}. "
+        "Load that file with load_config before saving. "
+        "api and unifiedSession are kept but not applied: nanobot serve is removed "
+        "and unifiedSession does not select a shared session."
+    )
+
+
+def _merge_retained_legacy(data: dict[str, Any], retained: dict[str, Any]) -> None:
+    if "api" in retained:
+        data["api"] = copy.deepcopy(retained["api"])
+    defaults = _dict(retained.get("agents.defaults"))
+    if defaults is None:
+        return
+    agents = _dict(data.setdefault("agents", {}))
+    if agents is None:
+        return
+    agent_defaults = _dict(agents.setdefault("defaults", {}))
+    if agent_defaults is None:
+        return
+    for key, value in defaults.items():
+        agent_defaults[key] = copy.deepcopy(value)
 
 
 def _as_config_object(value: object) -> dict[str, Any] | None:
@@ -108,7 +549,15 @@ def load_config(config_path: Path | None = None) -> Config:
             ),
         )
 
-    data = _migrate_config(cast(dict[str, Any], data))
+    raw = cast(dict[str, Any], data)
+    retained = legacy_config_keys(raw)
+    # The root model rejects unknown keys. Drop only the retained `api` copy
+    # from the validated document; save_config writes that copy back.
+    collapsed = _dict(_collapse_equal_aliases(dict(raw), Config, "", path)) or dict(raw)
+    migrated = _dict(_migrate_config(collapsed)) or collapsed
+    if "api" in migrated:
+        migrated = {key: value for key, value in migrated.items() if key != "api"}
+    data = migrated
     try:
         config = Config.model_validate(data)
     except ValidationError as exc:
@@ -120,6 +569,15 @@ def load_config(config_path: Path | None = None) -> Config:
             issues=issues,
         ) from exc
 
+    removed = {
+        _canon_path(item_path)
+        for item_path, _value in _iter_leaves(raw)
+        if _canon_path(item_path) not in {
+            _canon_path(migrated_path) for migrated_path, _migrated in _iter_leaves(data)
+        }
+    }
+    config.store_retained_document(retained, _unknown_entries(raw, config, removed))
+    _warn_retained_legacy(retained)
     config.bind_source_path(path)
     _apply_ssrf_whitelist(config)
     return config
@@ -141,8 +599,19 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     """
     path = config_path or get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    data = dump_config(config)
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ConfigWriteError(
+                f"Refusing to write {path} because the existing file could not be parsed. "
+                "A save would risk dropping configuration values."
+            ) from exc
+        existing_doc = _dict(existing)
+        if existing_doc is not None:
+            _reject_lossy_write(path, existing_doc, data)
 
-    data = config.model_dump(mode="json", by_alias=True)
     # OAuth credentials live in dedicated token stores. Persist only the
     # non-credential request settings consumed by these provider backends.
     for alias, provider in (
@@ -180,14 +649,15 @@ def merge_missing_defaults(existing: object, defaults: object) -> object:
 
 
 _ENV_REF_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ConfigValue = TypeVar("_ConfigValue")
 
 
 def resolve_config_env_vars(
-    config: Config,
+    config: _ConfigValue,
     *,
     config_path: Path | None = None,
-) -> Config:
-    """Return *config* with ``${VAR}`` env-var references resolved.
+) -> _ConfigValue:
+    """Return a config or config subtree with ``${VAR}`` references resolved.
 
     Walks in place so fields declared with ``exclude=True`` survive;
     returns the same instance when no references are present.
