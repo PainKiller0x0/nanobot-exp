@@ -583,6 +583,19 @@ class Config(BaseSettings):
         """Record the config file that owns instance-level runtime data."""
         self._source_path = path.expanduser().resolve(strict=False)
 
+    def store_retained_document(
+        self,
+        legacy: dict[str, Any],
+        unknowns: list[dict[str, Any]],
+    ) -> None:
+        """Remember values this model does not apply, so save can write them back."""
+        self._retained_legacy = legacy
+        self._retained_unknowns = unknowns
+
+    def retained_document(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Return retained legacy keys and ignored nested values."""
+        return self._retained_legacy, self._retained_unknowns
+
     @property
     def runtime_data_dir(self) -> Path | None:
         """Return the active instance data directory when loaded from a config path."""

@@ -46,7 +46,8 @@ def _pattern(expression: str) -> regex.Pattern[str]:
 def _string_pattern(
     validator: Validator, expression: str, value: Any, _schema: Any,
 ) -> Iterator[ValidationError]:
-    if validator.is_type(value, "string") and not _pattern(expression).search(value):
+    pattern = cast(Any, _pattern(expression))
+    if validator.is_type(value, "string") and not pattern.search(value):
         yield ValidationError(f"{value!r} does not match {expression!r}")
 
 

@@ -1394,7 +1394,7 @@ class QQChannel(BaseChannel):
             media_obj = await self._post_base64file(
                 chat_id=chat_id, is_group=is_group,
                 file_type=4, file_data=audio_b64,
-                file_name=f"voice_{idx}.mp3", srv_send_msg=False,
+                file_name=f"voice_{idx}.mp3",
             )
             seq = self._msg_seq + idx
             if is_group:

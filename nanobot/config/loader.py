@@ -3,6 +3,7 @@ import json
 import os
 import re
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, TypeVar, cast, overload
 
@@ -33,10 +34,10 @@ def legacy_config_keys(data: dict[str, Any]) -> dict[str, Any]:
     retained: dict[str, Any] = {}
     if "api" in data:
         retained["api"] = copy.deepcopy(data["api"])
-    agents = data.get("agents")
-    if isinstance(agents, dict):
-        defaults = agents.get("defaults")
-        if isinstance(defaults, dict):
+    agents = _dict(data.get("agents"))
+    if agents is not None:
+        defaults = _dict(agents.get("defaults"))
+        if defaults is not None:
             kept = {
                 key: copy.deepcopy(defaults[key])
                 for key in _LEGACY_DEFAULT_KEYS
@@ -53,8 +54,8 @@ def _warn_retained_legacy(retained: dict[str, Any]) -> None:
     names: list[str] = []
     if "api" in retained:
         names.append("api")
-    defaults = retained.get("agents.defaults")
-    if isinstance(defaults, dict):
+    defaults = _dict(retained.get("agents.defaults"))
+    if defaults is not None:
         names.extend(f"agents.defaults.{key}" for key in defaults)
     warnings.warn(
         "Retained legacy configuration "
@@ -68,6 +69,12 @@ def _warn_retained_legacy(retained: dict[str, Any]) -> None:
 
 
 _CREDENTIAL_PROVIDER_CANONS = {("providers", "openaicodex"), ("providers", "xaigrok")}
+
+
+def _dict(value: object) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return cast(dict[str, Any], value)
+    return None
 
 
 def _canon_key(key: str) -> str:
@@ -87,11 +94,13 @@ def _is_legacy_canon(canon: tuple[str, ...]) -> bool:
     return len(canon) >= 3 and canon[:3] == ("agents", "defaults", "unifiedsession")
 
 
-def _iter_leaves(value: object, path: tuple[str, ...] = ()) -> Any:
-    if isinstance(value, dict) and any(isinstance(key, str) for key in value):
-        for key, item in value.items():
-            if isinstance(key, str):
-                yield from _iter_leaves(item, path + (key,))
+def _iter_leaves(
+    value: object, path: tuple[str, ...] = (),
+) -> Iterator[tuple[tuple[str, ...], object]]:
+    mapping = _dict(value)
+    if mapping:
+        for key, item in mapping.items():
+            yield from _iter_leaves(item, path + (key,))
         return
     yield path, value
 
@@ -107,16 +116,17 @@ def _collapse_equal_aliases(value: object, location: str, path: Path) -> object:
     The original document is still what retention compares.
     """
     if isinstance(value, list):
+        items = cast(list[object], value)
         return [
             _collapse_equal_aliases(item, f"{location}[{index}]", path)
-            for index, item in enumerate(value)
+            for index, item in enumerate(items)
         ]
-    if not isinstance(value, dict):
+    mapping = _dict(value)
+    if mapping is None:
         return value
     grouped: dict[str, list[tuple[str, object]]] = {}
-    for key, item in value.items():
-        if isinstance(key, str):
-            grouped.setdefault(_canon_key(key), []).append((key, item))
+    for key, item in mapping.items():
+        grouped.setdefault(_canon_key(key), []).append((key, item))
     for canon, items in grouped.items():
         if len(items) < 2:
             continue
@@ -139,10 +149,7 @@ def _collapse_equal_aliases(value: object, location: str, path: Path) -> object:
             )
     collapsed: dict[str, object] = {}
     seen: set[str] = set()
-    for key, item in value.items():
-        if not isinstance(key, str):
-            collapsed[str(key)] = item
-            continue
+    for key, item in mapping.items():
         canon = _canon_key(key)
         keep_both = location == "agents.defaults" and canon == "unifiedsession"
         if canon in seen and not keep_both:
@@ -180,18 +187,17 @@ def _unknown_entries(
     removing one is an edit. ``extra="allow"`` values already survive in the
     model dump and are not copied again.
     """
-    if not isinstance(data, dict) or not isinstance(model, BaseModel):
+    mapping = _dict(data)
+    if mapping is None or not isinstance(model, BaseModel):
         return []
     by_canon: dict[str, str] = {}
     for name, field in type(model).model_fields.items():
         for canon in _alias_canons(name, field):
             by_canon.setdefault(canon, name)
-    dumped = model.model_dump(mode="json", by_alias=True)
-    dumped_canons = {_canon_key(key) for key in dumped} if isinstance(dumped, dict) else set()
+    dumped = _dict(model.model_dump(mode="json", by_alias=True)) or {}
+    dumped_canons = {_canon_key(key) for key in dumped}
     found: list[dict[str, Any]] = []
-    for key, value in data.items():
-        if not isinstance(key, str):
-            continue
+    for key, value in mapping.items():
         path = prefix + (key,)
         canon = _canon_key(key)
         canon_path = _canon_path(path)
@@ -199,16 +205,17 @@ def _unknown_entries(
             continue
         if canon in by_canon:
             child = getattr(model, by_canon[canon], None)
-            if isinstance(child, BaseModel) and isinstance(value, dict):
-                found.extend(_unknown_entries(value, child, removed_canons, path))
-            elif isinstance(child, dict) and isinstance(value, dict):
-                for item_key, item_value in value.items():
-                    if not isinstance(item_key, str) or not isinstance(item_value, dict):
-                        continue
-                    item = child.get(item_key)
-                    if isinstance(item, BaseModel):
+            value_map = _dict(value)
+            child_map = _dict(child)
+            if isinstance(child, BaseModel) and value_map is not None:
+                found.extend(_unknown_entries(value_map, child, removed_canons, path))
+            elif child_map is not None and value_map is not None:
+                for item_key, item_value in value_map.items():
+                    item_map = _dict(item_value)
+                    item = child_map.get(item_key)
+                    if item_map is not None and isinstance(item, BaseModel):
                         found.extend(_unknown_entries(
-                            item_value, item, removed_canons, path + (item_key,),
+                            item_map, item, removed_canons, path + (item_key,),
                         ))
             continue
         if canon in dumped_canons:
@@ -225,15 +232,22 @@ def _merge_unknowns(data: dict[str, Any], entries: list[dict[str, Any]]) -> None
     present = {_canon_path(path) for path, _value in _iter_leaves(data)}
     for entry in entries:
         raw_path = entry.get("path")
-        if not isinstance(raw_path, list) or not all(isinstance(part, str) for part in raw_path):
+        parts: list[str] = []
+        if isinstance(raw_path, list):
+            for part in cast(list[object], raw_path):
+                if not isinstance(part, str):
+                    parts = []
+                    break
+                parts.append(part)
+        if not parts:
             continue
-        path = tuple(raw_path)
+        path = tuple(parts)
         if not path or _canon_path(path) in present:
             continue
         node: dict[str, Any] = data
         for key in path[:-1]:
-            child = node.get(key)
-            if not isinstance(child, dict):
+            child = _dict(node.get(key))
+            if child is None:
                 child = {}
                 node[key] = child
             node = child
@@ -247,12 +261,11 @@ def dump_config(config: Config) -> dict[str, Any]:
     ``Config.model_dump()`` still omits ``api``, ``unifiedSession``, and
     unknown nested keys. This function is the lossless save view.
     """
-    data = config.model_dump(mode="json", by_alias=True)
-    if not isinstance(data, dict):
+    data = _dict(config.model_dump(mode="json", by_alias=True))
+    if data is None:
         return {}
-    retained = config._retained_legacy if isinstance(config._retained_legacy, dict) else {}
+    retained, unknowns = config.retained_document()
     _merge_retained_legacy(data, retained)
-    unknowns = config._retained_unknowns if isinstance(config._retained_unknowns, list) else []
     _merge_unknowns(data, unknowns)
     return data
 
@@ -264,11 +277,11 @@ def _unmodeled_leaf_canons(existing: dict[str, Any], path: Path) -> set[tuple[st
     are protected.
     """
     try:
-        collapsed = _collapse_equal_aliases(dict(existing), "", path)
-        migrated = _migrate_config(collapsed if isinstance(collapsed, dict) else dict(existing))
+        collapsed = _dict(_collapse_equal_aliases(dict(existing), "", path)) or dict(existing)
+        migrated = _dict(_migrate_config(collapsed)) or collapsed
     except ConfigLoadError as exc:
         raise ConfigWriteError(str(exc)) from exc
-    if isinstance(migrated, dict) and "api" in migrated:
+    if "api" in migrated:
         migrated = {key: value for key, value in migrated.items() if key != "api"}
     try:
         modeled = Config.model_validate(migrated)
@@ -299,7 +312,7 @@ def _unmodeled_leaf_canons(existing: dict[str, Any], path: Path) -> set[tuple[st
 def _reject_lossy_write(path: Path, existing: dict[str, Any], written: dict[str, Any]) -> None:
     protected = _unmodeled_leaf_canons(existing, path)
     written_canons = {_canon_path(item_path) for item_path, _value in _iter_leaves(written)}
-    missing = []
+    missing: list[str] = []
     for item_path, _value in _iter_leaves(existing):
         canon = _canon_path(item_path)
         if not item_path or canon in written_canons or canon not in protected:
@@ -321,14 +334,14 @@ def _reject_lossy_write(path: Path, existing: dict[str, Any], written: dict[str,
 def _merge_retained_legacy(data: dict[str, Any], retained: dict[str, Any]) -> None:
     if "api" in retained:
         data["api"] = copy.deepcopy(retained["api"])
-    defaults = retained.get("agents.defaults")
-    if not isinstance(defaults, dict):
+    defaults = _dict(retained.get("agents.defaults"))
+    if defaults is None:
         return
-    agents = data.setdefault("agents", {})
-    if not isinstance(agents, dict):
+    agents = _dict(data.setdefault("agents", {}))
+    if agents is None:
         return
-    agent_defaults = agents.setdefault("defaults", {})
-    if not isinstance(agent_defaults, dict):
+    agent_defaults = _dict(agents.setdefault("defaults", {}))
+    if agent_defaults is None:
         return
     for key, value in defaults.items():
         agent_defaults[key] = copy.deepcopy(value)
@@ -430,9 +443,9 @@ def load_config(config_path: Path | None = None) -> Config:
     retained = legacy_config_keys(raw)
     # The root model rejects unknown keys. Drop only the retained `api` copy
     # from the validated document; save_config writes that copy back.
-    collapsed = _collapse_equal_aliases(dict(raw), "", path)
-    migrated = _migrate_config(collapsed if isinstance(collapsed, dict) else dict(raw))
-    if isinstance(migrated, dict) and "api" in migrated:
+    collapsed = _dict(_collapse_equal_aliases(dict(raw), "", path)) or dict(raw)
+    migrated = _dict(_migrate_config(collapsed)) or collapsed
+    if "api" in migrated:
         migrated = {key: value for key, value in migrated.items() if key != "api"}
     data = migrated
     try:
@@ -446,7 +459,6 @@ def load_config(config_path: Path | None = None) -> Config:
             issues=issues,
         ) from exc
 
-    config._retained_legacy = retained
     removed = {
         _canon_path(item_path)
         for item_path, _value in _iter_leaves(raw)
@@ -454,7 +466,7 @@ def load_config(config_path: Path | None = None) -> Config:
             _canon_path(migrated_path) for migrated_path, _migrated in _iter_leaves(data)
         }
     }
-    config._retained_unknowns = _unknown_entries(raw, config, removed)
+    config.store_retained_document(retained, _unknown_entries(raw, config, removed))
     _warn_retained_legacy(retained)
     config.bind_source_path(path)
     _apply_ssrf_whitelist(config)
@@ -486,8 +498,9 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
                 f"Refusing to write {path} because the existing file could not be parsed. "
                 "A save would risk dropping configuration values."
             ) from exc
-        if isinstance(existing, dict):
-            _reject_lossy_write(path, existing, data)
+        existing_doc = _dict(existing)
+        if existing_doc is not None:
+            _reject_lossy_write(path, existing_doc, data)
 
     # OAuth credentials live in dedicated token stores. Persist only the
     # non-credential request settings consumed by these provider backends.
