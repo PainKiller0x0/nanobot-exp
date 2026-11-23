@@ -253,9 +253,6 @@ class AgentDefaults(Base):
         persona = data.get("persona")
         if persona is not None and not isinstance(persona, str):
             raise ValueError("agents.defaults.persona must be a string")
-        # Official v0.4.2 ignores the retired shared-session switch.
-        data.pop("unifiedSession", None)
-        data.pop("unified_session", None)
         timezone_mode = data.get("timezoneMode", data.get("timezone_mode"))
         if timezone_mode is None:
             timezone_mode = "manual" if "timezone" in data else "auto"
@@ -535,6 +532,7 @@ class Config(BaseSettings):
     """Root configuration for nanobot."""
 
     _source_path: Path | None = PrivateAttr(default=None)
+    _retained_legacy: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
@@ -552,10 +550,9 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy_config(cls, value: Any) -> Any:
-        if isinstance(value, dict) and "api" in value:
-            # Old installations saved this block even if they never ran serve.
-            legacy = cast(dict[object, object], value)
-            value = {key: item for key, item in legacy.items() if key != "api"}
+        # Legacy `api` and `agents.defaults.unifiedSession` stay in the raw
+        # document. The loader retains them and save_config writes them back.
+        # This model does not apply the removed serve server or shared session.
         return migrate_legacy_proxy_config(value)
 
     @classmethod

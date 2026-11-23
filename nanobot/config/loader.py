@@ -1,6 +1,8 @@
+import copy
 import json
 import os
 import re
+import warnings
 from pathlib import Path
 from typing import Any, TypeVar, cast, overload
 
@@ -14,6 +16,93 @@ from nanobot.config.schema import Config
 from nanobot.utils.file_io import write_text_atomic
 
 _current_config_path: Path | None = None
+_LEGACY_DEFAULT_KEYS = ("unifiedSession", "unified_session")
+
+
+class ConfigWriteError(RuntimeError):
+    """Raised when saving would drop retained legacy configuration."""
+
+
+def legacy_config_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """Copy legacy values that this release does not apply.
+
+    ``api`` is the removed ``nanobot serve`` block. ``unifiedSession`` and
+    ``unified_session`` are the removed shared-session switch. The copies are
+    stored and written back unchanged. They do not start a server or merge sessions.
+    """
+    retained: dict[str, Any] = {}
+    if "api" in data:
+        retained["api"] = copy.deepcopy(data["api"])
+    agents = data.get("agents")
+    if isinstance(agents, dict):
+        defaults = agents.get("defaults")
+        if isinstance(defaults, dict):
+            kept = {
+                key: copy.deepcopy(defaults[key])
+                for key in _LEGACY_DEFAULT_KEYS
+                if key in defaults
+            }
+            if kept:
+                retained["agents.defaults"] = kept
+    return retained
+
+
+def _warn_retained_legacy(retained: dict[str, Any]) -> None:
+    if not retained:
+        return
+    names: list[str] = []
+    if "api" in retained:
+        names.append("api")
+    defaults = retained.get("agents.defaults")
+    if isinstance(defaults, dict):
+        names.extend(f"agents.defaults.{key}" for key in defaults)
+    warnings.warn(
+        "Retained legacy configuration "
+        + ", ".join(names)
+        + ". These values are written back unchanged and are not applied: "
+        + "nanobot serve has been removed, and unifiedSession does not select a "
+        + "shared session. Delete the keys in the file only when you intend to drop them.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+def _reject_unretained_legacy(path: Path, disk: dict[str, Any], retained: dict[str, Any]) -> None:
+    missing: list[str] = []
+    if "api" in disk and "api" not in retained:
+        missing.append("api")
+    disk_defaults = disk.get("agents.defaults")
+    retained_defaults = retained.get("agents.defaults")
+    if isinstance(disk_defaults, dict):
+        kept = retained_defaults if isinstance(retained_defaults, dict) else {}
+        missing.extend(
+            f"agents.defaults.{key}" for key in disk_defaults if key not in kept
+        )
+    if not missing:
+        return
+    listed = ", ".join(missing)
+    raise ConfigWriteError(
+        f"Refusing to write {path} because it would drop legacy keys that were not "
+        f"loaded: {listed}. Load that file with load_config before saving, or remove "
+        "those keys in an explicit edit. They are not applied: nanobot serve has been "
+        "removed, and unifiedSession does not select a shared session."
+    )
+
+
+def _merge_retained_legacy(data: dict[str, Any], retained: dict[str, Any]) -> None:
+    if "api" in retained:
+        data["api"] = copy.deepcopy(retained["api"])
+    defaults = retained.get("agents.defaults")
+    if not isinstance(defaults, dict):
+        return
+    agents = data.setdefault("agents", {})
+    if not isinstance(agents, dict):
+        return
+    agent_defaults = agents.setdefault("defaults", {})
+    if not isinstance(agent_defaults, dict):
+        return
+    for key, value in defaults.items():
+        agent_defaults[key] = copy.deepcopy(value)
 
 
 def _as_config_object(value: object) -> dict[str, Any] | None:
@@ -108,7 +197,14 @@ def load_config(config_path: Path | None = None) -> Config:
             ),
         )
 
-    data = _migrate_config(cast(dict[str, Any], data))
+    raw = cast(dict[str, Any], data)
+    retained = legacy_config_keys(raw)
+    # The root model rejects unknown keys. Drop only the retained `api` copy
+    # from the validated document; save_config writes that copy back.
+    migrated = _migrate_config(dict(raw))
+    if isinstance(migrated, dict) and "api" in migrated:
+        migrated = {key: value for key, value in migrated.items() if key != "api"}
+    data = migrated
     try:
         config = Config.model_validate(data)
     except ValidationError as exc:
@@ -120,6 +216,8 @@ def load_config(config_path: Path | None = None) -> Config:
             issues=issues,
         ) from exc
 
+    config._retained_legacy = retained
+    _warn_retained_legacy(retained)
     config.bind_source_path(path)
     _apply_ssrf_whitelist(config)
     return config
@@ -141,8 +239,22 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     """
     path = config_path or get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    retained = config._retained_legacy if isinstance(config._retained_legacy, dict) else {}
+    if path.is_file():
+        try:
+            existing_text = path.read_text(encoding="utf-8")
+            existing = json.loads(existing_text)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ConfigWriteError(
+                f"Refusing to write {path} because the existing file could not be parsed. "
+                "A save would risk dropping legacy api or unifiedSession keys."
+            ) from exc
+        if isinstance(existing, dict):
+            _reject_unretained_legacy(path, legacy_config_keys(existing), retained)
 
     data = config.model_dump(mode="json", by_alias=True)
+    if isinstance(data, dict):
+        _merge_retained_legacy(data, retained)
     # OAuth credentials live in dedicated token stores. Persist only the
     # non-credential request settings consumed by these provider backends.
     for alias, provider in (
